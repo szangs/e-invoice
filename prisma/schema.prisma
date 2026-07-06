@@ -1,0 +1,151 @@
+// E-Invoice — Datenbankschema (PostgreSQL, DP-Standard)
+// Mandantenmodul gemäß modul_Mandantenfaehig.md (Kernumfang)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Rollen: zwei Sphären (§3) ──
+enum Role {
+  OPERATOR_ADMIN // Betreiber-Administrator (keinem Mandanten zugeordnet)
+  TENANT_ADMIN   // Mandanten-Administrator
+  EDITOR         // Fach-Bearbeiter
+  AREA_MANAGER   // Bereichs-Verantwortlicher
+  AUDITOR        // Prüfer/Auditor
+  USER           // Endnutzer
+}
+
+enum InvoiceStatus {
+  NEW      // Neu
+  CHECKED  // Geprüft
+  EXPORTED // Exportiert
+  REJECTED // Abgelehnt
+}
+
+// ── Mandant (§2) ──
+model Tenant {
+  id               String    @id @default(cuid())
+  slug             String    @unique
+  name             String
+  contactName      String?
+  contactEmail     String?
+  contactPhone     String?
+  street           String?
+  zip              String?
+  city             String?
+  active           Boolean   @default(true)
+  licenseExpiresAt DateTime? // leer = unbegrenzt
+  licenseSerial    String?
+  licensePlan      String?
+  employeeCount    Int       @default(0)
+  maxUsers         Int       @default(5)
+  // Mandantenspezifische Schalter (§2/§8)
+  aiAllowed        Boolean   @default(false)
+  ipLoggingAllowed Boolean   @default(false)
+  defaultLanguage  String    @default("de")
+  backupEnabled    Boolean   @default(false)
+  // Ende-zu-Ende-Verschlüsselung der Belege (Zero-Knowledge):
+  // Der Datenschlüssel (DEK) wird IM BROWSER erzeugt und mit einem aus der
+  // Kunden-Passphrase abgeleiteten Schlüssel (KEK) verpackt. Der Server kennt
+  // weder Passphrase noch entpackten DEK — Belege sind für den Betreiber unlesbar.
+  encryptionEnabled Boolean  @default(false)
+  encSalt           String? // Salt der Schlüsselableitung (Base64)
+  encWrappedDek     String? // verpackter Datenschlüssel (Base64: IV + Chiffrat)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  users            User[]
+  invoices         Invoice[]
+}
+
+// ── Benutzer (§2) ──
+model User {
+  id              String    @id @default(cuid())
+  tenantId        String? // null = Betreiber-Administrator
+  tenant          Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  email           String
+  username        String    @unique // global eindeutiger technischer Name
+  passwordHash    String
+  role            Role      @default(USER)
+  active          Boolean   @default(true)
+  language        String    @default("de")
+  twoFactorSecret String? // reserviert (MVP: 2FA nicht aktiv)
+  createdAt       DateTime  @default(now())
+  lastLoginAt     DateTime?
+  lastSeenAt      DateTime?
+  forcedLogoutAt  DateTime? // Zwangsabmeldung-ab (§10)
+  invoices        Invoice[]
+
+  // E-Mail ist PRO MANDANT eindeutig, nicht global (§2)
+  @@unique([tenantId, email])
+  @@index([email])
+}
+
+// ── Betreiber-Systemeinstellungen (§24), Schlüssel/Wert ──
+model SystemSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+// ── Revisionssichere Protokollierung mit Hash-Kette (§18) ──
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  createdAt DateTime @default(now())
+  tenantId  String?
+  actorId   String?
+  actorName String
+  action    String
+  details   String?
+  ip        String? // nur wenn Mandant zugestimmt hat (§18)
+  prevHash  String
+  hash      String
+
+  @@index([tenantId, createdAt])
+}
+
+// ── Einmal-Tickets für Identitätsübernahme (§12) ──
+model LoginTicket {
+  id               String    @id @default(cuid())
+  code             String    @unique
+  targetUserId     String
+  impersonatorId   String?
+  impersonatorName String?
+  expiresAt        DateTime
+  usedAt           DateTime?
+}
+
+// ── Rechnung (E-Invoice Kernentität, mandantengetrennt) ──
+model Invoice {
+  id            String        @id @default(cuid())
+  tenantId      String
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  vendor        String
+  invoiceNumber String?
+  invoiceDate   DateTime?
+  dueDate       DateTime?
+  amountNet     Decimal?      @db.Decimal(12, 2)
+  amountTax     Decimal?      @db.Decimal(12, 2)
+  amountGross   Decimal?      @db.Decimal(12, 2)
+  currency      String        @default("EUR")
+  status        InvoiceStatus @default(NEW)
+  tags          String?
+  notes         String?
+  fileName      String? // gespeicherter Dateiname unter uploads/{tenantId}/
+  originalName  String?
+  mimeType      String?
+  encrypted     Boolean @default(false) // Datei liegt als Chiffrat (IV + AES-GCM)
+  encOrigMime   String? // ursprünglicher MIME-Typ (für Anzeige nach Entschlüsselung)
+  source        String        @default("UPLOAD")
+  createdById   String?
+  createdBy     User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([tenantId, status])
+  @@index([tenantId, invoiceDate])
+}
