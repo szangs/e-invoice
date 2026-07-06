@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { font-family: system-ui, sans-serif; width: 320px; margin: 0; padding: 14px; color: #1f2937; }
+    h1 { font-size: 14px; color: #1e477a; margin: 0 0 2px; }
+    p.sub { font-size: 11px; color: #9ca3af; margin: 0 0 12px; }
+    label { display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: #6b7280; margin-top: 10px; }
+    input { width: 100%; box-sizing: border-box; border: 1px solid #e2e6ee; border-radius: 8px; padding: 7px 9px; font-size: 13px; margin-top: 3px; }
+    input:focus { outline: 2px solid #1e477a; }
+    button { margin-top: 12px; width: 100%; border: 0; border-radius: 8px; padding: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    #save { background: #1e477a; color: #fff; }
+    #unlock { background: #fff; color: #374151; border: 1px solid #e2e6ee; }
+    #status { font-size: 12px; margin-top: 10px; min-height: 16px; }
+    .ok { color: #1e477a; } .err { color: #b3261e; }
+    .hint { font-size: 11px; color: #9ca3af; margin-top: 10px; }
+    #encBlock { display: none; }
+  </style>
+</head>
+<body>
+  <h1>E-Invoice Rechnungs-Catcher</h1>
+  <p class="sub">Strg+Alt+Klick auf einen Rechnungs-Link fängt die Datei.</p>
+
+  <label for="serverUrl">Server-Adresse</label>
+  <input id="serverUrl" placeholder="http://localhost:3000" />
+
+  <label for="token">API-Token (aus Mandanten-Einstellungen, MA01)</label>
+  <input id="token" type="password" placeholder="einv_…" />
+
+  <button id="save">Speichern &amp; Verbindung testen</button>
+
+  <div id="encBlock">
+    <label for="passphrase">Verschlüsselungs-Passphrase (bleibt im Browser)</label>
+    <input id="passphrase" type="password" />
+    <button id="unlock">Entsperren</button>
+  </div>
+
+  <div id="status"></div>
+  <p class="hint">© 2026/2026 Delta Plus Systemhaus GmbH – EDV Lösungen</p>
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

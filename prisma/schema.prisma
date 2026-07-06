@@ -60,6 +60,18 @@ model Tenant {
   updatedAt        DateTime  @updatedAt
   users            User[]
   invoices         Invoice[]
+  apiTokens        ApiToken[]
+}
+
+// ── API-Token für die Browser-Extension (Rechnungs-Catcher) ──
+model ApiToken {
+  id         String    @id @default(cuid())
+  tenantId   String
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  label      String
+  tokenHash  String    @unique // SHA-256 des Tokens — Klartext wird nie gespeichert
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
 }
 
 // ── Benutzer (§2) ──

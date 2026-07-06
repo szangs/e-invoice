@@ -95,6 +95,24 @@ npm run dev
 
 ---
 
+## Rechnungs-Catcher (Browser-Plugin, Ordner `extension/`)
+
+Chrome/Edge-Plugin (Manifest V3): **Strg+Alt+Klick** auf einen Download-Link fängt
+die Datei über die Browser-Sitzung des Nutzers und überträgt sie an E-Invoice —
+bei aktiver Beleg-Verschlüsselung ausschließlich verschlüsselt (serverseitig erzwungen).
+
+**Installation (Entwicklung):**
+
+1. In E-Invoice als Mandanten-Admin: Mandanten-Einstellungen (MA01) → „Rechnungs-Catcher" → Token erstellen (wird nur einmal angezeigt).
+2. Chrome/Edge: `chrome://extensions` → „Entwicklermodus" an → „Entpackte Erweiterung laden" → Ordner `extension/` wählen.
+3. Plugin-Symbol anklicken → Server-Adresse (`http://localhost:3000`) + Token eintragen → „Speichern & Verbindung testen".
+4. Bei aktiver Verschlüsselung: Passphrase im Popup entsperren (bleibt im Browser, Sitzungsspeicher).
+5. Auf einer beliebigen Seite: **Strg+Alt+Klick** auf einen PDF-/Download-Link → Benachrichtigung „Rechnung gefangen", Beleg erscheint in der Rechnungsliste (Quelle: EXTENSION).
+
+Nach Schema-Änderung nötig: `npx prisma migrate dev --name plugin_tokens`
+
+---
+
 ## GitHub
 
 ```powershell

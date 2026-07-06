@@ -4,6 +4,7 @@ import { getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { EncryptionSetup } from './EncryptionSetup'
 import { TenantSwitches } from './TenantSwitches'
+import { TokenManager } from './TokenManager'
 
 export const dynamic = 'force-dynamic'
 
@@ -35,6 +36,7 @@ export default async function TenantSettingsPage() {
         }}
       />
       <EncryptionSetup />
+      <TokenManager />
     </div>
   )
 }
