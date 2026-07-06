@@ -144,6 +144,22 @@ model SupportSession {
   @@index([tenantId, status])
 }
 
+// ── E-Mail-Eingang (Weiterleitungs-Modell W1/W2): Protokoll aller Eingänge & Versuche ──
+model MailIntake {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  tenantId    String? // null = keinem Mandanten zuordenbar (Fehlversuch)
+  fromAddress String
+  toAddress   String
+  subject     String?
+  status      String // PROCESSED | NO_ATTACHMENT | UNKNOWN_RECIPIENT | TENANT_LOCKED | ERROR
+  detail      String?
+  invoiceId   String?
+
+  @@index([tenantId, createdAt])
+  @@index([createdAt])
+}
+
 // ── Einmal-Tickets für Identitätsübernahme (§12) ──
 model LoginTicket {
   id               String    @id @default(cuid())

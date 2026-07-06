@@ -17,6 +17,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: '/invoices', label: 'Rechnungsliste', code: 'RE01' },
       { href: '/invoices/new', label: 'Rechnung erfassen', code: 'RE02' },
+      { href: '/mailin', label: 'E-Mail-Eingang', code: 'RE03' },
     ],
   },
   {

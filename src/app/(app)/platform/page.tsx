@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { getSettings } from '@/lib/settings'
+import { MailinPanel } from './MailinPanel'
 import { OpsControls } from './OpsControls'
 import { SupportOps } from './SupportOps'
 import { TenantActions } from './TenantActions'
@@ -61,6 +62,8 @@ export default async function PlatformPage() {
         serviceStatusText={settings.SERVICE_STATUS_TEXT}
         supportTimeoutMin={settings.SUPPORT_TIMEOUT_MIN || '30'}
       />
+
+      <MailinPanel />
 
       {/* Fernwartung §14A */}
       <section className="dp-card">

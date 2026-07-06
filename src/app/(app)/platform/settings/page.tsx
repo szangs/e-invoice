@@ -77,6 +77,25 @@ export default function SystemSettingsPage() {
       </section>
 
       <section className="dp-card space-y-4">
+        <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Mail-Eingang (Einlieferungs-Postfach)</h2>
+        <p className="text-[11px] text-gray-400">
+          Zentrales IMAP-Postfach, in dem alle Einlieferungs-Adressen ankommen
+          (Catch-All für <span className="font-mono">{'{präfix}{kurzname}@{domain}'}</span>).
+          Der Verlauf erscheint im Cockpit (alle Mandanten) und beim Mandanten (RE03).
+        </p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          {input('MAIL_IN_HOST', 'IMAP-Host')}
+          {input('MAIL_IN_PORT', 'Port', 'number', 'Standard 993')}
+          {input('MAIL_IN_USER', 'Benutzer')}
+          {input('MAIL_IN_PASS', 'Passwort (maskiert)')}
+          {input('MAIL_IN_DOMAIN', 'Domain', 'text', 'z. B. deltaplus.de')}
+          {input('MAIL_IN_PREFIX', 'Adress-Präfix', 'text', 'Standard: rechnung-')}
+        </div>
+        {toggle('MAIL_IN_SECURE', 'TLS/SSL (secure) verwenden')}
+        {toggle('MAIL_IN_ENABLED', 'Mail-Eingang aktiv (Abruf erlaubt)')}
+      </section>
+
+      <section className="dp-card space-y-4">
         <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">KI-Anbieter (frei wählbar)</h2>
         <div className="grid gap-4 sm:grid-cols-2">
           {input('AI_PROVIDER', 'Anbieter', 'text', 'z. B. openai-kompatibel, anthropic, selbst gehostet')}
