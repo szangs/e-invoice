@@ -22,9 +22,16 @@ export function AppSidebar({ role }: { role: Role }) {
   const isTenantAdmin = role === Role.TENANT_ADMIN
   const groups = NAV_GROUPS.filter((g) => {
     if (g.operatorOnly && !isOperator) return false
-    if (g.adminOnly && !(isTenantAdmin || isOperator)) return false
+    // Mandanten-Verwaltung nur für Mandanten-Admins — der Betreiber nutzt die
+    // Plattform-Benutzerverwaltung (PL03) bzw. Identitätsübernahme
+    if (g.adminOnly && !isTenantAdmin) return false
+    // Mandanten-Funktionen (Rechnungen etc.) sind für den Betreiber ohne Kontext sinnlos
+    if (g.tenantOnly && isOperator) return false
     return true
-  })
+  }).map((g) => ({
+    ...g,
+    items: g.items.filter((i) => !(i.tenantOnly && isOperator)),
+  }))
 
   useEffect(() => {
     const active = groups.find((g) => g.items.some((i) => isActive(pathname, i.href)))

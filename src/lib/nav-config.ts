@@ -1,12 +1,19 @@
 // Schnellcodes & Navigation — einzige Quelle der Wahrheit (DP-Standard §11.1)
-export type NavItem = { href: string; label: string; code: string; badge?: string }
-export type NavGroup = { title: string; items: NavItem[]; operatorOnly?: boolean; adminOnly?: boolean }
+export type NavItem = { href: string; label: string; code: string; badge?: string; tenantOnly?: boolean }
+export type NavGroup = {
+  title: string
+  items: NavItem[]
+  operatorOnly?: boolean
+  adminOnly?: boolean
+  tenantOnly?: boolean // nur mit Mandanten-Kontext sinnvoll — für den Betreiber ausgeblendet
+}
 
 export const DASHBOARD: NavItem = { href: '/dashboard', label: 'Dashboard', code: 'DB01' }
 
 export const NAV_GROUPS: NavGroup[] = [
   {
     title: 'Rechnungen',
+    tenantOnly: true,
     items: [
       { href: '/invoices', label: 'Rechnungsliste', code: 'RE01' },
       { href: '/invoices/new', label: 'Rechnung erfassen', code: 'RE02' },
@@ -26,6 +33,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: '/platform', label: 'Betreiber-Cockpit', code: 'PL01' },
       { href: '/platform/tenants/new', label: 'Mandant anlegen', code: 'PL02' },
+      { href: '/platform/users', label: 'Benutzer (alle Mandanten)', code: 'PL03' },
       { href: '/platform/settings', label: 'Systemeinstellungen', code: 'SP01' },
       { href: '/platform/audit', label: 'Audit-Protokoll', code: 'AU01' },
     ],
@@ -33,7 +41,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     title: 'Hilfe',
     items: [
-      { href: '/support', label: 'Support & Fernwartung', code: 'SU01' },
+      { href: '/support', label: 'Support & Fernwartung', code: 'SU01', tenantOnly: true },
       { href: '/help', label: 'Hilfe & Nutzungsbedingungen', code: 'HE01' },
     ],
   },
