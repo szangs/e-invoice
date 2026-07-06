@@ -19,6 +19,7 @@ const STATUS_LABEL: Record<string, { text: string; bad: boolean }> = {
   PROCESSED: { text: 'Beleg angelegt', bad: false },
   NO_ATTACHMENT: { text: 'kein Anhang', bad: true },
   UNKNOWN_RECIPIENT: { text: 'unbekannte Adresse', bad: true },
+  SENDER_REJECTED: { text: 'Absender nicht erlaubt', bad: true },
   TENANT_LOCKED: { text: 'Mandant gesperrt', bad: true },
   ERROR: { text: 'Fehler', bad: true },
 }

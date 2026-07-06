@@ -8,6 +8,7 @@ type Switches = {
   ipLoggingAllowed: boolean
   backupEnabled: boolean
   defaultLanguage: string
+  mailAllowedDomains: string
 }
 
 export function TenantSwitches({ initial }: { initial: Switches }) {
@@ -46,6 +47,15 @@ export function TenantSwitches({ initial }: { initial: Switches }) {
       {toggle('aiAllowed', 'KI-Funktionen erlauben', 'Bei "aus" werden keine Daten an eine KI übergeben — serverseitig erzwungen.')}
       {toggle('ipLoggingAllowed', 'IP-Protokollierung erlauben')}
       {toggle('backupEnabled', 'Regelmäßige Sicherung', 'Automatischer Versand folgt in Runde 2.')}
+      <div>
+        <label className="dp-label">E-Mail-Eingang: nur Absender dieser Domänen</label>
+        <input className="dp-input mt-1" value={s.mailAllowedDomains}
+          placeholder="z. B. meinefirma.de, lieferant.de — leer = alle"
+          onChange={(e) => setS((p) => ({ ...p, mailAllowedDomains: e.target.value }))} />
+        <p className="mt-0.5 text-[10px] text-gray-400">
+          Schützt Ihre Einlieferungs-Adresse vor fremden Zusendungen (RE03 zeigt Abweisungen).
+        </p>
+      </div>
       <div>
         <label className="dp-label">Standardsprache</label>
         <select className="dp-input mt-1 !w-auto" value={s.defaultLanguage}

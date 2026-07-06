@@ -56,6 +56,8 @@ model Tenant {
   encryptionEnabled Boolean  @default(false)
   encSalt           String? // Salt der Schlüsselableitung (Base64)
   encWrappedDek     String? // verpackter Datenschlüssel (Base64: IV + Chiffrat)
+  // E-Mail-Eingang: nur Absender dieser Domänen annehmen (kommagetrennt, leer = alle)
+  mailAllowedDomains String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
   users            User[]

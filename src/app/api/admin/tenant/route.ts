@@ -12,6 +12,7 @@ const schema = z.object({
   ipLoggingAllowed: z.boolean().optional(),
   defaultLanguage: z.string().optional(),
   backupEnabled: z.boolean().optional(),
+  mailAllowedDomains: z.string().max(500).optional(),
 })
 
 export async function PATCH(req: NextRequest) {

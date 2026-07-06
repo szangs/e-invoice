@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "db:migrate": "prisma migrate dev",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "smtp": "tsx scripts/smtp-server.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -18,6 +19,7 @@
     "date-fns": "^3.6.0",
     "imapflow": "^1.0.171",
     "mailparser": "^3.7.1",
+    "smtp-server": "^3.13.6",
     "next": "14.2.35",
     "next-auth": "^4.24.11",
     "nodemailer": "^7.0.7",
@@ -28,6 +30,7 @@
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/mailparser": "^3.4.5",
+    "@types/smtp-server": "^3.5.10",
     "@types/node": "^20.17.0",
     "@types/nodemailer": "^7.0.0",
     "@types/react": "^18.3.12",

@@ -19,6 +19,7 @@ const STATUS_LABEL: Record<string, { text: string; bad: boolean }> = {
   NO_ATTACHMENT: { text: 'kein verwertbarer Anhang', bad: true },
   TENANT_LOCKED: { text: 'abgewiesen', bad: true },
   UNKNOWN_RECIPIENT: { text: 'abgewiesen', bad: true },
+  SENDER_REJECTED: { text: 'Absender nicht erlaubt', bad: true },
   ERROR: { text: 'Fehler', bad: true },
 }
 

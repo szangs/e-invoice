@@ -36,6 +36,7 @@ export default async function TenantSettingsPage() {
           ipLoggingAllowed: tenant.ipLoggingAllowed,
           backupEnabled: tenant.backupEnabled,
           defaultLanguage: tenant.defaultLanguage,
+          mailAllowedDomains: tenant.mailAllowedDomains ?? '',
         }}
       />
       <EncryptionSetup />

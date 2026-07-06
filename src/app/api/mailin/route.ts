@@ -19,9 +19,11 @@ export async function GET() {
       }),
       getSettings(),
     ])
+    // Mandanten-Subdomain-Muster: beliebig@<kurzname>.<basis-domain> — als
+    // Vorschlag zeigen wir "rechnung@…", der lokale Teil ist aber frei wählbar.
     const address =
       settings.MAIL_IN_DOMAIN && ctx.tenantSlug
-        ? `${settings.MAIL_IN_PREFIX || 'rechnung-'}${ctx.tenantSlug}@${settings.MAIL_IN_DOMAIN}`
+        ? `rechnung@${ctx.tenantSlug}.${settings.MAIL_IN_DOMAIN}`
         : null
     return NextResponse.json({
       enabled: settings.MAIL_IN_ENABLED === '1',

@@ -79,20 +79,34 @@ export default function SystemSettingsPage() {
       <section className="dp-card space-y-4">
         <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Mail-Eingang (Einlieferungs-Postfach)</h2>
         <p className="text-[11px] text-gray-400">
-          Zentrales IMAP-Postfach, in dem alle Einlieferungs-Adressen ankommen
-          (Catch-All für <span className="font-mono">{'{präfix}{kurzname}@{domain}'}</span>).
+          Adressmuster: <span className="font-mono">beliebig@&lt;kurzname&gt;.&lt;basis-domain&gt;</span> —
+          der Kurzname des Mandanten ist die Subdomain, die Basis-Domain gilt für alle Mandanten.
           Der Verlauf erscheint im Cockpit (alle Mandanten) und beim Mandanten (RE03).
         </p>
         <div className="grid gap-4 sm:grid-cols-2">
-          {input('MAIL_IN_HOST', 'IMAP-Host')}
-          {input('MAIL_IN_PORT', 'Port', 'number', 'Standard 993')}
-          {input('MAIL_IN_USER', 'Benutzer')}
-          {input('MAIL_IN_PASS', 'Passwort (maskiert)')}
-          {input('MAIL_IN_DOMAIN', 'Domain', 'text', 'z. B. deltaplus.de')}
-          {input('MAIL_IN_PREFIX', 'Adress-Präfix', 'text', 'Standard: rechnung-')}
+          {input('MAIL_IN_DOMAIN', 'Basis-Domain (für alle Mandanten)', 'text', 'z. B. einvoice.de → firmaxy.einvoice.de')}
+          {input('MAIL_IN_HOST', 'IMAP-Host (Postfach-Variante)')}
+          {input('MAIL_IN_PORT', 'IMAP-Port', 'number', 'Standard 993')}
+          {input('MAIL_IN_USER', 'IMAP-Benutzer', 'text', 'Catch-All- oder bestimmtes Postfach')}
+          {input('MAIL_IN_PASS', 'IMAP-Passwort (maskiert)')}
         </div>
         {toggle('MAIL_IN_SECURE', 'TLS/SSL (secure) verwenden')}
-        {toggle('MAIL_IN_ENABLED', 'Mail-Eingang aktiv (Abruf erlaubt)')}
+        {toggle('MAIL_IN_ENABLED', 'Mail-Eingang aktiv (IMAP-Abruf erlaubt)')}
+        <div className="border-t border-[var(--line)] pt-3">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+            Alternative: eigener SMTP-Empfänger (Catch-All über die Subdomain)
+          </p>
+          <p className="mb-3 text-[11px] text-gray-400">
+            Läuft als eigener Prozess (<span className="font-mono">npm run smtp</span>). Der Server
+            wartet auf weitergeleitete Mails und nimmt jede Adresse nach dem Muster
+            Präfix+Kurzname@Domain aktiver Mandanten an — MX-Eintrag der Subdomain nötig.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {input('MAIL_SMTP_PORT', 'SMTP-Port', 'number', 'Standard 2525; Produktion: Port 25 weiterleiten')}
+            {input('MAIL_IN_ALLOWED_DOMAINS', 'Nur Absender dieser Domänen (global)', 'text', 'kommagetrennt, leer = alle — gilt für IMAP und SMTP')}
+          </div>
+          {toggle('MAIL_SMTP_ENABLED', 'SMTP-Empfänger aktiv')}
+        </div>
       </section>
 
       <section className="dp-card space-y-4">

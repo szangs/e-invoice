@@ -32,8 +32,12 @@ export const SETTING_KEYS = [
   'MAIL_IN_SECURE', // "1" = TLS
   'MAIL_IN_USER',
   'MAIL_IN_PASS', // maskiert
-  'MAIL_IN_DOMAIN', // z. B. deltaplus.de
+  'MAIL_IN_DOMAIN', // z. B. einvoice.deltaplus.de (Subdomain für Einlieferung)
   'MAIL_IN_PREFIX', // z. B. "rechnung-" → rechnung-<kurzname>@<domain>
+  'MAIL_IN_ALLOWED_DOMAINS', // global: nur Absender dieser Domänen (kommagetrennt, leer = alle)
+  // SMTP-Empfangs-Alternative: eigener SMTP-Server wartet auf weitergeleitete Mails
+  'MAIL_SMTP_ENABLED', // "1" = SMTP-Empfänger aktiv (Prozess: npm run smtp)
+  'MAIL_SMTP_PORT', // Standard 2525 (Produktion: 25 hinter Firewall/Relay)
 ] as const
 
 export type SettingKey = (typeof SETTING_KEYS)[number]
