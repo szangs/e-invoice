@@ -2,15 +2,19 @@
 import { Role } from '@prisma/client'
 import { format } from 'date-fns'
 import { de } from 'date-fns/locale'
-import { getContext, requireTenant } from '@/lib/context'
+import { redirect } from 'next/navigation'
+import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { UserAdmin } from './UserAdmin'
 
 export const dynamic = 'force-dynamic'
 
 export default async function UsersPage() {
-  const ctx = await getContext({ roles: [Role.TENANT_ADMIN] })
-  const tenantId = requireTenant(ctx)
+  const ctx = await getContext()
+  // Betreiber ohne Mandanten-Kontext → Cockpit; andere Rollen → Dashboard (kein Absturz)
+  if (!ctx.tenantId) redirect('/platform')
+  if (ctx.role !== Role.TENANT_ADMIN && ctx.role !== Role.OPERATOR_ADMIN) redirect('/dashboard')
+  const tenantId = ctx.tenantId
   const [users, tenant] = await Promise.all([
     prisma.user.findMany({ where: { tenantId }, orderBy: { createdAt: 'asc' } }),
     prisma.tenant.findUnique({ where: { id: tenantId } }),

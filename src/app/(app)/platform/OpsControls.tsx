@@ -1,21 +1,25 @@
 'use client'
 
-// Betriebssteuerung (§9) — Wartungssperre + Service-Status-Text
+// Betriebssteuerung (§9): Wartungssperre, Service-Status-Text,
+// globaler Zeitabschluss für Support-Sitzungen + Not-Aus.
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 
 export function OpsControls({
   maintenanceLock,
   serviceStatusText,
+  supportTimeoutMin,
 }: {
   maintenanceLock: boolean
   serviceStatusText: string
+  supportTimeoutMin: string
 }) {
   const router = useRouter()
   const [text, setText] = useState(serviceStatusText)
+  const [timeout_, setTimeout_] = useState(supportTimeoutMin)
   const [busy, setBusy] = useState(false)
 
-  async function save(body: { maintenanceLock?: boolean; serviceStatusText?: string }) {
+  async function save(body: Record<string, unknown>) {
     setBusy(true)
     await fetch('/api/platform/ops', {
       method: 'PUT',
@@ -40,7 +44,7 @@ export function OpsControls({
             {maintenanceLock ? 'Sperre aktiv — aufheben' : 'Sperre aktivieren'}
           </button>
         </div>
-        <div className="min-w-[260px] flex-1">
+        <div className="min-w-[240px] flex-1">
           <label className="dp-label" htmlFor="statusText">Service-Status-Text (leer = ausblenden)</label>
           <div className="mt-1 flex gap-2">
             <input id="statusText" className="dp-input" value={text} maxLength={200}
@@ -49,6 +53,31 @@ export function OpsControls({
               Speichern
             </button>
           </div>
+        </div>
+        <div>
+          <label className="dp-label" htmlFor="timeout">Support-Zeitabschluss (min)</label>
+          <div className="mt-1 flex gap-2">
+            <input id="timeout" type="number" min={5} max={480} className="dp-input !w-24"
+              value={timeout_} onChange={(e) => setTimeout_(e.target.value)} />
+            <button disabled={busy} className="btn-secondary"
+              onClick={() => save({ supportTimeoutMin: timeout_ })}>
+              OK
+            </button>
+          </div>
+        </div>
+        <div>
+          <p className="dp-label mb-1">Fernwartung Not-Aus</p>
+          <button
+            disabled={busy}
+            className="btn-danger"
+            onClick={() => {
+              if (window.confirm('Alle laufenden Fernwartungs-Sitzungen sofort beenden?')) {
+                save({ endAllSupport: true })
+              }
+            }}
+          >
+            Alle Sitzungen beenden
+          </button>
         </div>
       </div>
     </section>

@@ -1,6 +1,7 @@
 // Mandanten-Einstellungen (lokaler Administrator, §8)
 import { Role } from '@prisma/client'
-import { getContext, requireTenant } from '@/lib/context'
+import { redirect } from 'next/navigation'
+import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { EncryptionSetup } from './EncryptionSetup'
 import { TenantSwitches } from './TenantSwitches'
@@ -9,8 +10,10 @@ import { TokenManager } from './TokenManager'
 export const dynamic = 'force-dynamic'
 
 export default async function TenantSettingsPage() {
-  const ctx = await getContext({ roles: [Role.TENANT_ADMIN] })
-  const tenantId = requireTenant(ctx)
+  const ctx = await getContext()
+  if (!ctx.tenantId) redirect('/platform')
+  if (ctx.role !== Role.TENANT_ADMIN && ctx.role !== Role.OPERATOR_ADMIN) redirect('/dashboard')
+  const tenantId = ctx.tenantId
   const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } })
   if (!tenant) return null
 

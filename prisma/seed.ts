@@ -1,8 +1,19 @@
 // Seed: legt den Betreiber-Administrator und einen Demo-Mandanten an.
 // Aufruf:  npx prisma db seed   (liest .env.local NICHT automatisch — Werte kommen aus .env
 // oder werden vorher gesetzt; siehe README Abschnitt "Erststart")
+import { readFileSync } from 'fs'
 import { PrismaClient, Role } from '@prisma/client'
 import bcrypt from 'bcryptjs'
+
+// .env.local selbst laden — die Prisma-CLI liest nur .env, nicht .env.local
+try {
+  for (const line of readFileSync('.env.local', 'utf8').split(/\r?\n/)) {
+    const m = line.match(/^([A-Z_]+)=(.*)$/)
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2]
+  }
+} catch {
+  /* .env.local optional — Werte können auch aus der Umgebung kommen */
+}
 
 const prisma = new PrismaClient()
 

@@ -120,6 +120,30 @@ model AuditLog {
   @@index([tenantId, createdAt])
 }
 
+// ── Fernwartung §14A: eingebaute Bildschirmspiegelung (ohne externe Software) ──
+enum SupportStatus {
+  REQUESTED // angefragt
+  ACTIVE    // aktiv (Einwilligung erteilt)
+  ENDED     // beendet
+  DECLINED  // abgelehnt
+}
+
+model SupportSession {
+  id          String        @id @default(cuid())
+  tenantId    String
+  userId      String? // Nutzer, dessen Sicht gespiegelt wird (bei Betreiber-Anfrage erst nach Einwilligung)
+  initiatedBy String // 'TENANT' | 'OPERATOR'
+  status      SupportStatus @default(REQUESTED)
+  createdAt   DateTime      @default(now())
+  startedAt   DateTime?
+  endedAt     DateTime?
+  endedBy     String?
+  snapshot    String? // letzter DOM-Spiegel (maskiert, ohne Skripte)
+  snapshotAt  DateTime?
+
+  @@index([tenantId, status])
+}
+
 // ── Einmal-Tickets für Identitätsübernahme (§12) ──
 model LoginTicket {
   id               String    @id @default(cuid())

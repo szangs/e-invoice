@@ -32,7 +32,10 @@ export const NAV_GROUPS: NavGroup[] = [
   },
   {
     title: 'Hilfe',
-    items: [{ href: '/help', label: 'Hilfe & Nutzungsbedingungen', code: 'HE01' }],
+    items: [
+      { href: '/support', label: 'Support & Fernwartung', code: 'SU01' },
+      { href: '/help', label: 'Hilfe & Nutzungsbedingungen', code: 'HE01' },
+    ],
   },
 ]
 

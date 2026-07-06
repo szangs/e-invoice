@@ -24,6 +24,7 @@ export const SETTING_KEYS = [
   // Betriebssteuerung (§9)
   'MAINTENANCE_LOCK', // "1" = Anmeldesperre für normale Nutzer
   'SERVICE_STATUS_TEXT',
+  'SUPPORT_TIMEOUT_MIN', // globaler Zeitabschluss für Fernwartungs-Sitzungen (§9/§14)
 ] as const
 
 export type SettingKey = (typeof SETTING_KEYS)[number]

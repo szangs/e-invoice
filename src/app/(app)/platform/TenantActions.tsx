@@ -1,7 +1,7 @@
 'use client'
 
 // Aktionen je Mandant (§6): bearbeiten, sperren/entsperren, Killswitch,
-// Identitätsübernahme, Zugangsdaten neu senden.
+// Identitätsübernahme, Zugangsdaten, Fernwartung anfragen.
 import { signIn } from 'next-auth/react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -20,13 +20,13 @@ export function TenantActions({
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
 
-  async function call(url: string, body?: unknown, confirmText?: string) {
+  async function call(url: string, method: 'POST' | 'PATCH', body?: unknown, confirmText?: string) {
     if (confirmText && !window.confirm(confirmText)) return
     setBusy(true)
     setMsg('')
     try {
       const res = await fetch(url, {
-        method: body === undefined ? 'POST' : 'PATCH',
+        method,
         headers: { 'Content-Type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body),
       })
@@ -70,7 +70,7 @@ export function TenantActions({
       <button
         disabled={busy}
         className="btn-secondary !px-2 !py-1 text-xs"
-        onClick={() => call(`/api/platform/tenants/${tenantId}`, { active: !active })}
+        onClick={() => call(`/api/platform/tenants/${tenantId}`, 'PATCH', { active: !active })}
       >
         {active ? 'Sperren' : 'Entsperren'}
       </button>
@@ -80,8 +80,9 @@ export function TenantActions({
         onClick={() =>
           call(
             `/api/platform/tenants/${tenantId}/killswitch`,
+            'POST',
             undefined,
-            `Killswitch für "${tenantName}"?\nAlle Nutzer werden sofort abgemeldet, der Mandant wird gesperrt.`,
+            `Killswitch für "${tenantName}"?\nAlle Nutzer werden sofort abgemeldet, der Mandant wird gesperrt.\n(Fernwartungs-Sitzungen sind davon getrennt, §11.)`,
           )
         }
       >
@@ -91,11 +92,26 @@ export function TenantActions({
         Übernehmen
       </button>
       <button
+        disabled={busy || !active}
+        className="btn-secondary !px-2 !py-1 text-xs"
+        onClick={() =>
+          call(
+            '/api/platform/support',
+            'POST',
+            { tenantId },
+            `Fernwartung bei "${tenantName}" anfragen?\nDer Nutzer muss aktiv einwilligen (§14A).`,
+          )
+        }
+      >
+        Fernwartung
+      </button>
+      <button
         disabled={busy}
         className="btn-secondary !px-2 !py-1 text-xs"
         onClick={() =>
           call(
             `/api/platform/tenants/${tenantId}/credentials`,
+            'POST',
             undefined,
             `Passwort des Administrators von "${tenantName}" zurücksetzen und zusenden?`,
           )
