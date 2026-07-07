@@ -8,6 +8,7 @@ import { resolveToken } from '@/lib/apiToken'
 import { audit } from '@/lib/audit'
 import { ApiError } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
 import { analyzeInvoiceFile, type Analysis } from '@/lib/erechnung'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
 
@@ -69,6 +70,12 @@ export async function POST(req: NextRequest) {
       analysis = await analyzeInvoiceFile(buffer, file.type, filename)
     }
     const d = analysis?.data
+    const fileHash = hashBuffer(buffer)
+    const duplicateOfId = await detectDuplicate(tenant.id, {
+      fileHash,
+      invoiceNumber: d?.number ?? null,
+      vendor: d?.sellerName ?? null,
+    })
 
     const invoice = await prisma.invoice.create({
       data: {
@@ -88,6 +95,8 @@ export async function POST(req: NextRequest) {
         mimeType: isEncrypted ? 'application/octet-stream' : file.type,
         encrypted: isEncrypted,
         encOrigMime: isEncrypted ? encOrigMime : null,
+        fileHash,
+        duplicateOfId,
         docFormat: analysis?.format ?? null,
         xmlData: analysis?.xml ?? null,
         validationOk: analysis?.validation?.valid ?? null,

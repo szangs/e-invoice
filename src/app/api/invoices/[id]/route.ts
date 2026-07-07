@@ -21,6 +21,8 @@ const schema = z.object({
   status: z.nativeEnum(InvoiceStatus).optional(),
   tags: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
+  // Dubletten-Kennzeichnung aufheben ("keine Dublette")
+  duplicateOfId: z.null().optional(),
 })
 
 async function findOwn(id: string, tenantId: string) {

@@ -58,6 +58,10 @@ model Tenant {
   encWrappedDek     String? // verpackter Datenschlüssel (Base64: IV + Chiffrat)
   // E-Mail-Eingang: nur Absender dieser Domänen annehmen (kommagetrennt, leer = alle)
   mailAllowedDomains String?
+  // Datensicherung (§17): Häufigkeit + Zustell-Adresse + letzte Sicherung
+  backupFrequency String? // DAILY | WEEKLY | MONTHLY | YEARLY
+  backupEmail     String?
+  lastBackupAt    DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
   users            User[]
@@ -194,6 +198,9 @@ model Invoice {
   mimeType      String?
   encrypted     Boolean @default(false) // Datei liegt als Chiffrat (IV + AES-GCM)
   encOrigMime   String? // ursprünglicher MIME-Typ (für Anzeige nach Entschlüsselung)
+  // Dubletten-Prüfung: Datei-Hash + Verweis auf das erkannte Original
+  fileHash      String? // SHA-256 der Beleg-Datei
+  duplicateOfId String? // gesetzt = als Dublette erkannt
   // E-Rechnung (W17): erkanntes Format + Prüfergebnis + XML für die Visualisierung
   docFormat        String? // ZUGFERD | XRECHNUNG_CII | XRECHNUNG_UBL | PDF | OTHER
   xmlData          String? // eingebettetes/originales Rechnungs-XML
@@ -207,4 +214,5 @@ model Invoice {
 
   @@index([tenantId, status])
   @@index([tenantId, invoiceDate])
+  @@index([tenantId, fileHash])
 }

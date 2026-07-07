@@ -1,7 +1,9 @@
 'use client'
 
-// Betreiber-Systemeinstellungen (§24) — SMTP, Fernwartungs-Relay, KI-Anbieter, Schalter
+// Betreiber-Systemeinstellungen (§24) — SMTP, Mail-Eingang, KI-Anbieter,
+// Fernwartungs-Relay, Datensicherung (§17), Schalter
 import { useEffect, useState } from 'react'
+import { BackupOps } from './BackupOps'
 
 type Settings = Record<string, string>
 
@@ -133,6 +135,21 @@ export default function SystemSettingsPage() {
           {input('REMOTE_RELAY_KEY', 'Schlüssel (maskiert)')}
         </div>
         <p className="text-[11px] text-gray-400">Der In-App-Client-Download folgt in Runde 2 — die Werte werden hier bereits zentral gepflegt.</p>
+      </section>
+
+      <section className="dp-card space-y-4">
+        <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Datensicherung Gesamtsystem (§17)</h2>
+        <div className="grid gap-4 sm:grid-cols-2">
+          {input('BACKUP_TARGET_DIR', 'Sicherungsziel (Verzeichnis auf dem Server)', 'text', 'z. B. D:\\Backups\\einvoice oder \\\\NAS\\backup')}
+          {input('BACKUP_SYSTEM_FREQ', 'Häufigkeit', 'text', 'DAILY, WEEKLY, MONTHLY oder YEARLY')}
+          {input('BACKUP_SYSTEM_EMAIL', 'Zusätzlich per E-Mail an (optional)', 'email')}
+        </div>
+        {toggle('BACKUP_SYSTEM_ENABLED', 'Automatische System-Sicherung aktiv (Prozess: npm run backup)')}
+        <p className="text-[11px] text-gray-400">
+          Der Zeitplan-Prozess prüft stündlich die Fälligkeit (auch für alle Mandanten-Sicherungen)
+          und stellt in das Verzeichnis und/oder per E-Mail zu. Einstellungen oben mit „Speichern" sichern.
+        </p>
+        <BackupOps />
       </section>
 
       <section className="dp-card space-y-3">

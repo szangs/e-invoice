@@ -11,6 +11,20 @@ import { sendSystemMail } from '@/lib/mail'
 import { generatePassword, generateUsername } from '@/lib/password'
 import { getSetting } from '@/lib/settings'
 
+/** Kurzliste aller Mandanten (für Auswahlfelder, z. B. Rücksicherung). */
+export async function GET() {
+  try {
+    await getContext({ operator: true })
+    const tenants = await prisma.tenant.findMany({
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true, slug: true },
+    })
+    return NextResponse.json({ tenants })
+  } catch (e) {
+    return jsonError(e)
+  }
+}
+
 const schema = z.object({
   slug: z.string().min(2).max(30).regex(/^[a-z0-9-]+$/, 'Nur Kleinbuchstaben, Ziffern, Bindestrich'),
   name: z.string().min(2),

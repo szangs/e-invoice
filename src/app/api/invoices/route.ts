@@ -6,6 +6,7 @@ import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
 import { analyzeInvoiceFile, type Analysis } from '@/lib/erechnung'
 import { toDTO } from '@/lib/invoices'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
@@ -46,6 +47,7 @@ export async function POST(req: NextRequest) {
     let originalName: string | null = null
     let mimeType: string | null = null
     let analysis: Analysis | null = null
+    let fileHash: string | null = null
     const file = form.get('file')
     if (file instanceof File && file.size > 0) {
       // Verschlüsselte Belege kommen als Chiffrat (octet-stream) — Server kann und
@@ -64,8 +66,14 @@ export async function POST(req: NextRequest) {
       if (!isEncrypted) {
         analysis = await analyzeInvoiceFile(buffer, file.type, file.name)
       }
+      fileHash = hashBuffer(buffer)
     }
     const d = analysis?.data
+    const duplicateOfId = await detectDuplicate(tenantId, {
+      fileHash,
+      invoiceNumber: fields.invoiceNumber || d?.number || null,
+      vendor: fields.vendor || d?.sellerName || null,
+    })
 
     const invoice = await prisma.invoice.create({
       data: {
@@ -90,6 +98,8 @@ export async function POST(req: NextRequest) {
         mimeType,
         encrypted: isEncrypted && Boolean(fileName),
         encOrigMime: isEncrypted ? fields.encOrigMime || null : null,
+        fileHash,
+        duplicateOfId,
         docFormat: analysis?.format ?? null,
         xmlData: analysis?.xml ?? null,
         validationOk: analysis?.validation?.valid ?? null,

@@ -85,8 +85,30 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
     }
   }
 
+  async function unmarkDuplicate() {
+    setBusy(true)
+    const res = await fetch(`/api/invoices/${invoice.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ duplicateOfId: null }),
+    })
+    setBusy(false)
+    if (res.ok) router.refresh()
+  }
+
   return (
     <form onSubmit={save} className="dp-card max-w-2xl space-y-4">
+      {invoice.duplicateOfId && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2">
+          <p className="text-xs font-semibold text-[var(--warn-strong)]">
+            Als Dublette erkannt —{' '}
+            <a className="underline" href={`/invoices/${invoice.duplicateOfId}`}>Original öffnen</a>
+          </p>
+          <button type="button" className="btn-secondary !px-2 !py-1 text-xs" onClick={unmarkDuplicate} disabled={busy}>
+            Keine Dublette
+          </button>
+        </div>
+      )}
       {invoice.hasFile && (
         <p className="text-sm">
           Beleg:{' '}

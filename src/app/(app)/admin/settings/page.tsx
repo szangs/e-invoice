@@ -37,6 +37,8 @@ export default async function TenantSettingsPage() {
           backupEnabled: tenant.backupEnabled,
           defaultLanguage: tenant.defaultLanguage,
           mailAllowedDomains: tenant.mailAllowedDomains ?? '',
+          backupFrequency: tenant.backupFrequency ?? 'WEEKLY',
+          backupEmail: tenant.backupEmail ?? '',
         }}
       />
       <EncryptionSetup />

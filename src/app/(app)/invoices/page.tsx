@@ -14,7 +14,7 @@ export const dynamic = 'force-dynamic'
 export default async function InvoicesPage({
   searchParams,
 }: {
-  searchParams: { q?: string; status?: string }
+  searchParams: { q?: string; status?: string; dup?: string }
 }) {
   const ctx = await getContext()
   if (!ctx.tenantId) redirect('/platform')
@@ -23,8 +23,10 @@ export default async function InvoicesPage({
     ? (searchParams.status as InvoiceStatus)
     : undefined
 
+  const hideDuplicates = searchParams.dup === 'hide'
   const where: Prisma.InvoiceWhereInput = {
     tenantId: ctx.tenantId,
+    ...(hideDuplicates ? { duplicateOfId: null } : {}),
     ...(status ? { status } : {}),
     ...(q
       ? {
@@ -60,22 +62,28 @@ export default async function InvoicesPage({
             ))}
           </select>
         </div>
+        <label className="flex items-center gap-1.5 text-sm text-gray-700">
+          <input type="checkbox" name="dup" value="hide" defaultChecked={hideDuplicates} />
+          Dubletten ausblenden
+        </label>
         <button className="btn-secondary" type="submit">Filtern</button>
         <a className="btn-secondary" href={exportUrl}>CSV-Export</a>
         <Link className="btn-primary" href="/invoices/new">Rechnung erfassen</Link>
       </form>
 
       <div className="dp-card overflow-x-auto p-0">
-        <table className="w-full min-w-[860px]">
+        <table className="w-full min-w-[1020px]">
           <thead>
             <tr className="dp-tr">
               <th className="dp-th">Lieferant</th>
               <th className="dp-th">Nummer</th>
               <th className="dp-th">Datum</th>
               <th className="dp-th">Fällig</th>
+              <th className="dp-th">Eingang</th>
               <th className="dp-th">Netto</th>
               <th className="dp-th">Brutto</th>
               <th className="dp-th">Status</th>
+              <th className="dp-th">Inhalt</th>
               <th className="dp-th">Beleg</th>
             </tr>
           </thead>
@@ -86,11 +94,19 @@ export default async function InvoicesPage({
                   <Link className="font-medium text-[var(--accent)] hover:underline" href={`/invoices/${i.id}`}>
                     {i.vendor}
                   </Link>
+                  {i.duplicateOfId && (
+                    <span className="ml-1.5 rounded-full bg-[var(--warn-bg)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--warn-strong)]">
+                      Dublette
+                    </span>
+                  )}
                   {i.tags && <p className="text-[10px] text-gray-400">{i.tags}</p>}
                 </td>
                 <td className="dp-td font-mono text-xs">{i.invoiceNumber ?? '—'}</td>
                 <td className="dp-td text-xs">{i.invoiceDate ? format(i.invoiceDate, 'dd.MM.yyyy', { locale: de }) : '—'}</td>
                 <td className="dp-td text-xs">{i.dueDate ? format(i.dueDate, 'dd.MM.yyyy', { locale: de }) : '—'}</td>
+                <td className="dp-td whitespace-nowrap text-xs" title="Eingang in E-Invoice">
+                  {format(i.createdAt, 'dd.MM.yyyy HH:mm', { locale: de })}
+                </td>
                 <td className="dp-td">{formatAmount(i.amountNet ? Number(i.amountNet) : null, i.currency)}</td>
                 <td className="dp-td">{formatAmount(i.amountGross ? Number(i.amountGross) : null, i.currency)}</td>
                 <td className="dp-td">
@@ -102,6 +118,27 @@ export default async function InvoicesPage({
                         : 'bg-[var(--accent-bg)] text-[var(--accent)]'
                   }`}>{STATUS_LABELS[i.status]}</span>
                 </td>
+                <td className="dp-td">
+                  {i.docFormat === 'ZUGFERD' || i.docFormat?.startsWith('XRECHNUNG') ? (
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                        i.validationOk === false
+                          ? 'bg-red-50 text-[var(--danger)]'
+                          : 'bg-[var(--accent-bg)] text-[var(--accent)]'
+                      }`}
+                      title={i.validationIssues ? `Fehlend: ${i.validationIssues}` : 'Pflichtangaben vollständig'}
+                    >
+                      {i.docFormat === 'ZUGFERD' ? 'ZUGFeRD' : 'XRechnung'}
+                      {i.validationOk === false ? ' ✗' : i.validationOk ? ' ✓' : ''}
+                    </span>
+                  ) : i.encrypted ? (
+                    <span className="text-[10px] text-gray-400" title="Inhalt verschlüsselt — nur der Kunde kann ihn lesen">🔒</span>
+                  ) : i.fileName ? (
+                    <span className="text-[10px] text-gray-400">nur PDF</span>
+                  ) : (
+                    <span className="text-[10px] text-gray-400">—</span>
+                  )}
+                </td>
                 <td className="dp-td text-xs">
                   {i.fileName ? (
                     <FileLink invoiceId={i.id} encrypted={i.encrypted} origMime={i.encOrigMime} />
@@ -110,7 +147,7 @@ export default async function InvoicesPage({
               </tr>
             ))}
             {invoices.length === 0 && (
-              <tr><td className="dp-td py-8 text-center text-gray-400" colSpan={8}>Keine Rechnungen gefunden.</td></tr>
+              <tr><td className="dp-td py-8 text-center text-gray-400" colSpan={10}>Keine Rechnungen gefunden.</td></tr>
             )}
           </tbody>
         </table>

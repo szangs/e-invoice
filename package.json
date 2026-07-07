@@ -8,7 +8,8 @@
     "start": "next start",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
-    "smtp": "tsx scripts/smtp-server.ts"
+    "smtp": "tsx scripts/smtp-server.ts",
+    "backup": "tsx scripts/backup-scheduler.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

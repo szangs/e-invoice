@@ -105,6 +105,9 @@ export function TenantActions({
       >
         Fernwartung
       </button>
+      <a className="btn-secondary !px-2 !py-1 text-xs" href={`/api/platform/backup?tenantId=${tenantId}`}>
+        Backup
+      </a>
       <button
         disabled={busy}
         className="btn-secondary !px-2 !py-1 text-xs"

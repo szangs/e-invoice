@@ -8,6 +8,7 @@ import { ImapFlow } from 'imapflow'
 import { simpleParser, type AddressObject, type ParsedMail } from 'mailparser'
 import { audit } from '@/lib/audit'
 import { prisma } from '@/lib/db'
+import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
 import { analyzeInvoiceFile } from '@/lib/erechnung'
 import { getSettings } from '@/lib/settings'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
@@ -110,9 +111,25 @@ export async function handleParsedMail(
     return { processed: 0, ok: false }
   }
 
-  const usable = (parsed.attachments ?? []).filter(
-    (a) => ALLOWED_MIME.includes(a.contentType) && a.content.length <= MAX_FILE_BYTES,
-  )
+  // Verwertbare Anhänge: per MIME-Typ ODER Datei-Endung (manche Mailprogramme
+  // deklarieren z. B. XML-Anhänge als application/octet-stream)
+  const EXT_MIME: Record<string, string> = {
+    pdf: 'application/pdf',
+    xml: 'application/xml',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+  }
+  const usable = (parsed.attachments ?? [])
+    .map((a) => {
+      const ext = (a.filename ?? '').split('.').pop()?.toLowerCase() ?? ''
+      const mime = ALLOWED_MIME.includes(a.contentType) ? a.contentType : EXT_MIME[ext]
+      return mime ? { att: a, mime } : null
+    })
+    .filter((x): x is { att: NonNullable<ParsedMail['attachments']>[number]; mime: string } =>
+      Boolean(x && x.att.content.length <= MAX_FILE_BYTES),
+    )
   if (usable.length === 0) {
     await prisma.mailIntake.create({
       data: {
@@ -128,11 +145,17 @@ export async function handleParsedMail(
   }
 
   let processed = 0
-  for (const att of usable) {
+  for (const { att, mime } of usable) {
     const buffer = Buffer.from(att.content)
     // E-Rechnung (W17): Format erkennen, Daten übernehmen, Pflichtfelder prüfen
-    const analysis = await analyzeInvoiceFile(buffer, att.contentType, att.filename ?? '')
+    const analysis = await analyzeInvoiceFile(buffer, mime, att.filename ?? '')
     const d = analysis.data
+    const fileHash = hashBuffer(buffer)
+    const duplicateOfId = await detectDuplicate(tenant.id, {
+      fileHash,
+      invoiceNumber: d?.number ?? null,
+      vendor: d?.sellerName ?? null,
+    })
     const fileName = await saveInvoiceFile(tenant.id, att.filename ?? 'beleg.pdf', buffer)
     const invoice = await prisma.invoice.create({
       data: {
@@ -149,8 +172,10 @@ export async function handleParsedMail(
         notes: `E-Mail-Eingang (${via}): ${subject || '(ohne Betreff)'} · von ${from}`,
         fileName,
         originalName: att.filename ?? 'beleg.pdf',
-        mimeType: att.contentType,
+        mimeType: mime,
         source: 'EMAIL',
+        fileHash,
+        duplicateOfId,
         docFormat: analysis.format,
         xmlData: analysis.xml,
         validationOk: analysis.validation?.valid ?? null,
@@ -164,7 +189,7 @@ export async function handleParsedMail(
         toAddress: match.to,
         subject,
         status: 'PROCESSED',
-        detail: `${att.filename ?? 'Anhang'} (${analysis.format})`,
+        detail: `${att.filename ?? 'Anhang'} (${analysis.format})${duplicateOfId ? ' · DUBLETTE' : ''}`,
         invoiceId: invoice.id,
       },
     })

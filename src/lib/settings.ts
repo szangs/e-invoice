@@ -38,6 +38,12 @@ export const SETTING_KEYS = [
   // SMTP-Empfangs-Alternative: eigener SMTP-Server wartet auf weitergeleitete Mails
   'MAIL_SMTP_ENABLED', // "1" = SMTP-Empfänger aktiv (Prozess: npm run smtp)
   'MAIL_SMTP_PORT', // Standard 2525 (Produktion: 25 hinter Firewall/Relay)
+  // Datensicherung Gesamtsystem (§17)
+  'BACKUP_SYSTEM_ENABLED', // "1" = automatische System-Sicherung aktiv
+  'BACKUP_SYSTEM_FREQ', // DAILY | WEEKLY | MONTHLY | YEARLY
+  'BACKUP_TARGET_DIR', // Sicherungsziel: Verzeichnis auf dem Server (auch Netzlaufwerk)
+  'BACKUP_SYSTEM_EMAIL', // optional zusätzlich per E-Mail
+  'BACKUP_SYSTEM_LAST', // letzte System-Sicherung (ISO, intern)
 ] as const
 
 export type SettingKey = (typeof SETTING_KEYS)[number]

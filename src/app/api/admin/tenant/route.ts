@@ -13,6 +13,8 @@ const schema = z.object({
   defaultLanguage: z.string().optional(),
   backupEnabled: z.boolean().optional(),
   mailAllowedDomains: z.string().max(500).optional(),
+  backupFrequency: z.enum(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY']).optional(),
+  backupEmail: z.string().email().optional().or(z.literal('')),
 })
 
 export async function PATCH(req: NextRequest) {
@@ -20,7 +22,10 @@ export async function PATCH(req: NextRequest) {
     const ctx = await getContext({ roles: [Role.TENANT_ADMIN] })
     const tenantId = requireTenant(ctx)
     const data = schema.parse(await req.json())
-    await prisma.tenant.update({ where: { id: tenantId }, data })
+    await prisma.tenant.update({
+      where: { id: tenantId },
+      data: { ...data, backupEmail: data.backupEmail === '' ? null : data.backupEmail },
+    })
     await audit({
       tenantId,
       actorId: ctx.userId,

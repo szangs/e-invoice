@@ -16,7 +16,8 @@ export const NAV_GROUPS: NavGroup[] = [
     tenantOnly: true,
     items: [
       { href: '/invoices', label: 'Rechnungsliste', code: 'RE01' },
-      { href: '/invoices/new', label: 'Rechnung erfassen', code: 'RE02' },
+      // RE02 (Rechnung erfassen) bewusst ohne Menüpunkt — erreichbar über die
+      // Knöpfe in Rechnungsliste und Dashboard
       { href: '/mailin', label: 'E-Mail-Eingang', code: 'RE03' },
     ],
   },
