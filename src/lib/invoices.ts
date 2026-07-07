@@ -43,6 +43,7 @@ export type InvoiceDTO = {
   deletedAt: string | null
   deletedBy: string | null
   createdAt: string
+  basketId: string | null
 }
 
 export function toDTO(inv: Invoice): InvoiceDTO {
@@ -81,6 +82,7 @@ export function toDTO(inv: Invoice): InvoiceDTO {
     deletedAt: inv.deletedAt ? inv.deletedAt.toISOString() : null,
     deletedBy: inv.deletedBy,
     createdAt: inv.createdAt.toISOString(),
+    basketId: inv.basketId,
   }
 }
 

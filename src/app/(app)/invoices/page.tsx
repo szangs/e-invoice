@@ -5,9 +5,11 @@ import { de } from 'date-fns/locale'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { FileLink } from '@/components/crypto/FileLink'
+import { ensureSystemBaskets } from '@/lib/baskets'
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { formatAmount, STATUS_LABELS } from '@/lib/invoices'
+import { BasketMoveSelect } from './BasketMoveSelect'
 import { CheckBadges } from './CheckBadges'
 import { RestoreButton } from './RestoreButton'
 
@@ -16,10 +18,12 @@ export const dynamic = 'force-dynamic'
 export default async function InvoicesPage({
   searchParams,
 }: {
-  searchParams: { q?: string; status?: string; dup?: string; trash?: string }
+  searchParams: { q?: string; status?: string; dup?: string; trash?: string; basket?: string }
 }) {
   const ctx = await getContext()
   if (!ctx.tenantId) redirect('/platform')
+  const tenantId = ctx.tenantId
+  await ensureSystemBaskets(tenantId)
   const q = searchParams.q ?? ''
   const status = Object.values(InvoiceStatus).includes(searchParams.status as InvoiceStatus)
     ? (searchParams.status as InvoiceStatus)
@@ -28,11 +32,13 @@ export default async function InvoicesPage({
   const hideDuplicates = searchParams.dup === 'hide'
   // Papierkorb: weich gelöschte Rechnungen sind normalerweise ausgeblendet
   const showTrash = searchParams.trash === '1'
+  const basketFilter = searchParams.basket || undefined
   const where: Prisma.InvoiceWhereInput = {
     tenantId: ctx.tenantId,
     deletedAt: showTrash ? { not: null } : null,
     ...(hideDuplicates ? { duplicateOfId: null } : {}),
     ...(status ? { status } : {}),
+    ...(basketFilter ? { basketId: basketFilter } : {}),
     ...(q
       ? {
           OR: [
@@ -43,11 +49,37 @@ export default async function InvoicesPage({
         }
       : {}),
   }
-  const invoices = await prisma.invoice.findMany({
-    where,
-    orderBy: [{ invoiceDate: 'desc' }, { createdAt: 'desc' }],
-    take: 200,
-  })
+  const [invoices, baskets] = await Promise.all([
+    prisma.invoice.findMany({
+      where,
+      orderBy: [{ invoiceDate: 'desc' }, { createdAt: 'desc' }],
+      take: 200,
+    }),
+    prisma.basket.findMany({ where: { tenantId }, orderBy: [{ position: 'asc' }, { createdAt: 'asc' }] }),
+  ])
+  const basketById = new Map(baskets.map((b) => [b.id, b]))
+
+  const pendingApprovals = showTrash
+    ? []
+    : await prisma.basketApproval.groupBy({
+        by: ['invoiceId', 'targetBasketId'],
+        where: { invoiceId: { in: invoices.map((i) => i.id) } },
+        _count: { userId: true },
+      })
+  const pendingByInvoice = new Map<string, { targetBasketId: string; count: number }>()
+  for (const p of pendingApprovals) pendingByInvoice.set(p.invoiceId, { targetBasketId: p.targetBasketId, count: p._count.userId })
+  const approverEmailsByInvoice = new Map<string, string[]>()
+  if (pendingApprovals.length > 0) {
+    const rows = await prisma.basketApproval.findMany({
+      where: { invoiceId: { in: invoices.map((i) => i.id) } },
+      select: { invoiceId: true, user: { select: { email: true } } },
+    })
+    for (const r of rows) {
+      const list = approverEmailsByInvoice.get(r.invoiceId) ?? []
+      list.push(r.user.email)
+      approverEmailsByInvoice.set(r.invoiceId, list)
+    }
+  }
 
   const exportUrl = `/api/invoices/export?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`
   const trashParams = new URLSearchParams({
@@ -74,6 +106,17 @@ export default async function InvoicesPage({
             ))}
           </select>
         </div>
+        {!showTrash && (
+          <div>
+            <label className="dp-label" htmlFor="basket">Korb</label>
+            <select id="basket" name="basket" className="dp-input mt-1" defaultValue={basketFilter ?? ''}>
+              <option value="">Alle Körbe</option>
+              {baskets.map((b) => (
+                <option key={b.id} value={b.id}>{b.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <label className="flex items-center gap-1.5 text-sm text-gray-700">
           <input type="checkbox" name="dup" value="hide" defaultChecked={hideDuplicates} />
           Dubletten ausblenden
@@ -110,6 +153,7 @@ export default async function InvoicesPage({
               <th className="dp-th">Brutto</th>
               <th className="dp-th">Status</th>
               <th className="dp-th">Inhalt</th>
+              {!showTrash && <th className="dp-th">Korb</th>}
               {!showTrash && <th className="dp-th">Prüfung</th>}
               <th className="dp-th">Beleg</th>
               {showTrash && <th className="dp-th">Aktion</th>}
@@ -188,6 +232,27 @@ export default async function InvoicesPage({
                 </td>
                 {!showTrash && (
                   <td className="dp-td">
+                    <div className="mb-1 text-[11px] text-gray-500">
+                      {i.basketId ? basketById.get(i.basketId)?.name ?? '—' : '—'}
+                    </div>
+                    <BasketMoveSelect
+                      invoiceId={i.id}
+                      currentBasketId={i.basketId}
+                      baskets={baskets.map((b) => ({ id: b.id, name: b.name }))}
+                      pending={
+                        pendingByInvoice.has(i.id)
+                          ? {
+                              targetName: basketById.get(pendingByInvoice.get(i.id)!.targetBasketId)?.name ?? '?',
+                              approvedBy: approverEmailsByInvoice.get(i.id) ?? [],
+                              needed: 2 - (pendingByInvoice.get(i.id)?.count ?? 0),
+                            }
+                          : null
+                      }
+                    />
+                  </td>
+                )}
+                {!showTrash && (
+                  <td className="dp-td">
                     <CheckBadges
                       invoiceId={i.id}
                       electronicAt={i.checkElectronicAt ? i.checkElectronicAt.toISOString() : null}
@@ -215,7 +280,7 @@ export default async function InvoicesPage({
             ))}
             {invoices.length === 0 && (
               <tr>
-                <td className="dp-td py-8 text-center text-gray-400" colSpan={12}>
+                <td className="dp-td py-8 text-center text-gray-400" colSpan={13}>
                   {showTrash ? 'Papierkorb ist leer.' : 'Keine Rechnungen gefunden.'}
                 </td>
               </tr>

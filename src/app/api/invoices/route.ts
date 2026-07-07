@@ -4,6 +4,7 @@ import { InvoiceStatus } from '@prisma/client'
 import { z } from 'zod'
 import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
+import { getInboxBasketId } from '@/lib/baskets'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { nextDocId } from '@/lib/docId'
@@ -91,6 +92,9 @@ export async function POST(req: NextRequest) {
     })
 
     const docId = await nextDocId(tenantId)
+    // Neue Rechnungen starten immer im Eingangskorb (Körbe-Workflow, Stefan
+    // 2026-07-08) — von dort aus werden sie manuell in andere Körbe verschoben.
+    const basketId = await getInboxBasketId(tenantId)
     // Elektronische Vorprüfung automatisch abhaken, wenn die E-Rechnung
     // (ZUGFeRD/XRechnung) beim Einlesen bereits als formal gültig erkannt
     // wurde — Stefan 2026-07-07: soll nicht erst manuell gesetzt werden
@@ -100,6 +104,7 @@ export async function POST(req: NextRequest) {
       data: {
         tenantId,
         docId,
+        basketId,
         checkElectronicAt: autoElectronicOk ? new Date() : null,
         checkElectronicBy: autoElectronicOk ? 'System (automatische Prüfung)' : null,
         vendor: fields.vendor || d?.sellerName || 'Unbekannt',

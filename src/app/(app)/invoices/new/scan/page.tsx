@@ -16,6 +16,7 @@ import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 import { encryptBytes, sha256Hex } from '@/lib/clientCrypto'
 import { fetchEncConfig, getCachedDek, unlockWithPassphrase } from '@/lib/keyStore'
+import { DocumentCamera } from './DocumentCamera'
 
 const EMPTY = {
   vendor: '', invoiceNumber: '', invoiceDate: '', dueDate: '',
@@ -93,6 +94,7 @@ export default function ScanInvoicePage() {
   const [aiWarnings, setAiWarnings] = useState<string[]>([])
   const [aiFlags, setAiFlags] = useState<string[]>([])
   const [usedAi, setUsedAi] = useState(false)
+  const [showCamera, setShowCamera] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -134,6 +136,18 @@ export default function ScanInvoicePage() {
       }
     })
     setPages((p) => [...p, ...next])
+  }
+
+  /** Von DocumentCamera (Live-Scan mit Kantenerkennung) übergebene, bereits
+   * zugeschnittene Aufnahme als neue Seite übernehmen. Kamera bleibt offen,
+   * damit direkt die nächste Seite gescannt werden kann. */
+  function onCameraCapture(file: File) {
+    setPages((p) => [...p, {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      file,
+      kind: 'image',
+      previewUrl: URL.createObjectURL(file),
+    }])
   }
 
   function removePage(id: string) {
@@ -204,6 +218,33 @@ export default function ScanInvoicePage() {
     }
   }
 
+  async function checkDuplicateFirst(fileHash: string | null): Promise<boolean> {
+    // Dubletten-Vorabprüfung (Stefan 2026-07-08): fragt VOR dem Speichern nach,
+    // statt eine vermutliche Dublette stillschweigend zu markieren.
+    if (!fileHash && !(f.vendor && f.invoiceNumber)) return true
+    try {
+      const res = await fetch('/api/invoices/check-duplicate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileHash: fileHash ?? undefined,
+          vendor: f.vendor || undefined,
+          invoiceNumber: f.invoiceNumber || undefined,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.duplicate) return true
+      const d = data.duplicate as { docId: string | null; vendor: string; invoiceNumber: string | null }
+      return window.confirm(
+        `Diese Rechnung scheint bereits erfasst zu sein (${d.docId ?? d.vendor}` +
+        `${d.invoiceNumber ? ', Nr. ' + d.invoiceNumber : ''}).\n\n` +
+        `Möchten Sie sie wirklich noch einmal übernehmen?`,
+      )
+    } catch {
+      return true // Vorabprüfung ist nur ein Komfort-Feature — Fehler hier blockieren nichts
+    }
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
@@ -214,6 +255,13 @@ export default function ScanInvoicePage() {
     setBusy(true)
     try {
       const file = await buildInvoiceFile(pages)
+      // Klartext-Hash schon hier bilden (unabhängig von Verschlüsselung) — wird
+      // für die Dubletten-Vorabprüfung gebraucht und bei aktiver Verschlüsselung
+      // gleich weiterverwendet.
+      let plainHash: string | null = null
+      try { plainHash = await sha256Hex(await file.arrayBuffer()) } catch { /* Prüfung ist nur Komfort */ }
+      if (!(await checkDuplicateFirst(plainHash))) return
+
       const fd = new FormData()
       const { directDebitByVendor, ...textFields } = f
       Object.entries(textFields).forEach(([k, v]) => fd.append(k, v))
@@ -232,15 +280,11 @@ export default function ScanInvoicePage() {
           }
         }
         const plainBuffer = await file.arrayBuffer()
-        // Klartext-Hash VOR dem Verschlüsseln bilden — für Dubletten-Erkennung
-        // (Chiffrat hat wegen zufälligem IV sonst bei jeder Verschlüsselung
-        // einen anderen Hash, auch bei identischem Klartext).
-        const plainHash = await sha256Hex(plainBuffer)
         const cipher = await encryptBytes(dek, plainBuffer)
         fd.append('file', new Blob([cipher as unknown as BlobPart]), `${file.name}.enc`)
         fd.append('encrypted', '1')
         fd.append('encOrigMime', file.type)
-        fd.append('fileHash', plainHash)
+        if (plainHash) fd.append('fileHash', plainHash)
       } else {
         fd.append('file', file)
       }
@@ -286,9 +330,18 @@ export default function ScanInvoicePage() {
           className="hidden"
           onChange={onFilesSelected}
         />
-        <button type="button" className="btn-secondary" onClick={() => inputRef.current?.click()}>
-          + Seite hinzufügen
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="btn-primary" onClick={() => setShowCamera((v) => !v)}>
+            {showCamera ? 'Live-Scan schließen' : '📷 Live-Scan (erkennt Kanten automatisch)'}
+          </button>
+          <button type="button" className="btn-secondary" onClick={() => inputRef.current?.click()}>
+            + Seite hinzufügen (Foto/Datei)
+          </button>
+        </div>
+
+        {showCamera && (
+          <DocumentCamera onCapture={onCameraCapture} onClose={() => setShowCamera(false)} />
+        )}
 
         {pages.length > 0 && (
           <div className="space-y-2">

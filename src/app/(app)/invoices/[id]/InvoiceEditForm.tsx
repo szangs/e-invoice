@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { FileLink } from '@/components/crypto/FileLink'
 import { EINVOICE_FORMATS } from '@/lib/docFormat'
 import type { InvoiceDTO } from '@/lib/invoices'
+import { BasketMoveSelect } from '../BasketMoveSelect'
 
 const AI_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp']
 const CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP']
@@ -25,7 +26,15 @@ function toNumber(v: string): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
+export function InvoiceEditForm({
+  invoice,
+  baskets,
+  pendingApproval,
+}: {
+  invoice: InvoiceDTO
+  baskets: { id: string; name: string }[]
+  pendingApproval: { targetName: string; approvedBy: string[]; needed: number } | null
+}) {
   const router = useRouter()
   const [f, setF] = useState({
     vendor: invoice.vendor,
@@ -221,6 +230,18 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
         <p className="font-mono text-[11px] text-gray-400" title="Eindeutige Dokumenten-ID (GoBD-Referenzierung)">
           {invoice.docId}
         </p>
+      )}
+      {baskets.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2">
+          <span className="dp-label">Korb:</span>
+          <span className="text-sm">{baskets.find((b) => b.id === invoice.basketId)?.name ?? '—'}</span>
+          <BasketMoveSelect
+            invoiceId={invoice.id}
+            currentBasketId={invoice.basketId}
+            baskets={baskets}
+            pending={pendingApproval}
+          />
+        </div>
       )}
       {invoice.duplicateOfId && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2">

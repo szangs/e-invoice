@@ -28,6 +28,7 @@ export const NAV_GROUPS: NavGroup[] = [
     adminOnly: true,
     items: [
       { href: '/admin/users', label: 'Benutzer', code: 'BN01' },
+      { href: '/admin/baskets', label: 'Körbe', code: 'KO01' },
       { href: '/admin/settings', label: 'Mandanten-Einstellungen', code: 'MA01' },
     ],
   },

@@ -7,6 +7,7 @@ import { InvoiceStatus } from '@prisma/client'
 import { ImapFlow } from 'imapflow'
 import { simpleParser, type AddressObject, type ParsedMail } from 'mailparser'
 import { audit } from '@/lib/audit'
+import { getInboxBasketId } from '@/lib/baskets'
 import { prisma } from '@/lib/db'
 import { nextDocId } from '@/lib/docId'
 import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
@@ -145,6 +146,7 @@ export async function handleParsedMail(
     return { processed: 0, ok: false }
   }
 
+  const basketId = await getInboxBasketId(tenant.id)
   let processed = 0
   for (const { att, mime } of usable) {
     const buffer = Buffer.from(att.content)
@@ -164,6 +166,7 @@ export async function handleParsedMail(
       data: {
         tenantId: tenant.id,
         docId,
+        basketId,
         checkElectronicAt: autoElectronicOk ? new Date() : null,
         checkElectronicBy: autoElectronicOk ? 'System (automatische Prüfung)' : null,
         vendor: d?.sellerName || domainOf(from) || from,

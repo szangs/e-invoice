@@ -21,6 +21,7 @@
     "date-fns": "^3.6.0",
     "fast-xml-parser": "^4.5.0",
     "imapflow": "^1.0.171",
+    "jscanify": "^1.4.0",
     "mailparser": "^3.7.1",
     "smtp-server": "^3.13.6",
     "next": "14.2.35",

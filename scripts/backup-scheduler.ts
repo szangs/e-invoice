@@ -16,6 +16,7 @@ try {
 
 /* eslint-disable import/first */
 import { runDueBackups } from '../src/lib/backup'
+import { runDueBasketNotifications } from '../src/lib/baskets'
 import { runDueReports } from '../src/lib/report'
 
 const INTERVAL_MS = 60 * 60 * 1000 // stündliche Fälligkeitsprüfung
@@ -36,8 +37,15 @@ async function tick() {
   } catch (e) {
     console.error('Berichtslauf fehlgeschlagen:', e)
   }
+  try {
+    const log = await runDueBasketNotifications(false)
+    if (log.length === 0) console.log(`[${stamp}] Keine Korb-Benachrichtigung fällig.`)
+    else log.forEach((l) => console.log(`[${stamp}] ${l}`))
+  } catch (e) {
+    console.error('Korb-Benachrichtigungslauf fehlgeschlagen:', e)
+  }
 }
 
-console.log('E-Invoice Sicherungs- und Berichts-Zeitplan läuft (Prüfung stündlich).')
+console.log('E-Invoice Sicherungs-, Berichts- und Korb-Zeitplan läuft (Prüfung stündlich).')
 tick()
 setInterval(tick, INTERVAL_MS)

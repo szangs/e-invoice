@@ -6,6 +6,7 @@ import { InvoiceStatus } from '@prisma/client'
 import { jsonError } from '@/lib/api'
 import { resolveToken } from '@/lib/apiToken'
 import { audit } from '@/lib/audit'
+import { getInboxBasketId } from '@/lib/baskets'
 import { ApiError } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { nextDocId } from '@/lib/docId'
@@ -87,11 +88,13 @@ export async function POST(req: NextRequest) {
     })
 
     const docId = await nextDocId(tenant.id)
+    const basketId = await getInboxBasketId(tenant.id)
     const autoElectronicOk = analysis?.validation?.valid === true
     const invoice = await prisma.invoice.create({
       data: {
         tenantId: tenant.id,
         docId,
+        basketId,
         checkElectronicAt: autoElectronicOk ? new Date() : null,
         checkElectronicBy: autoElectronicOk ? 'System (automatische Prüfung)' : null,
         vendor: d?.sellerName || vendor,

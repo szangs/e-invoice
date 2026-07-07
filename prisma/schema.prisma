@@ -80,6 +80,7 @@ model Tenant {
   users            User[]
   invoices         Invoice[]
   apiTokens        ApiToken[]
+  baskets          Basket[]
 }
 
 // ── API-Token für die Browser-Extension (Rechnungs-Catcher) ──
@@ -110,6 +111,8 @@ model User {
   lastSeenAt      DateTime?
   forcedLogoutAt  DateTime? // Zwangsabmeldung-ab (§10)
   invoices        Invoice[]
+  basketMemberships BasketMember[]
+  basketApprovals   BasketApproval[]
 
   // E-Mail ist PRO MANDANT eindeutig, nicht global (§2)
   @@unique([tenantId, email])
@@ -179,6 +182,82 @@ model MailIntake {
   @@index([createdAt])
 }
 
+// ── Körbe (Rechnungseingangsverarbeitung, Stefan 2026-07-08): Rechnungen
+// wandern durch benannte "Körbe" (wie E-Mail-Postfach-Ordner) statt einer
+// einzigen flachen Liste. Jeder Mandant hat automatisch genau einen
+// Eingangskorb (kind=INBOX, wo neu erfasste Rechnungen zuerst landen) und
+// einen Übergabekorb (kind=HANDOVER, Endstation vor Export/Buchhaltung) —
+// beide werden bei Bedarf automatisch angelegt (siehe lib/baskets.ts
+// ensureSystemBaskets). Dazwischen beliebig viele frei anlegbare Körbe
+// (kind=CUSTOM). Vier-Augen-Prinzip ist für INBOX/HANDOVER serverseitig
+// gesperrt (dort macht ein zusätzliches Freigabe-Gate konzeptionell keinen
+// Sinn — Eingang ist offen, Übergabe ist bereits das Ergebnis der Kette).
+enum BasketKind {
+  INBOX
+  HANDOVER
+  CUSTOM
+}
+
+model Basket {
+  id        String     @id @default(cuid())
+  tenantId  String
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name      String
+  kind      BasketKind @default(CUSTOM)
+  position  Int        @default(0) // Reihenfolge in der Anzeige/Kette
+  // Vier-Augen-Prinzip: EIGENES Gate beim Verlassen dieses Korbs (unabhängig
+  // von der Rechnungsprüfung/4-Häkchen auf der Rechnung selbst) — zwei
+  // UNTERSCHIEDLICHE Mitarbeiter müssen den Korb-Wechsel freigeben, bevor er
+  // ausgeführt wird. Serverseitig erzwungen: bei kind IN (INBOX, HANDOVER)
+  // immer false, nicht änderbar.
+  fourEyesEnabled   Boolean @default(false)
+  // Sammel-Benachrichtigung statt einer Mail pro Rechnung: läuft im
+  // Scheduler (lib/baskets.ts runDueBasketNotifications, wie backup/report)
+  // und schickt je fälligem Intervall EINE Übersichtsmail pro zugeordnetem
+  // Mitarbeiter mit den aktuell im Korb liegenden Rechnungen.
+  notificationEnabled       Boolean   @default(false)
+  notificationIntervalHours Int?      // frei wählbares Intervall in Stunden
+  lastNotifiedAt            DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  members   BasketMember[]
+  invoices  Invoice[]
+  approvals BasketApproval[]
+
+  @@index([tenantId, kind])
+}
+
+// Mitarbeiter-Zuordnung zu einem Korb (wer ist zuständig / wird benachrichtigt)
+model BasketMember {
+  id        String   @id @default(cuid())
+  basketId  String
+  basket    Basket   @relation(fields: [basketId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([basketId, userId])
+}
+
+// Vier-Augen-Freigaben für einen konkreten Korb-Wechsel (Rechnung X, von Korb
+// A nach Korb B). Bei der zweiten Freigabe eines ANDEREN Mitarbeiters für
+// dieselbe Kombination wird der Wechsel automatisch ausgeführt und alle
+// offenen Freigaben für diese Rechnung/diesen Ausgangskorb gelöscht
+// (siehe lib/baskets.ts approveMove).
+model BasketApproval {
+  id             String   @id @default(cuid())
+  invoiceId      String
+  invoice        Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  fromBasketId   String
+  fromBasket     Basket   @relation(fields: [fromBasketId], references: [id], onDelete: Cascade)
+  targetBasketId String
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now())
+
+  @@unique([invoiceId, fromBasketId, targetBasketId, userId])
+}
+
 // ── Einmal-Tickets für Identitätsübernahme (§12) ──
 model LoginTicket {
   id               String    @id @default(cuid())
@@ -200,6 +279,12 @@ model Invoice {
   // cuid. Nullable für Bestandsdaten vor Einführung dieses Felds (Backfill
   // per scripts/backfill-doc-ids.ts), danach immer gesetzt.
   docId         String?       @unique
+  // Körbe (Rechnungseingangsverarbeitung): aktueller Korb, in dem die
+  // Rechnung liegt. Nullable für Bestand vor Einführung — Backfill setzt
+  // den Eingangskorb (siehe scripts/backfill-baskets.ts).
+  basketId      String?
+  basket        Basket?       @relation(fields: [basketId], references: [id], onDelete: SetNull)
+  basketApprovals BasketApproval[]
   vendor        String
   invoiceNumber String?
   invoiceDate   DateTime?
@@ -259,4 +344,5 @@ model Invoice {
   @@index([tenantId, invoiceDate])
   @@index([tenantId, fileHash])
   @@index([tenantId, deletedAt])
+  @@index([basketId])
 }
