@@ -27,6 +27,7 @@ export type InvoiceDTO = {
   encrypted: boolean
   origMime: string | null
   mimeType: string | null
+  docFormat: string | null
   duplicateOfId: string | null
   source: string
   aiAssisted: boolean
@@ -64,6 +65,7 @@ export function toDTO(inv: Invoice): InvoiceDTO {
     encrypted: inv.encrypted,
     origMime: inv.encOrigMime,
     mimeType: inv.mimeType,
+    docFormat: inv.docFormat,
     duplicateOfId: inv.duplicateOfId,
     source: inv.source,
     aiAssisted: inv.aiAssisted,

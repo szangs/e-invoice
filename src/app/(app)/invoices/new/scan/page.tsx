@@ -20,6 +20,7 @@ import { fetchEncConfig, getCachedDek, unlockWithPassphrase } from '@/lib/keySto
 const EMPTY = {
   vendor: '', invoiceNumber: '', invoiceDate: '', dueDate: '',
   amountNet: '', amountTax: '', amountGross: '', currency: 'EUR', tags: '', notes: '',
+  directDebitByVendor: false,
 }
 
 type ScanPage = { id: string; file: File; kind: 'image' | 'pdf'; previewUrl: string | null }
@@ -177,6 +178,7 @@ export default function ScanInvoicePage() {
         vendor: string | null; invoiceNumber: string | null; invoiceDate: string | null
         dueDate: string | null; amountNet: number | null; amountTax: number | null
         amountGross: number | null; currency: string | null; tags: string | null
+        directDebitByVendor: boolean | null
         uncertainFields: string[]; warnings: string[]
       }
       setF((p) => ({
@@ -190,6 +192,7 @@ export default function ScanInvoicePage() {
         amountGross: d.amountGross !== null ? toInput(d.amountGross) : p.amountGross,
         currency: d.currency && CURRENCIES.includes(d.currency) ? d.currency : p.currency,
         tags: d.tags ?? p.tags,
+        directDebitByVendor: d.directDebitByVendor ?? p.directDebitByVendor,
       }))
       setAiFlags(d.uncertainFields ?? [])
       setAiWarnings(d.warnings ?? [])
@@ -212,9 +215,11 @@ export default function ScanInvoicePage() {
     try {
       const file = await buildInvoiceFile(pages)
       const fd = new FormData()
-      Object.entries(f).forEach(([k, v]) => fd.append(k, v))
+      const { directDebitByVendor, ...textFields } = f
+      Object.entries(textFields).forEach(([k, v]) => fd.append(k, v))
       fd.append('source', 'SCAN')
       if (usedAi) fd.append('aiAssisted', '1')
+      if (directDebitByVendor) fd.append('directDebitByVendor', '1')
       if (encEnabled) {
         let dek = await getCachedDek()
         if (!dek) {
@@ -363,7 +368,16 @@ export default function ScanInvoicePage() {
           <Field label="Lieferant *" value={f.vendor} onChange={(v) => set('vendor', v)} required warn={aiFlags.includes('vendor')} />
           <Field label="Rechnungsnummer" value={f.invoiceNumber} onChange={(v) => set('invoiceNumber', v)} warn={aiFlags.includes('invoiceNumber')} />
           <Field label="Rechnungsdatum" type="date" value={f.invoiceDate} onChange={(v) => set('invoiceDate', v)} warn={aiFlags.includes('invoiceDate')} />
-          <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)} warn={aiFlags.includes('dueDate')} />
+          {f.directDebitByVendor ? (
+            <div>
+              <label className="dp-label">Fälligkeit</label>
+              <p className="dp-input mt-1 flex items-center text-gray-500" title="Lieferant bucht per Lastschrift/Abbuchung selbst ab">
+                wird abgebucht
+              </p>
+            </div>
+          ) : (
+            <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)} warn={aiFlags.includes('dueDate')} />
+          )}
           <Field label="Netto (z. B. 1.234,56)" value={f.amountNet} onChange={(v) => set('amountNet', v)} warn={aiFlags.includes('amountNet')} />
           <Field label="Steuer" value={f.amountTax} onChange={(v) => set('amountTax', v)} warn={aiFlags.includes('amountTax')} />
           <Field label="Brutto" value={f.amountGross} onChange={(v) => set('amountGross', v)} warn={aiFlags.includes('amountGross')} />
@@ -375,6 +389,14 @@ export default function ScanInvoicePage() {
           </div>
           <Field label="Tags (kommagetrennt)" value={f.tags} onChange={(v) => set('tags', v)} warn={aiFlags.includes('tags')} />
         </div>
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" checked={f.directDebitByVendor}
+            onChange={(e) => setF((p) => ({ ...p, directDebitByVendor: e.target.checked }))} />
+          Lieferant bucht per Lastschrift/Abbuchung selbst ab (statt Überweisung)
+          {aiFlags.includes('directDebitByVendor') && (
+            <span className="text-[var(--warn-strong)]" title="KI ist sich hier unsicher — bitte prüfen">⚠</span>
+          )}
+        </label>
         <div>
           <label className="dp-label">Notizen</label>
           <textarea className="dp-input mt-1" rows={3} value={f.notes}

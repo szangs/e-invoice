@@ -1,14 +1,18 @@
-// KI-gestützte Datenerkennung aus einem Foto/Scan (nicht-elektronische
-// Rechnungen, z. B. "Papierrechnung scannen"). Serverseitig erzwungen: nur
-// wenn der Mandant KI-Funktionen erlaubt UND keine Beleg-Verschlüsselung
-// aktiv ist — sonst dürfte der Klartext nie an einen externen KI-Anbieter
-// gehen (Zero-Knowledge).
+// KI-gestützte Datenerkennung VOR dem Speichern — sowohl beim "Papierrechnung
+// scannen" (Foto) als auch beim elektronischen Hochladen einer "nackten" PDF
+// (kein ZUGFeRD/XRechnung, siehe RE02a-Formular: Format wird dort sofort nach
+// Dateiauswahl per /api/invoices/detect-format erkannt). Serverseitig
+// erzwungen: nur wenn der Mandant KI-Funktionen erlaubt UND keine
+// Beleg-Verschlüsselung aktiv ist — sonst dürfte der Klartext nie an einen
+// externen KI-Anbieter gehen (Zero-Knowledge). PDFs werden vor dem Versand an
+// die Vision-KI serverseitig zu einem Bild gerastert (lib/pdfRaster.ts).
 import { NextRequest, NextResponse } from 'next/server'
 import { jsonError } from '@/lib/api'
 import { extractInvoiceFromImage } from '@/lib/aiExtract'
 import { audit } from '@/lib/audit'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { rasterizeFirstPage } from '@/lib/pdfRaster'
 
 const MAX_BYTES = 10 * 1024 * 1024
 
@@ -23,10 +27,20 @@ export async function POST(req: NextRequest) {
     }
     const form = await req.formData()
     const file = form.get('file')
-    if (!(file instanceof File) || file.size === 0) throw new ApiError(400, 'Kein Bild erhalten.')
+    if (!(file instanceof File) || file.size === 0) throw new ApiError(400, 'Keine Datei erhalten.')
     if (file.size > MAX_BYTES) throw new ApiError(400, 'Datei zu groß (max. 10 MB).')
-    const base64 = Buffer.from(await file.arrayBuffer()).toString('base64')
-    const data = await extractInvoiceFromImage(base64, file.type || 'image/jpeg')
+    let base64: string
+    let mimeType: string
+    if (file.type === 'application/pdf') {
+      const png = await rasterizeFirstPage(Buffer.from(await file.arrayBuffer()))
+      if (!png) throw new ApiError(422, 'PDF konnte nicht für die KI-Erkennung gerastert werden.')
+      base64 = png.toString('base64')
+      mimeType = 'image/png'
+    } else {
+      base64 = Buffer.from(await file.arrayBuffer()).toString('base64')
+      mimeType = file.type || 'image/jpeg'
+    }
+    const data = await extractInvoiceFromImage(base64, mimeType)
     await audit({
       tenantId,
       actorId: ctx.userId,

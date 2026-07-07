@@ -15,8 +15,10 @@ import {
   PDFRawStream,
   PDFString,
 } from 'pdf-lib'
+import { EINVOICE_FORMATS, FORMAT_LABELS, type DocFormat } from '@/lib/docFormat'
 
-export type DocFormat = 'ZUGFERD' | 'XRECHNUNG_CII' | 'XRECHNUNG_UBL' | 'PDF' | 'OTHER'
+export type { DocFormat }
+export { EINVOICE_FORMATS, FORMAT_LABELS }
 
 export type InvoiceLine = {
   name: string
@@ -235,12 +237,4 @@ export async function analyzeInvoiceFile(
     return { format: 'PDF', xml: null, data: null, validation: null }
   }
   return { format: 'OTHER', xml: null, data: null, validation: null }
-}
-
-export const FORMAT_LABELS: Record<DocFormat, string> = {
-  ZUGFERD: 'ZUGFeRD / Factur-X',
-  XRECHNUNG_CII: 'XRechnung (CII)',
-  XRECHNUNG_UBL: 'XRechnung (UBL)',
-  PDF: 'PDF (ohne strukturierte Daten)',
-  OTHER: 'Unbekanntes Format',
 }

@@ -53,7 +53,7 @@ export async function GET(req: NextRequest) {
         csvField(i.vendor),
         csvField(i.invoiceNumber),
         i.invoiceDate ? i.invoiceDate.toISOString().slice(0, 10) : '',
-        i.dueDate ? i.dueDate.toISOString().slice(0, 10) : '',
+        i.directDebitByVendor ? 'wird abgebucht' : i.dueDate ? i.dueDate.toISOString().slice(0, 10) : '',
         num(i.amountNet),
         num(i.amountTax),
         num(i.amountGross),

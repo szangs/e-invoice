@@ -35,6 +35,7 @@ const fieldsSchema = z.object({
   // EXTENSION/RESTORE sind serverseitig gesetzte Herkünfte, nicht spoofbar)
   source: z.enum(['UPLOAD', 'SCAN']).default('UPLOAD'),
   aiAssisted: z.string().optional(),
+  directDebitByVendor: z.string().optional(),
 })
 
 function parseAmount(v?: string): number | null {
@@ -125,6 +126,7 @@ export async function POST(req: NextRequest) {
         duplicateOfId,
         source: fields.source,
         aiAssisted: fields.aiAssisted === '1',
+        directDebitByVendor: fields.directDebitByVendor === '1',
         docFormat: analysis?.format ?? null,
         xmlData: analysis?.xml ?? null,
         validationOk: analysis?.validation?.valid ?? null,

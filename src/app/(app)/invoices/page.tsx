@@ -82,7 +82,7 @@ export default async function InvoicesPage({
         <a className="btn-secondary" href={exportUrl}>CSV-Export</a>
         {!showTrash && (
           <>
-            <Link className="btn-primary" href="/invoices/new">Elektronische Rechnung hinzufügen</Link>
+            <Link className="btn-primary" href="/invoices/new">Rechnung hinzufügen</Link>
             <Link className="btn-secondary" href="/invoices/new/scan">Papierrechnung scannen</Link>
           </>
         )}
@@ -132,7 +132,11 @@ export default async function InvoicesPage({
                 </td>
                 <td className="dp-td font-mono text-xs">{i.invoiceNumber ?? '—'}</td>
                 <td className="dp-td text-xs">{i.invoiceDate ? format(i.invoiceDate, 'dd.MM.yyyy', { locale: de }) : '—'}</td>
-                <td className="dp-td text-xs">{i.dueDate ? format(i.dueDate, 'dd.MM.yyyy', { locale: de }) : '—'}</td>
+                <td className="dp-td text-xs">
+                  {i.directDebitByVendor
+                    ? <span className="text-gray-500" title="Lieferant bucht per Lastschrift/Abbuchung selbst ab">wird abgebucht</span>
+                    : i.dueDate ? format(i.dueDate, 'dd.MM.yyyy', { locale: de }) : '—'}
+                </td>
                 <td className="dp-td whitespace-nowrap text-xs" title="Eingang in E-Invoice">
                   {format(i.createdAt, 'dd.MM.yyyy HH:mm', { locale: de })}
                 </td>

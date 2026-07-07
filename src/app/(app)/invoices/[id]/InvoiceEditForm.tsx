@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { FileLink } from '@/components/crypto/FileLink'
+import { EINVOICE_FORMATS } from '@/lib/docFormat'
 import type { InvoiceDTO } from '@/lib/invoices'
 
 const AI_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp']
@@ -42,7 +43,14 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
   })
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
-  const canUseAi = invoice.hasFile && !invoice.encrypted && AI_IMAGE_MIMES.includes(invoice.mimeType ?? '')
+  // KI-Erkennung anbieten bei: Fotos/Scans (Bild) ODER "nackter" PDF (kein
+  // eingebettetes E-Rechnungs-XML) — NICHT bei ZUGFeRD/XRechnung, die haben
+  // die Daten schon strukturiert. Nackte PDFs werden serverseitig vor der
+  // KI-Anfrage gerastert (lib/pdfRaster.ts).
+  const isEInvoice = (EINVOICE_FORMATS as string[]).includes(invoice.docFormat ?? '')
+  const isImage = AI_IMAGE_MIMES.includes(invoice.mimeType ?? '')
+  const isPlainPdf = invoice.mimeType === 'application/pdf' && !isEInvoice
+  const canUseAi = invoice.hasFile && !invoice.encrypted && (isImage || isPlainPdf)
   const [aiAvailable, setAiAvailable] = useState(false)
   const [aiReason, setAiReason] = useState('')
   const [aiBusy, setAiBusy] = useState(false)
@@ -81,6 +89,7 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
         vendor: string | null; invoiceNumber: string | null; invoiceDate: string | null
         dueDate: string | null; amountNet: number | null; amountTax: number | null
         amountGross: number | null; currency: string | null; tags: string | null
+        directDebitByVendor: boolean | null
         uncertainFields: string[]; warnings: string[]
       }
       setF((p) => ({
@@ -94,6 +103,7 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
         amountGross: d.amountGross !== null ? toInput(d.amountGross) : p.amountGross,
         currency: d.currency && CURRENCIES.includes(d.currency) ? d.currency : p.currency,
         tags: d.tags ?? p.tags,
+        directDebitByVendor: d.directDebitByVendor ?? p.directDebitByVendor,
       }))
       setAiFlags(d.uncertainFields ?? [])
       setAiWarnings(d.warnings ?? [])
@@ -258,7 +268,16 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
         <Field label="Lieferant *" value={f.vendor} onChange={(v) => set('vendor', v)} required warn={aiFlags.includes('vendor')} />
         <Field label="Rechnungsnummer" value={f.invoiceNumber} onChange={(v) => set('invoiceNumber', v)} warn={aiFlags.includes('invoiceNumber')} />
         <Field label="Rechnungsdatum" type="date" value={f.invoiceDate} onChange={(v) => set('invoiceDate', v)} warn={aiFlags.includes('invoiceDate')} />
-        <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)} warn={aiFlags.includes('dueDate')} />
+        {f.directDebitByVendor ? (
+          <div>
+            <label className="dp-label">Fälligkeit</label>
+            <p className="dp-input mt-1 flex items-center text-gray-500" title="Lieferant bucht per Lastschrift/Abbuchung selbst ab">
+              wird abgebucht
+            </p>
+          </div>
+        ) : (
+          <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)} warn={aiFlags.includes('dueDate')} />
+        )}
         <Field label="Netto" value={f.amountNet} onChange={(v) => set('amountNet', v)} warn={aiFlags.includes('amountNet')} />
         <Field label="Steuer" value={f.amountTax} onChange={(v) => set('amountTax', v)} warn={aiFlags.includes('amountTax')} />
         <Field label="Brutto" value={f.amountGross} onChange={(v) => set('amountGross', v)} warn={aiFlags.includes('amountGross')} />
@@ -282,6 +301,9 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
         <input type="checkbox" checked={f.directDebitByVendor}
           onChange={(e) => setF((p) => ({ ...p, directDebitByVendor: e.target.checked }))} />
         Lieferant bucht per Lastschrift/Abbuchung selbst ab (statt Überweisung)
+        {aiFlags.includes('directDebitByVendor') && (
+          <span className="text-[var(--warn-strong)]" title="KI ist sich hier unsicher — bitte prüfen">⚠</span>
+        )}
       </label>
       <div>
         <label className="dp-label">Notizen</label>
@@ -328,8 +350,9 @@ function CheckRow({
   const checked = at !== null
   return (
     <label className="flex flex-wrap items-center gap-2 text-sm text-gray-700">
-      <input type="checkbox" checked={checked} disabled={busy}
+      <input type="checkbox" checked={checked} disabled={busy} className="accent-green-600"
         onChange={(e) => onToggle(e.target.checked)} />
+      {checked && <span className="text-green-600">✓</span>}
       {label}
       {checked && (
         <span className="text-[11px] text-gray-400">

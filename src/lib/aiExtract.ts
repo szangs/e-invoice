@@ -17,6 +17,10 @@ export type AiExtractedInvoice = {
   amountGross: number | null
   currency: string | null
   tags: string | null
+  // Erkannt aus Formulierungen wie "wir buchen den Betrag per Lastschrift/
+  // SEPA-Lastschrift/Einzugsermächtigung von Ihrem Konto ab" — true nur bei
+  // klarem Hinweis, sonst null (nicht raten).
+  directDebitByVendor: boolean | null
   // Qualitätsabschätzung: Feldnamen, die besonders geprüft werden sollten —
   // teils von der KI selbst als unsicher gemeldet, teils durch eigene
   // Plausibilitätsprüfung (Beträge, Datum) ermittelt — plus menschenlesbare
@@ -27,7 +31,7 @@ export type AiExtractedInvoice = {
 
 const KNOWN_FIELDS = [
   'vendor', 'invoiceNumber', 'invoiceDate', 'dueDate',
-  'amountNet', 'amountTax', 'amountGross', 'currency', 'tags',
+  'amountNet', 'amountTax', 'amountGross', 'currency', 'tags', 'directDebitByVendor',
 ]
 
 function num(v: unknown): number | null {
@@ -40,6 +44,15 @@ function str(v: unknown): string | null {
   if (v === null || v === undefined) return null
   const s = String(v).trim()
   return s === '' || s.toLowerCase() === 'null' ? null : s
+}
+
+function bool(v: unknown): boolean | null {
+  if (typeof v === 'boolean') return v
+  if (v === null || v === undefined) return null
+  const s = String(v).trim().toLowerCase()
+  if (s === 'true') return true
+  if (s === 'false') return false
+  return null
 }
 
 /** Prüft ohne Geheimnisse preiszugeben, ob systemweit ein KI-Anbieter konfiguriert ist. */
@@ -86,9 +99,13 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
                   'amountTax (Zahl), amountGross (Zahl), currency (ISO-Code, z. B. EUR), ' +
                   'tags (1 bis 3 kurze, kommagetrennte Kategorie-Schlagworte passend zur Rechnung, ' +
                   'z. B. "Büromaterial", "Reisekosten", "Software", "Miete", "Werbung" — als EIN ' +
-                  'String mit Kommas, kein Array), unsureFields (Array mit den Schlüsseln oben, bei ' +
-                  'denen du dir UNSICHER bist, z. B. wegen Unschärfe, Abschneidung, schlechter ' +
-                  'Lesbarkeit oder Mehrdeutigkeit — leeres Array wenn alles klar lesbar war). ' +
+                  'String mit Kommas, kein Array), directDebitByVendor (true NUR wenn im Text klar ' +
+                  'steht, dass der Rechnungssteller den Betrag selbst per Lastschrift/SEPA-Lastschrift/' +
+                  'Einzugsermächtigung/Bankeinzug vom Konto des Kunden abbucht, sonst false — bei ' +
+                  'reiner Angabe von IBAN/Überweisungsdaten ohne Lastschrift-Hinweis: false), ' +
+                  'unsureFields (Array mit den Schlüsseln oben, bei denen du dir UNSICHER bist, ' +
+                  'z. B. wegen Unschärfe, Abschneidung, schlechter Lesbarkeit oder Mehrdeutigkeit — ' +
+                  'leeres Array wenn alles klar lesbar war). ' +
                   'Unbekannte Felder als null. Keine weiteren Felder, kein Zusatztext.',
               },
               { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
@@ -138,6 +155,7 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
   const amountGross = num(parsed.amountGross)
   const currency = str(parsed.currency)
   const tags = str(parsed.tags)
+  const directDebitByVendor = bool(parsed.directDebitByVendor)
 
   // Von der KI selbst gemeldete Unsicherheiten (nur bekannte Feldnamen übernehmen)
   const aiUnsure: string[] = Array.isArray(parsed.unsureFields)
@@ -189,6 +207,7 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
     amountGross,
     currency,
     tags,
+    directDebitByVendor,
     uncertainFields: Array.from(flagged),
     warnings,
   }

@@ -45,7 +45,7 @@ export default async function DashboardPage() {
         <div className="flex items-center justify-between px-6 pb-2 pt-5">
           <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Zuletzt erfasst</h2>
           <div className="flex gap-2">
-            <Link href="/invoices/new" className="btn-primary">Elektronische Rechnung hinzufügen</Link>
+            <Link href="/invoices/new" className="btn-primary">Rechnung hinzufügen</Link>
             <Link href="/invoices/new/scan" className="btn-secondary">Papierrechnung scannen</Link>
           </div>
         </div>
@@ -75,7 +75,7 @@ export default async function DashboardPage() {
             ))}
             {recent.length === 0 && (
               <tr><td className="dp-td py-8 text-center text-gray-400" colSpan={5}>
-                Noch keine Rechnungen — starten Sie oben mit „Elektronische Rechnung hinzufügen“ oder „Papierrechnung scannen“ (RE02).
+                Noch keine Rechnungen — starten Sie oben mit „Rechnung hinzufügen“ oder „Papierrechnung scannen“ (RE02).
               </td></tr>
             )}
           </tbody>

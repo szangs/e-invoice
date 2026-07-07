@@ -45,13 +45,16 @@ export function CheckBadges({
   }
 
   const base = 'flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold'
-  const on = 'bg-[var(--accent-bg)] text-[var(--accent)]'
+  const on = 'bg-green-50 text-green-600'
   const off = 'bg-[var(--surface-muted)] text-gray-400'
+  // Erledigt = grünes Häkchen, offen = Buchstabe (damit man auch im offenen
+  // Zustand noch sieht, welcher Schritt gemeint ist).
+  const label = (at: string | null, letter: string) => (at ? '✓' : letter)
 
   return (
     <div className="flex items-center gap-1">
-      <span className={`${base} ${electronicAt ? on : off}`} title={`Elektronische Vorprüfung — ${fmt(electronicAt, electronicBy)}`}>E</span>
-      <span className={`${base} ${formalAt ? on : off}`} title={`Formal richtig — ${fmt(formalAt, formalBy)}`}>F</span>
+      <span className={`${base} ${electronicAt ? on : off}`} title={`Elektronische Vorprüfung — ${fmt(electronicAt, electronicBy)}`}>{label(electronicAt, 'E')}</span>
+      <span className={`${base} ${formalAt ? on : off}`} title={`Formal richtig — ${fmt(formalAt, formalBy)}`}>{label(formalAt, 'F')}</span>
       <button
         type="button"
         disabled={busy}
@@ -59,7 +62,7 @@ export function CheckBadges({
         className={`${base} ${substantiveAt ? on : off} cursor-pointer hover:opacity-75`}
         title={`Sachlich richtig — ${fmt(substantiveAt, substantiveBy)} (klicken zum Umschalten)`}
       >
-        S
+        {label(substantiveAt, 'S')}
       </button>
       <button
         type="button"
@@ -68,7 +71,7 @@ export function CheckBadges({
         className={`${base} ${accountingAt ? on : off} cursor-pointer hover:opacity-75`}
         title={`An Buchhaltung übergeben — ${fmt(accountingAt, accountingBy)} (klicken zum Umschalten)`}
       >
-        B
+        {label(accountingAt, 'B')}
       </button>
     </div>
   )
