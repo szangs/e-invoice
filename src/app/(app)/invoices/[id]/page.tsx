@@ -6,6 +6,7 @@ import { parseInvoiceXml, validateData, type DocFormat } from '@/lib/erechnung'
 import { toDTO } from '@/lib/invoices'
 import { ERechnungView } from './ERechnungView'
 import { InvoiceEditForm } from './InvoiceEditForm'
+import { InvoicePdfPreview } from './InvoicePdfPreview'
 
 export const dynamic = 'force-dynamic'
 
@@ -24,6 +25,13 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
 
   return (
     <div className="space-y-6">
+      {format === 'ZUGFERD' && invoice.fileName && (
+        <InvoicePdfPreview
+          invoiceId={invoice.id}
+          encrypted={invoice.encrypted}
+          origMime={invoice.encOrigMime}
+        />
+      )}
       {format && format !== 'OTHER' && (format !== 'PDF' || invoice.validationOk !== null) && (
         <ERechnungView
           format={format}

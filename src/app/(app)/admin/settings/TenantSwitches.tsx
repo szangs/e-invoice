@@ -11,6 +11,9 @@ type Switches = {
   mailAllowedDomains: string
   backupFrequency: string
   backupEmail: string
+  reportEnabled: boolean
+  reportFrequency: string
+  reportEmail: string
 }
 
 const FREQUENCIES = [
@@ -26,6 +29,7 @@ export function TenantSwitches({ initial }: { initial: Switches }) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [backupMsg, setBackupMsg] = useState('')
+  const [reportMsg, setReportMsg] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
   async function save() {
@@ -48,6 +52,15 @@ export function TenantSwitches({ initial }: { initial: Switches }) {
     const data = await res.json().catch(() => ({}))
     setBusy(false)
     setBackupMsg(res.ok ? data.message : data.error ?? 'Versand fehlgeschlagen.')
+  }
+
+  async function sendReportNow() {
+    setBusy(true)
+    setReportMsg('')
+    const res = await fetch('/api/admin/report', { method: 'POST' })
+    const data = await res.json().catch(() => ({}))
+    setBusy(false)
+    setReportMsg(res.ok ? data.message : data.error ?? 'Versand fehlgeschlagen.')
   }
 
   async function restore() {
@@ -147,6 +160,47 @@ export function TenantSwitches({ initial }: { initial: Switches }) {
           </div>
         </div>
         {backupMsg && <p className="text-sm text-gray-700">{backupMsg}</p>}
+      </section>
+
+      <section className="dp-card space-y-3">
+        <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Revisionssicherer Bericht</h2>
+        <p className="text-[11px] text-gray-400">
+          Schlankes Protokoll (CSV) mit Ihrer Rechnungsliste und den Beleg-Prüfsummen — zur
+          eigenen Ablage/Dokumentation, unabhängig von E-Invoice. Anders als die Sicherung oben
+          kein voller Datenexport, sondern nur die Liste + Hashes, verkettet mit dem letzten Bericht.
+        </p>
+        <label className="flex items-start gap-2 text-sm text-gray-700">
+          <input type="checkbox" className="mt-0.5" checked={s.reportEnabled}
+            onChange={(e) => setS((p) => ({ ...p, reportEnabled: e.target.checked }))} />
+          <span>Regelmäßiger Bericht aktiv — wird automatisch per E-Mail zugestellt</span>
+        </label>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="dp-label">Häufigkeit</label>
+            <select className="dp-input mt-1" value={s.reportFrequency}
+              onChange={(e) => setS((p) => ({ ...p, reportFrequency: e.target.value }))}>
+              {FREQUENCIES.map((f) => (
+                <option key={f.value} value={f.value}>{f.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="dp-label">Ziel-E-Mail</label>
+            <input type="email" className="dp-input mt-1" value={s.reportEmail}
+              placeholder="z. B. ablage@meinefirma.de"
+              onChange={(e) => setS((p) => ({ ...p, reportEmail: e.target.value }))} />
+          </div>
+        </div>
+        <p className="text-[11px] text-gray-400">
+          Einstellungen mit „Speichern" oben sichern.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <a className="btn-secondary" href="/api/admin/report">Bericht herunterladen</a>
+          <button className="btn-secondary" onClick={sendReportNow} disabled={busy}>
+            Jetzt per E-Mail senden
+          </button>
+        </div>
+        {reportMsg && <p className="text-sm text-gray-700">{reportMsg}</p>}
       </section>
     </>
   )

@@ -68,7 +68,8 @@ export default async function InvoicesPage({
         </label>
         <button className="btn-secondary" type="submit">Filtern</button>
         <a className="btn-secondary" href={exportUrl}>CSV-Export</a>
-        <Link className="btn-primary" href="/invoices/new">Rechnung erfassen</Link>
+        <Link className="btn-primary" href="/invoices/new">Elektronische Rechnung hinzufügen</Link>
+        <Link className="btn-secondary" href="/invoices/new/scan">Papierrechnung scannen</Link>
       </form>
 
       <div className="dp-card overflow-x-auto p-0">

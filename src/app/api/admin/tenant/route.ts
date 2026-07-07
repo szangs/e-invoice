@@ -15,6 +15,9 @@ const schema = z.object({
   mailAllowedDomains: z.string().max(500).optional(),
   backupFrequency: z.enum(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY']).optional(),
   backupEmail: z.string().email().optional().or(z.literal('')),
+  reportEnabled: z.boolean().optional(),
+  reportFrequency: z.enum(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY']).optional(),
+  reportEmail: z.string().email().optional().or(z.literal('')),
 })
 
 export async function PATCH(req: NextRequest) {
@@ -24,7 +27,11 @@ export async function PATCH(req: NextRequest) {
     const data = schema.parse(await req.json())
     await prisma.tenant.update({
       where: { id: tenantId },
-      data: { ...data, backupEmail: data.backupEmail === '' ? null : data.backupEmail },
+      data: {
+        ...data,
+        backupEmail: data.backupEmail === '' ? null : data.backupEmail,
+        reportEmail: data.reportEmail === '' ? null : data.reportEmail,
+      },
     })
     await audit({
       tenantId,

@@ -1,6 +1,8 @@
 // E-Rechnungs-Ansicht (W17): Format-Badge, Prüfergebnis nach gesetzlichen
 // Kernvorgaben und Visualisierung der strukturierten Rechnungsdaten inkl.
-// Positionen — das "Rechnungsbild" für XML-Rechnungen.
+// Positionen. Für reine XML-Rechnungen (XRechnung) ist das zugleich das
+// einzige "Rechnungsbild"; bei ZUGFeRD/PDF wird zusätzlich das echte PDF
+// über InvoicePdfPreview angezeigt.
 import type { DocFormat, ParsedInvoiceData, Validation } from '@/lib/erechnung'
 import { FORMAT_LABELS } from '@/lib/erechnung'
 import { formatAmount } from '@/lib/invoices'

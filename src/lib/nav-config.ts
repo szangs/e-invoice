@@ -17,7 +17,9 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: '/invoices', label: 'Rechnungsliste', code: 'RE01' },
       // RE02 (Rechnung erfassen) bewusst ohne Menüpunkt — erreichbar über die
-      // Knöpfe in Rechnungsliste und Dashboard
+      // Knöpfe in Rechnungsliste und Dashboard: RE02a "Elektronische Rechnung
+      // hinzufügen" (/invoices/new) und RE02b "Papierrechnung scannen"
+      // (/invoices/new/scan)
       { href: '/mailin', label: 'E-Mail-Eingang', code: 'RE03' },
     ],
   },

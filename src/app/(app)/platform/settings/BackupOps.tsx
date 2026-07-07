@@ -58,7 +58,7 @@ export function BackupOps() {
       <div className="flex flex-wrap items-center gap-2">
         <a className="btn-secondary" href="/api/platform/backup">System-Backup herunterladen</a>
         <button className="btn-primary" onClick={runNow} disabled={busy}>
-          Alle aktivierten Sicherungen jetzt ausführen
+          Alle aktivierten Sicherungen &amp; Berichte jetzt ausführen
         </button>
       </div>
       {log.length > 0 && (

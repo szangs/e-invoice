@@ -1,9 +1,11 @@
 // Betreiber-Sicherung (§17): Mandanten-/System-Download + "Fällige jetzt ausführen"
+// (führt bei POST auch fällige revisionssichere Berichte mit aus, siehe lib/report.ts)
 import { NextRequest, NextResponse } from 'next/server'
 import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
 import { buildSystemBackup, buildTenantBackup, runDueBackups } from '@/lib/backup'
 import { getContext } from '@/lib/context'
+import { runDueReports } from '@/lib/report'
 
 export const dynamic = 'force-dynamic'
 
@@ -31,12 +33,12 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/** Führt alle aktivierten Sicherungen sofort aus (unabhängig von der Fälligkeit). */
+/** Führt alle aktivierten Sicherungen UND Berichte sofort aus (unabhängig von der Fälligkeit). */
 export async function POST() {
   try {
     await getContext({ operator: true })
-    const log = await runDueBackups(true)
-    return NextResponse.json({ ok: true, log })
+    const [backupLog, reportLog] = await Promise.all([runDueBackups(true), runDueReports(true)])
+    return NextResponse.json({ ok: true, log: [...backupLog, ...reportLog] })
   } catch (e) {
     return jsonError(e)
   }

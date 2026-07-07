@@ -1,6 +1,7 @@
-// Sicherungs-Zeitplan (§17): eigener Prozess, prüft stündlich, welche
-// Mandanten-/System-Sicherungen fällig sind (Tage/Wochen/Monate/Jahre)
-// und stellt sie zu (E-Mail und/oder Sicherungsziel-Verzeichnis).
+// Sicherungs- und Berichts-Zeitplan (§17 + revisionssicherer Hash-Bericht):
+// eigener Prozess, prüft stündlich, welche Mandanten-/System-Sicherungen UND
+// welche Hash-Berichte fällig sind (Tage/Wochen/Monate/Jahre), und stellt sie
+// zu (E-Mail und/oder Sicherungsziel-Verzeichnis).
 // Start:  npm run backup   (Produktion: als pm2-Prozess)
 import { readFileSync } from 'fs'
 
@@ -15,20 +16,28 @@ try {
 
 /* eslint-disable import/first */
 import { runDueBackups } from '../src/lib/backup'
+import { runDueReports } from '../src/lib/report'
 
 const INTERVAL_MS = 60 * 60 * 1000 // stündliche Fälligkeitsprüfung
 
 async function tick() {
+  const stamp = new Date().toISOString()
   try {
     const log = await runDueBackups(false)
-    const stamp = new Date().toISOString()
     if (log.length === 0) console.log(`[${stamp}] Keine Sicherung fällig.`)
     else log.forEach((l) => console.log(`[${stamp}] ${l}`))
   } catch (e) {
     console.error('Sicherungslauf fehlgeschlagen:', e)
   }
+  try {
+    const log = await runDueReports(false)
+    if (log.length === 0) console.log(`[${stamp}] Kein Bericht fällig.`)
+    else log.forEach((l) => console.log(`[${stamp}] ${l}`))
+  } catch (e) {
+    console.error('Berichtslauf fehlgeschlagen:', e)
+  }
 }
 
-console.log('E-Invoice Sicherungs-Zeitplan läuft (Prüfung stündlich).')
+console.log('E-Invoice Sicherungs- und Berichts-Zeitplan läuft (Prüfung stündlich).')
 tick()
 setInterval(tick, INTERVAL_MS)

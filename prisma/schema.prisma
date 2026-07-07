@@ -62,6 +62,15 @@ model Tenant {
   backupFrequency String? // DAILY | WEEKLY | MONTHLY | YEARLY
   backupEmail     String?
   lastBackupAt    DateTime?
+  // Revisionssicherer Hash-Bericht (Whitepaper-Preismodell Punkt 4): eigener,
+  // schlanker Lauf — Rechnungsliste + Beleg-Hashes an eine feste Kunden-Adresse,
+  // unabhängig von Sicherung/Restore. lastReportHash verkettet die Berichte
+  // (wie die Audit-Hash-Kette, §18) für Fälschungssicherheit über die Zeit.
+  reportEnabled   Boolean   @default(false)
+  reportFrequency String? // DAILY | WEEKLY | MONTHLY | YEARLY
+  reportEmail     String?
+  lastReportAt    DateTime?
+  lastReportHash  String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
   users            User[]

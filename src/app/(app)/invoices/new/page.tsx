@@ -1,8 +1,12 @@
 'use client'
 
-// Rechnung erfassen: Upload (PDF/Bild) + manuelle Felderfassung.
+// Elektronische Rechnung hinzufügen (RE02a): Upload einer bereits vorhandenen
+// Datei (PDF, XML, Foto) + manuelle Felderfassung. E-Rechnungen (ZUGFeRD/
+// XRechnung) werden automatisch erkannt. Für Papierbelege ohne Datei siehe
+// RE02b (Papierrechnung scannen, /invoices/new/scan).
 // Ist die Beleg-Verschlüsselung aktiv, wird die Datei VOR dem Upload im Browser
 // verschlüsselt (Zero-Knowledge — Server sieht nur Chiffrat).
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { encryptBytes } from '@/lib/clientCrypto'
@@ -74,7 +78,14 @@ export default function NewInvoicePage() {
   }
 
   return (
-    <form onSubmit={submit} className="dp-card max-w-2xl space-y-4">
+    <div className="max-w-2xl space-y-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-semibold text-gray-900">Elektronische Rechnung hinzufügen</h1>
+        <Link href="/invoices/new/scan" className="text-xs text-[var(--accent)] underline">
+          Stattdessen Papierrechnung scannen
+        </Link>
+      </div>
+    <form onSubmit={submit} className="dp-card space-y-4">
       <div>
         <label className="dp-label">Beleg (PDF, XML, PNG, JPG, WebP — max. 10 MB)</label>
         <input
@@ -127,6 +138,7 @@ export default function NewInvoicePage() {
         <button type="button" className="btn-secondary" onClick={() => router.push('/invoices')}>Abbrechen</button>
       </div>
     </form>
+    </div>
   )
 }
 

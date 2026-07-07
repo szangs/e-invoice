@@ -247,7 +247,8 @@ export async function restoreSystemBackup(payload: any): Promise<string> {
 }
 
 // ── Automatik: fällige Sicherungen ausführen (Scheduler + "Jetzt ausführen") ──
-function isDue(last: Date | null, freq: string | null): boolean {
+// Auch von report.ts genutzt (gleiche Fälligkeits-Logik für den Hash-Bericht).
+export function isDue(last: Date | null, freq: string | null): boolean {
   if (!freq || !(freq in FREQUENCY_MS)) return false
   if (!last) return true
   return Date.now() - last.getTime() >= FREQUENCY_MS[freq as Frequency]
