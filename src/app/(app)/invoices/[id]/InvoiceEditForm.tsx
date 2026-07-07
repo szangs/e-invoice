@@ -1,9 +1,12 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { FileLink } from '@/components/crypto/FileLink'
 import type { InvoiceDTO } from '@/lib/invoices'
+
+const AI_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp']
+const CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP']
 
 const STATUS_OPTIONS = [
   { value: 'NEW', label: 'Neu' },
@@ -38,8 +41,60 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
   })
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+  const canUseAi = invoice.hasFile && !invoice.encrypted && AI_IMAGE_MIMES.includes(invoice.mimeType ?? '')
+  const [aiAvailable, setAiAvailable] = useState(false)
+  const [aiReason, setAiReason] = useState('')
+  const [aiBusy, setAiBusy] = useState(false)
+  const [aiError, setAiError] = useState('')
+
+  useEffect(() => {
+    if (!canUseAi) return
+    fetch(`/api/ai/config?invoiceId=${invoice.id}`)
+      .then((r) => r.json())
+      .then((d) => {
+        setAiAvailable(Boolean(d.available))
+        setAiReason(d.reason ?? '')
+      })
+      .catch(() => undefined)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canUseAi, invoice.id])
 
   const set = (key: keyof typeof f, value: string) => setF((p) => ({ ...p, [key]: value }))
+
+  async function fillWithAi() {
+    setAiBusy(true)
+    setAiError('')
+    try {
+      const res = await fetch(`/api/invoices/${invoice.id}/ai-extract`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) {
+        setAiError(data.error ?? 'KI-Erkennung fehlgeschlagen.')
+        return
+      }
+      const d = data.data as {
+        vendor: string | null; invoiceNumber: string | null; invoiceDate: string | null
+        dueDate: string | null; amountNet: number | null; amountTax: number | null
+        amountGross: number | null; currency: string | null; tags: string | null
+      }
+      setF((p) => ({
+        ...p,
+        vendor: d.vendor ?? p.vendor,
+        invoiceNumber: d.invoiceNumber ?? p.invoiceNumber,
+        invoiceDate: d.invoiceDate ?? p.invoiceDate,
+        dueDate: d.dueDate ?? p.dueDate,
+        amountNet: d.amountNet !== null ? toInput(d.amountNet) : p.amountNet,
+        amountTax: d.amountTax !== null ? toInput(d.amountTax) : p.amountTax,
+        amountGross: d.amountGross !== null ? toInput(d.amountGross) : p.amountGross,
+        currency: d.currency && CURRENCIES.includes(d.currency) ? d.currency : p.currency,
+        tags: d.tags ?? p.tags,
+      }))
+      setMsg('KI-Vorschlag übernommen — bitte prüfen und speichern.')
+    } catch {
+      setAiError('KI-Erkennung fehlgeschlagen.')
+    } finally {
+      setAiBusy(false)
+    }
+  }
 
   async function save(e: React.FormEvent) {
     e.preventDefault()
@@ -120,6 +175,21 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
           />
         </p>
       )}
+      {canUseAi && aiAvailable && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] px-3 py-2">
+          <button type="button" className="btn-secondary" onClick={fillWithAi} disabled={aiBusy}>
+            {aiBusy ? 'KI liest die Rechnung …' : '✨ Mit KI erkennen'}
+          </button>
+          <p className="text-[11px] text-gray-500">
+            Liest den Beleg nachträglich per KI aus und befüllt die Felder unten (auch
+            Verschlagwortung) — bitte prüfen und speichern.
+          </p>
+        </div>
+      )}
+      {canUseAi && !aiAvailable && aiReason && (
+        <p className="text-[11px] text-gray-400">KI-Erkennung nicht verfügbar: {aiReason}</p>
+      )}
+      {aiError && <p className="text-sm text-[var(--danger)]">{aiError}</p>}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Lieferant *" value={f.vendor} onChange={(v) => set('vendor', v)} required />
         <Field label="Rechnungsnummer" value={f.invoiceNumber} onChange={(v) => set('invoiceNumber', v)} />

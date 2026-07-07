@@ -16,6 +16,7 @@ export type AiExtractedInvoice = {
   amountTax: number | null
   amountGross: number | null
   currency: string | null
+  tags: string | null
 }
 
 function num(v: unknown): number | null {
@@ -71,8 +72,11 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
                   'Extrahiere aus dieser Rechnung ein JSON-Objekt mit genau diesen Schlüsseln: ' +
                   'vendor (Name des Rechnungsstellers), invoiceNumber, invoiceDate (ISO yyyy-mm-dd), ' +
                   'dueDate (ISO yyyy-mm-dd oder null), amountNet (Zahl, Punkt als Dezimaltrennzeichen), ' +
-                  'amountTax (Zahl), amountGross (Zahl), currency (ISO-Code, z. B. EUR). ' +
-                  'Unbekannte Felder als null. Keine weiteren Felder, kein Zusatztext.',
+                  'amountTax (Zahl), amountGross (Zahl), currency (ISO-Code, z. B. EUR), ' +
+                  'tags (1 bis 3 kurze, kommagetrennte Kategorie-Schlagworte passend zur Rechnung, ' +
+                  'z. B. "Büromaterial", "Reisekosten", "Software", "Miete", "Werbung" — als EIN ' +
+                  'String mit Kommas, kein Array). Unbekannte Felder als null. Keine weiteren Felder, ' +
+                  'kein Zusatztext.',
               },
               { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
             ],
@@ -105,5 +109,6 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
     amountTax: num(parsed.amountTax),
     amountGross: num(parsed.amountGross),
     currency: str(parsed.currency),
+    tags: str(parsed.tags),
   }
 }

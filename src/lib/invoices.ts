@@ -25,6 +25,7 @@ export type InvoiceDTO = {
   hasFile: boolean
   encrypted: boolean
   origMime: string | null
+  mimeType: string | null
   duplicateOfId: string | null
   createdAt: string
 }
@@ -47,6 +48,7 @@ export function toDTO(inv: Invoice): InvoiceDTO {
     hasFile: Boolean(inv.fileName),
     encrypted: inv.encrypted,
     origMime: inv.encOrigMime,
+    mimeType: inv.mimeType,
     duplicateOfId: inv.duplicateOfId,
     createdAt: inv.createdAt.toISOString(),
   }

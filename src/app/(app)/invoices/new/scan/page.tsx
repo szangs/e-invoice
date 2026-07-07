@@ -34,10 +34,16 @@ const PAGE_W = 595.28 // A4 in pt
 const PAGE_H = 841.89
 const MARGIN = 20
 
-/** Fasst die aufgenommenen Seiten zu einer einzigen PDF-Datei zusammen. */
+/** Fasst die aufgenommenen Seiten zu einer einzigen Beleg-Datei zusammen. */
 async function buildInvoiceFile(pages: ScanPage[]): Promise<File> {
   if (pages.length === 1 && pages[0].kind === 'pdf') {
     return new File([pages[0].file], 'papierrechnung-scan.pdf', { type: 'application/pdf' })
+  }
+  if (pages.length === 1 && pages[0].kind === 'image') {
+    // Einzelfoto: Originalbild unverändert übernehmen (keine unnötige PDF-Verpackung).
+    // Wichtig auch dafür, dass eine spätere KI-Erkennung auf dem gespeicherten
+    // Beleg direkt möglich ist (Bild statt PDF).
+    return pages[0].file
   }
   const { PDFDocument } = await import('pdf-lib')
   const out = await PDFDocument.create()
@@ -158,7 +164,7 @@ export default function ScanInvoicePage() {
       const d = data.data as {
         vendor: string | null; invoiceNumber: string | null; invoiceDate: string | null
         dueDate: string | null; amountNet: number | null; amountTax: number | null
-        amountGross: number | null; currency: string | null
+        amountGross: number | null; currency: string | null; tags: string | null
       }
       setF((p) => ({
         ...p,
@@ -170,6 +176,7 @@ export default function ScanInvoicePage() {
         amountTax: d.amountTax !== null ? toInput(d.amountTax) : p.amountTax,
         amountGross: d.amountGross !== null ? toInput(d.amountGross) : p.amountGross,
         currency: d.currency && CURRENCIES.includes(d.currency) ? d.currency : p.currency,
+        tags: d.tags ?? p.tags,
       }))
     } catch {
       setAiError('KI-Erkennung fehlgeschlagen.')
@@ -311,8 +318,8 @@ export default function ScanInvoicePage() {
               {aiBusy ? 'KI liest die Rechnung …' : '✨ Mit KI ausfüllen'}
             </button>
             <p className="text-[11px] text-gray-500">
-              Liest die erste fotografierte Seite und befüllt die Felder unten — bitte prüfen und
-              korrigieren.
+              Liest die erste fotografierte Seite und befüllt die Felder unten inkl. Verschlagwortung
+              (Tags) — bitte prüfen und korrigieren.
             </p>
           </div>
         ) : (

@@ -1,12 +1,17 @@
 // Prüft für den aktuellen Mandanten, ob die KI-gestützte Datenerkennung
-// (gescannte Rechnungen) nutzbar ist — ohne Geheimnisse preiszugeben.
-import { NextResponse } from 'next/server'
+// nutzbar ist — ohne Geheimnisse preiszugeben. Ohne ?invoiceId=… wird der
+// Mandanten-weite Verschlüsselungs-Schalter geprüft (Vorab-Check beim Scannen,
+// es existiert noch kein Beleg). Mit ?invoiceId=… wird stattdessen der
+// Verschlüsselungs-Status DIESES Belegs geprüft (nachträgliche Erkennung auf
+// der Rechnungsdetailseite — auch bei Mandanten, die Verschlüsselung erst
+// NACH dem Hochladen dieses Belegs aktiviert haben).
+import { NextRequest, NextResponse } from 'next/server'
 import { jsonError } from '@/lib/api'
 import { isAiConfigured } from '@/lib/aiExtract'
 import { getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
     const ctx = await getContext()
     const tenantId = requireTenant(ctx)
@@ -15,7 +20,16 @@ export async function GET() {
     if (!tenant.aiAllowed) {
       return NextResponse.json({ available: false, reason: 'KI-Funktionen sind für Ihren Mandanten deaktiviert.' })
     }
-    if (tenant.encryptionEnabled) {
+    const invoiceId = req.nextUrl.searchParams.get('invoiceId')
+    let encrypted = tenant.encryptionEnabled
+    if (invoiceId) {
+      const invoice = await prisma.invoice.findFirst({
+        where: { id: invoiceId, tenantId },
+        select: { encrypted: true },
+      })
+      encrypted = invoice?.encrypted ?? true // nicht gefunden → sicherheitshalber sperren
+    }
+    if (encrypted) {
       return NextResponse.json({
         available: false,
         reason: 'Bei aktiver Beleg-Verschlüsselung nicht verfügbar (Zero-Knowledge).',
