@@ -18,7 +18,9 @@ export async function detectDuplicate(
   }
   if (or.length === 0) return null
   const original = await prisma.invoice.findFirst({
-    where: { tenantId, duplicateOfId: null, OR: or },
+    // Gelöschte Rechnungen zählen nicht als "Original" — sonst ließe sich ein
+    // absichtlich gelöschter Beleg nie erneut (regulär) erfassen.
+    where: { tenantId, duplicateOfId: null, deletedAt: null, OR: or },
     orderBy: { createdAt: 'asc' },
     select: { id: true },
   })

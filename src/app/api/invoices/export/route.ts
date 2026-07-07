@@ -28,6 +28,7 @@ export async function GET(req: NextRequest) {
     const invoices = await prisma.invoice.findMany({
       where: {
         tenantId,
+        deletedAt: null, // Papierkorb nicht im CSV-Export
         ...(status ? { status } : {}),
         ...(q
           ? {
@@ -43,11 +44,12 @@ export async function GET(req: NextRequest) {
     })
 
     const header = [
-      'Lieferant', 'Rechnungsnummer', 'Rechnungsdatum', 'Fälligkeit',
+      'Dokumenten-ID', 'Lieferant', 'Rechnungsnummer', 'Rechnungsdatum', 'Fälligkeit',
       'Netto', 'Steuer', 'Brutto', 'Währung', 'Status', 'Tags', 'Notizen',
     ].join(';')
     const rows = invoices.map((i) =>
       [
+        csvField(i.docId),
         csvField(i.vendor),
         csvField(i.invoiceNumber),
         i.invoiceDate ? i.invoiceDate.toISOString().slice(0, 10) : '',

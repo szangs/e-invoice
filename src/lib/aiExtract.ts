@@ -17,7 +17,18 @@ export type AiExtractedInvoice = {
   amountGross: number | null
   currency: string | null
   tags: string | null
+  // Qualitätsabschätzung: Feldnamen, die besonders geprüft werden sollten —
+  // teils von der KI selbst als unsicher gemeldet, teils durch eigene
+  // Plausibilitätsprüfung (Beträge, Datum) ermittelt — plus menschenlesbare
+  // Begründung(en) dazu.
+  uncertainFields: string[]
+  warnings: string[]
 }
+
+const KNOWN_FIELDS = [
+  'vendor', 'invoiceNumber', 'invoiceDate', 'dueDate',
+  'amountNet', 'amountTax', 'amountGross', 'currency', 'tags',
+]
 
 function num(v: unknown): number | null {
   if (v === null || v === undefined || v === '') return null
@@ -75,8 +86,10 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
                   'amountTax (Zahl), amountGross (Zahl), currency (ISO-Code, z. B. EUR), ' +
                   'tags (1 bis 3 kurze, kommagetrennte Kategorie-Schlagworte passend zur Rechnung, ' +
                   'z. B. "Büromaterial", "Reisekosten", "Software", "Miete", "Werbung" — als EIN ' +
-                  'String mit Kommas, kein Array). Unbekannte Felder als null. Keine weiteren Felder, ' +
-                  'kein Zusatztext.',
+                  'String mit Kommas, kein Array), unsureFields (Array mit den Schlüsseln oben, bei ' +
+                  'denen du dir UNSICHER bist, z. B. wegen Unschärfe, Abschneidung, schlechter ' +
+                  'Lesbarkeit oder Mehrdeutigkeit — leeres Array wenn alles klar lesbar war). ' +
+                  'Unbekannte Felder als null. Keine weiteren Felder, kein Zusatztext.',
               },
               { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
             ],
@@ -89,7 +102,23 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
     throw new Error('KI-Anbieter nicht erreichbar (Timeout/Netzwerk).')
   }
   if (!res.ok) {
-    throw new Error(`KI-Anbieter antwortete mit Fehler ${res.status}.`)
+    // Fehlertext des Anbieters mitgeben (z. B. "model does not support images") —
+    // sonst ist ein 400 kaum einzugrenzen (falsches Modell, falsches Feldformat, …).
+    const bodyText = await res.text().catch(() => '')
+    let detail = bodyText
+    try {
+      const parsed = JSON.parse(bodyText)
+      detail = parsed?.error?.message ?? parsed?.message ?? bodyText
+    } catch {
+      /* kein JSON — Rohtext verwenden */
+    }
+    const looksLikeNoVision = /content must be a string|does not support image|image_url|vision|multimodal/i.test(detail)
+    const hint = looksLikeNoVision
+      ? ' — das konfigurierte KI-Modell unterstützt vermutlich keine Bild-Eingabe (Vision). ' +
+        'Bitte in den Systemeinstellungen ein Vision-fähiges Modell eintragen (Verbindungstest ' +
+        'zeigt jetzt die beim Anbieter verfügbaren Modelle an).'
+      : ''
+    throw new Error(`KI-Anbieter antwortete mit Fehler ${res.status}${detail ? `: ${detail.slice(0, 300)}` : '.'}${hint}`)
   }
   const data = await res.json()
   const content: string = data?.choices?.[0]?.message?.content ?? ''
@@ -100,15 +129,67 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
   } catch {
     throw new Error('KI-Antwort konnte nicht als Rechnungsdaten gelesen werden.')
   }
+  const vendor = str(parsed.vendor)
+  const invoiceNumber = str(parsed.invoiceNumber)
+  const invoiceDate = str(parsed.invoiceDate)
+  const dueDate = str(parsed.dueDate)
+  const amountNet = num(parsed.amountNet)
+  const amountTax = num(parsed.amountTax)
+  const amountGross = num(parsed.amountGross)
+  const currency = str(parsed.currency)
+  const tags = str(parsed.tags)
+
+  // Von der KI selbst gemeldete Unsicherheiten (nur bekannte Feldnamen übernehmen)
+  const aiUnsure: string[] = Array.isArray(parsed.unsureFields)
+    ? parsed.unsureFields.filter((f: unknown): f is string => typeof f === 'string' && KNOWN_FIELDS.includes(f))
+    : []
+  const flagged = new Set(aiUnsure)
+  const warnings: string[] = []
+  if (aiUnsure.length > 0) {
+    warnings.push(`KI war sich bei folgenden Feldern unsicher: ${aiUnsure.join(', ')}.`)
+  }
+
+  // Eigene, deterministische Plausibilitätsprüfung (unabhängig vom KI-Anbieter)
+  if (amountNet !== null && amountTax !== null && amountGross !== null) {
+    if (Math.abs(amountNet + amountTax - amountGross) > 0.02) {
+      warnings.push('Netto + Steuer ergibt nicht den Bruttobetrag — bitte Beträge prüfen.')
+      flagged.add('amountNet')
+      flagged.add('amountTax')
+      flagged.add('amountGross')
+    }
+  } else if (amountGross === null) {
+    warnings.push('Kein Bruttobetrag erkannt.')
+    flagged.add('amountGross')
+  }
+  if (!vendor) {
+    warnings.push('Kein Lieferant erkannt.')
+    flagged.add('vendor')
+  }
+  if (!invoiceDate) {
+    warnings.push('Kein Rechnungsdatum erkannt.')
+    flagged.add('invoiceDate')
+  } else {
+    const d = new Date(invoiceDate)
+    if (Number.isNaN(d.getTime())) {
+      warnings.push('Rechnungsdatum ist kein gültiges Datum.')
+      flagged.add('invoiceDate')
+    } else if (d.getTime() > Date.now() + 24 * 60 * 60 * 1000) {
+      warnings.push('Rechnungsdatum liegt in der Zukunft — bitte prüfen.')
+      flagged.add('invoiceDate')
+    }
+  }
+
   return {
-    vendor: str(parsed.vendor),
-    invoiceNumber: str(parsed.invoiceNumber),
-    invoiceDate: str(parsed.invoiceDate),
-    dueDate: str(parsed.dueDate),
-    amountNet: num(parsed.amountNet),
-    amountTax: num(parsed.amountTax),
-    amountGross: num(parsed.amountGross),
-    currency: str(parsed.currency),
-    tags: str(parsed.tags),
+    vendor,
+    invoiceNumber,
+    invoiceDate,
+    dueDate,
+    amountNet,
+    amountTax,
+    amountGross,
+    currency,
+    tags,
+    uncertainFields: Array.from(flagged),
+    warnings,
   }
 }

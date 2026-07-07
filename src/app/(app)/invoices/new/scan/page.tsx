@@ -14,7 +14,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
-import { encryptBytes } from '@/lib/clientCrypto'
+import { encryptBytes, sha256Hex } from '@/lib/clientCrypto'
 import { fetchEncConfig, getCachedDek, unlockWithPassphrase } from '@/lib/keyStore'
 
 const EMPTY = {
@@ -47,6 +47,13 @@ async function buildInvoiceFile(pages: ScanPage[]): Promise<File> {
   }
   const { PDFDocument } = await import('pdf-lib')
   const out = await PDFDocument.create()
+  // WICHTIG für Dubletten-Erkennung (Datei-Hash): pdf-lib setzt Erstellungs-/
+  // Änderungsdatum sonst automatisch auf "jetzt" — bei zwei Zusammenführungen
+  // mit identischem Bildinhalt entstünde trotzdem jedes Mal ein anderer Hash,
+  // nur weil unser eigenes PDF-Zusammenführen einen neuen Zeitstempel schreibt.
+  // Fester Wert macht das Ergebnis bei gleichem Inhalt bit-identisch.
+  out.setCreationDate(new Date(0))
+  out.setModificationDate(new Date(0))
   for (const p of pages) {
     const bytes = new Uint8Array(await p.file.arrayBuffer())
     if (p.kind === 'pdf') {
@@ -82,6 +89,9 @@ export default function ScanInvoicePage() {
   const [aiReason, setAiReason] = useState('')
   const [aiBusy, setAiBusy] = useState(false)
   const [aiError, setAiError] = useState('')
+  const [aiWarnings, setAiWarnings] = useState<string[]>([])
+  const [aiFlags, setAiFlags] = useState<string[]>([])
+  const [usedAi, setUsedAi] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -152,6 +162,8 @@ export default function ScanInvoicePage() {
     }
     setAiBusy(true)
     setAiError('')
+    setAiWarnings([])
+    setAiFlags([])
     try {
       const fd = new FormData()
       fd.append('file', firstPhoto.file)
@@ -165,6 +177,7 @@ export default function ScanInvoicePage() {
         vendor: string | null; invoiceNumber: string | null; invoiceDate: string | null
         dueDate: string | null; amountNet: number | null; amountTax: number | null
         amountGross: number | null; currency: string | null; tags: string | null
+        uncertainFields: string[]; warnings: string[]
       }
       setF((p) => ({
         ...p,
@@ -178,6 +191,9 @@ export default function ScanInvoicePage() {
         currency: d.currency && CURRENCIES.includes(d.currency) ? d.currency : p.currency,
         tags: d.tags ?? p.tags,
       }))
+      setAiFlags(d.uncertainFields ?? [])
+      setAiWarnings(d.warnings ?? [])
+      setUsedAi(true)
     } catch {
       setAiError('KI-Erkennung fehlgeschlagen.')
     } finally {
@@ -197,6 +213,8 @@ export default function ScanInvoicePage() {
       const file = await buildInvoiceFile(pages)
       const fd = new FormData()
       Object.entries(f).forEach(([k, v]) => fd.append(k, v))
+      fd.append('source', 'SCAN')
+      if (usedAi) fd.append('aiAssisted', '1')
       if (encEnabled) {
         let dek = await getCachedDek()
         if (!dek) {
@@ -208,10 +226,16 @@ export default function ScanInvoicePage() {
             return
           }
         }
-        const cipher = await encryptBytes(dek, await file.arrayBuffer())
+        const plainBuffer = await file.arrayBuffer()
+        // Klartext-Hash VOR dem Verschlüsseln bilden — für Dubletten-Erkennung
+        // (Chiffrat hat wegen zufälligem IV sonst bei jeder Verschlüsselung
+        // einen anderen Hash, auch bei identischem Klartext).
+        const plainHash = await sha256Hex(plainBuffer)
+        const cipher = await encryptBytes(dek, plainBuffer)
         fd.append('file', new Blob([cipher as unknown as BlobPart]), `${file.name}.enc`)
         fd.append('encrypted', '1')
         fd.append('encOrigMime', file.type)
+        fd.append('fileHash', plainHash)
       } else {
         fd.append('file', file)
       }
@@ -330,21 +354,26 @@ export default function ScanInvoicePage() {
           </p>
         )}
         {aiError && <p className="text-sm text-[var(--danger)]">{aiError}</p>}
+        {aiWarnings.length > 0 && (
+          <p className="rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-strong)]">
+            ⚠ Bitte besonders prüfen — {aiWarnings.join(' ')}
+          </p>
+        )}
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Lieferant *" value={f.vendor} onChange={(v) => set('vendor', v)} required />
-          <Field label="Rechnungsnummer" value={f.invoiceNumber} onChange={(v) => set('invoiceNumber', v)} />
-          <Field label="Rechnungsdatum" type="date" value={f.invoiceDate} onChange={(v) => set('invoiceDate', v)} />
-          <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)} />
-          <Field label="Netto (z. B. 1.234,56)" value={f.amountNet} onChange={(v) => set('amountNet', v)} />
-          <Field label="Steuer" value={f.amountTax} onChange={(v) => set('amountTax', v)} />
-          <Field label="Brutto" value={f.amountGross} onChange={(v) => set('amountGross', v)} />
+          <Field label="Lieferant *" value={f.vendor} onChange={(v) => set('vendor', v)} required warn={aiFlags.includes('vendor')} />
+          <Field label="Rechnungsnummer" value={f.invoiceNumber} onChange={(v) => set('invoiceNumber', v)} warn={aiFlags.includes('invoiceNumber')} />
+          <Field label="Rechnungsdatum" type="date" value={f.invoiceDate} onChange={(v) => set('invoiceDate', v)} warn={aiFlags.includes('invoiceDate')} />
+          <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)} warn={aiFlags.includes('dueDate')} />
+          <Field label="Netto (z. B. 1.234,56)" value={f.amountNet} onChange={(v) => set('amountNet', v)} warn={aiFlags.includes('amountNet')} />
+          <Field label="Steuer" value={f.amountTax} onChange={(v) => set('amountTax', v)} warn={aiFlags.includes('amountTax')} />
+          <Field label="Brutto" value={f.amountGross} onChange={(v) => set('amountGross', v)} warn={aiFlags.includes('amountGross')} />
           <div>
             <label className="dp-label">Währung</label>
             <select className="dp-input mt-1" value={f.currency} onChange={(e) => set('currency', e.target.value)}>
               <option>EUR</option><option>USD</option><option>CHF</option><option>GBP</option>
             </select>
           </div>
-          <Field label="Tags (kommagetrennt)" value={f.tags} onChange={(v) => set('tags', v)} />
+          <Field label="Tags (kommagetrennt)" value={f.tags} onChange={(v) => set('tags', v)} warn={aiFlags.includes('tags')} />
         </div>
         <div>
           <label className="dp-label">Notizen</label>
@@ -364,15 +393,21 @@ export default function ScanInvoicePage() {
 }
 
 function Field({
-  label, value, onChange, type = 'text', required,
+  label, value, onChange, type = 'text', required, warn,
 }: {
-  label: string; value: string; onChange: (v: string) => void; type?: string; required?: boolean
+  label: string; value: string; onChange: (v: string) => void; type?: string; required?: boolean; warn?: boolean
 }) {
   return (
     <div>
-      <label className="dp-label">{label}</label>
-      <input className="dp-input mt-1" type={type} value={value} required={required}
-        onChange={(e) => onChange(e.target.value)} />
+      <label className="dp-label">
+        {label}
+        {warn && <span className="ml-1 text-[var(--warn-strong)]" title="KI ist sich hier unsicher — bitte prüfen">⚠</span>}
+      </label>
+      <input
+        className={`dp-input mt-1 ${warn ? 'border-[var(--warn-border)] bg-[var(--warn-bg)]' : ''}`}
+        type={type} value={value} required={required}
+        onChange={(e) => onChange(e.target.value)}
+      />
     </div>
   )
 }

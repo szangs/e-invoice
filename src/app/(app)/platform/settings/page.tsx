@@ -12,6 +12,7 @@ export default function SystemSettingsPage() {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [aiTest, setAiTest] = useState('')
+  const [aiModels, setAiModels] = useState<string[]>([])
 
   useEffect(() => {
     fetch('/api/platform/settings')
@@ -38,10 +39,12 @@ export default function SystemSettingsPage() {
 
   async function testAi() {
     setAiTest('Teste …')
+    setAiModels([])
     await save()
     const res = await fetch('/api/platform/settings/test-ai', { method: 'POST' })
     const data = await res.json()
     setAiTest(data.message ?? 'Unbekanntes Ergebnis')
+    setAiModels(data.models ?? [])
   }
 
   const input = (key: string, label: string, type = 'text', hint?: string) => (
@@ -123,6 +126,30 @@ export default function SystemSettingsPage() {
           <button className="btn-secondary" onClick={testAi} disabled={busy}>Verbindungs-Test</button>
           {aiTest && <span className="text-xs text-gray-600">{aiTest}</span>}
         </div>
+        {aiModels.length > 0 && (
+          <div>
+            <p className="mb-1 text-[11px] text-gray-400">
+              Beim Anbieter verfügbare Modelle (anklicken zum Übernehmen — für die KI-Bilderkennung
+              gescannter Rechnungen muss es ein Vision-/Multimodal-Modell sein):
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {aiModels.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  className={`rounded-full border px-2 py-0.5 text-[11px] ${
+                    m === s.AI_MODEL
+                      ? 'border-[var(--accent)] bg-[var(--accent-bg)] text-[var(--accent)]'
+                      : 'border-[var(--line)] text-gray-600 hover:bg-[var(--surface-muted)]'
+                  }`}
+                  onClick={() => set('AI_MODEL', m)}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <p className="text-[11px] text-gray-400">
           Die Nutzung ist zusätzlich je Mandant abschaltbar (§19) und wird serverseitig erzwungen.
         </p>

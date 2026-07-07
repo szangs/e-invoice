@@ -30,6 +30,10 @@ async function main() {
       const buffer = readFileSync(filePath)
       const a = await analyzeInvoiceFile(buffer, inv.mimeType ?? '', inv.originalName ?? '')
       const d = a.data
+      // Elektronische Vorprüfung nachträglich abhaken, wenn jetzt erkannt als
+      // gültige E-Rechnung — nur wenn noch nicht (manuell oder automatisch)
+      // gesetzt, um bestehende Prüfstände nicht zu überschreiben.
+      const autoElectronicOk = a.validation?.valid === true && !inv.checkElectronicAt
       await prisma.invoice.update({
         where: { id: inv.id },
         data: {
@@ -37,6 +41,9 @@ async function main() {
           xmlData: a.xml,
           validationOk: a.validation?.valid ?? null,
           validationIssues: a.validation?.missing.join(', ') || null,
+          ...(autoElectronicOk
+            ? { checkElectronicAt: new Date(), checkElectronicBy: 'System (automatische Prüfung)' }
+            : {}),
           invoiceNumber: inv.invoiceNumber ?? d?.number ?? null,
           invoiceDate: inv.invoiceDate ?? (d?.issueDate ? new Date(d.issueDate) : null),
           dueDate: inv.dueDate ?? (d?.dueDate ? new Date(d.dueDate) : null),

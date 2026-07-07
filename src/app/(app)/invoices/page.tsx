@@ -8,13 +8,15 @@ import { FileLink } from '@/components/crypto/FileLink'
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { formatAmount, STATUS_LABELS } from '@/lib/invoices'
+import { CheckBadges } from './CheckBadges'
+import { RestoreButton } from './RestoreButton'
 
 export const dynamic = 'force-dynamic'
 
 export default async function InvoicesPage({
   searchParams,
 }: {
-  searchParams: { q?: string; status?: string; dup?: string }
+  searchParams: { q?: string; status?: string; dup?: string; trash?: string }
 }) {
   const ctx = await getContext()
   if (!ctx.tenantId) redirect('/platform')
@@ -24,8 +26,11 @@ export default async function InvoicesPage({
     : undefined
 
   const hideDuplicates = searchParams.dup === 'hide'
+  // Papierkorb: weich gelöschte Rechnungen sind normalerweise ausgeblendet
+  const showTrash = searchParams.trash === '1'
   const where: Prisma.InvoiceWhereInput = {
     tenantId: ctx.tenantId,
+    deletedAt: showTrash ? { not: null } : null,
     ...(hideDuplicates ? { duplicateOfId: null } : {}),
     ...(status ? { status } : {}),
     ...(q
@@ -45,6 +50,13 @@ export default async function InvoicesPage({
   })
 
   const exportUrl = `/api/invoices/export?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`
+  const trashParams = new URLSearchParams({
+    ...(q ? { q } : {}),
+    ...(status ? { status } : {}),
+    ...(hideDuplicates ? { dup: 'hide' } : {}),
+    ...(showTrash ? {} : { trash: '1' }),
+  })
+  const trashHref = `/invoices?${trashParams.toString()}`
 
   return (
     <div className="space-y-4">
@@ -68,14 +80,27 @@ export default async function InvoicesPage({
         </label>
         <button className="btn-secondary" type="submit">Filtern</button>
         <a className="btn-secondary" href={exportUrl}>CSV-Export</a>
-        <Link className="btn-primary" href="/invoices/new">Elektronische Rechnung hinzufügen</Link>
-        <Link className="btn-secondary" href="/invoices/new/scan">Papierrechnung scannen</Link>
+        {!showTrash && (
+          <>
+            <Link className="btn-primary" href="/invoices/new">Elektronische Rechnung hinzufügen</Link>
+            <Link className="btn-secondary" href="/invoices/new/scan">Papierrechnung scannen</Link>
+          </>
+        )}
+        <Link className="btn-secondary ml-auto" href={trashHref}>
+          {showTrash ? '← Zur Rechnungsliste' : '🗑 Papierkorb'}
+        </Link>
       </form>
+      {showTrash && (
+        <p className="text-xs text-gray-500">
+          Gelöschte Rechnungen — nur als gelöscht markiert, nicht endgültig entfernt. Beleg bleibt erhalten.
+        </p>
+      )}
 
       <div className="dp-card overflow-x-auto p-0">
-        <table className="w-full min-w-[1020px]">
+        <table className="w-full min-w-[1120px]">
           <thead>
             <tr className="dp-tr">
+              <th className="dp-th">Dok-ID</th>
               <th className="dp-th">Lieferant</th>
               <th className="dp-th">Nummer</th>
               <th className="dp-th">Datum</th>
@@ -85,12 +110,15 @@ export default async function InvoicesPage({
               <th className="dp-th">Brutto</th>
               <th className="dp-th">Status</th>
               <th className="dp-th">Inhalt</th>
+              {!showTrash && <th className="dp-th">Prüfung</th>}
               <th className="dp-th">Beleg</th>
+              {showTrash && <th className="dp-th">Aktion</th>}
             </tr>
           </thead>
           <tbody>
             {invoices.map((i) => (
               <tr key={i.id} className="dp-tr">
+                <td className="dp-td font-mono text-[11px] text-gray-500">{i.docId ?? '—'}</td>
                 <td className="dp-td">
                   <Link className="font-medium text-[var(--accent)] hover:underline" href={`/invoices/${i.id}`}>
                     {i.vendor}
@@ -120,35 +148,73 @@ export default async function InvoicesPage({
                   }`}>{STATUS_LABELS[i.status]}</span>
                 </td>
                 <td className="dp-td">
-                  {i.docFormat === 'ZUGFERD' || i.docFormat?.startsWith('XRECHNUNG') ? (
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                        i.validationOk === false
-                          ? 'bg-red-50 text-[var(--danger)]'
-                          : 'bg-[var(--accent-bg)] text-[var(--accent)]'
-                      }`}
-                      title={i.validationIssues ? `Fehlend: ${i.validationIssues}` : 'Pflichtangaben vollständig'}
-                    >
-                      {i.docFormat === 'ZUGFERD' ? 'ZUGFeRD' : 'XRechnung'}
-                      {i.validationOk === false ? ' ✗' : i.validationOk ? ' ✓' : ''}
-                    </span>
-                  ) : i.encrypted ? (
-                    <span className="text-[10px] text-gray-400" title="Inhalt verschlüsselt — nur der Kunde kann ihn lesen">🔒</span>
-                  ) : i.fileName ? (
-                    <span className="text-[10px] text-gray-400">nur PDF</span>
-                  ) : (
-                    <span className="text-[10px] text-gray-400">—</span>
-                  )}
+                  <div className="flex flex-col items-start gap-0.5">
+                    {i.docFormat === 'ZUGFERD' || i.docFormat?.startsWith('XRECHNUNG') ? (
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                          i.validationOk === false
+                            ? 'bg-red-50 text-[var(--danger)]'
+                            : 'bg-[var(--accent-bg)] text-[var(--accent)]'
+                        }`}
+                        title={i.validationIssues ? `Fehlend: ${i.validationIssues}` : 'Pflichtangaben vollständig'}
+                      >
+                        {i.docFormat === 'ZUGFERD' ? 'ZUGFeRD' : 'XRechnung'}
+                        {i.validationOk === false ? ' ✗' : i.validationOk ? ' ✓' : ''}
+                      </span>
+                    ) : i.encrypted ? (
+                      <span className="text-[10px] text-gray-400" title="Inhalt verschlüsselt — nur der Kunde kann ihn lesen">🔒</span>
+                    ) : i.source === 'SCAN' ? (
+                      <span className="rounded-full bg-[var(--surface-muted)] px-2 py-0.5 text-[10px] font-semibold text-gray-600" title="Papierrechnung gescannt/fotografiert">
+                        📷 Scan
+                      </span>
+                    ) : i.fileName ? (
+                      <span className="text-[10px] text-gray-400">nur PDF</span>
+                    ) : (
+                      <span className="text-[10px] text-gray-400">—</span>
+                    )}
+                    {i.source === 'SCAN' && (
+                      <span
+                        className={`text-[10px] ${i.aiAssisted ? 'text-[var(--accent)]' : 'text-gray-400'}`}
+                        title={i.aiAssisted ? 'Felder per KI übernommen — bitte trotzdem gegenprüfen' : 'Felder von Hand erfasst'}
+                      >
+                        {i.aiAssisted ? '✨ KI' : '✋ manuell'}
+                      </span>
+                    )}
+                  </div>
                 </td>
+                {!showTrash && (
+                  <td className="dp-td">
+                    <CheckBadges
+                      invoiceId={i.id}
+                      electronicAt={i.checkElectronicAt ? i.checkElectronicAt.toISOString() : null}
+                      electronicBy={i.checkElectronicBy}
+                      formalAt={i.checkFormalAt ? i.checkFormalAt.toISOString() : null}
+                      formalBy={i.checkFormalBy}
+                      substantiveAt={i.checkSubstantiveAt ? i.checkSubstantiveAt.toISOString() : null}
+                      substantiveBy={i.checkSubstantiveBy}
+                      accountingAt={i.checkAccountingAt ? i.checkAccountingAt.toISOString() : null}
+                      accountingBy={i.checkAccountingBy}
+                    />
+                  </td>
+                )}
                 <td className="dp-td text-xs">
                   {i.fileName ? (
                     <FileLink invoiceId={i.id} encrypted={i.encrypted} origMime={i.encOrigMime} />
                   ) : '—'}
                 </td>
+                {showTrash && (
+                  <td className="dp-td">
+                    <RestoreButton invoiceId={i.id} />
+                  </td>
+                )}
               </tr>
             ))}
             {invoices.length === 0 && (
-              <tr><td className="dp-td py-8 text-center text-gray-400" colSpan={10}>Keine Rechnungen gefunden.</td></tr>
+              <tr>
+                <td className="dp-td py-8 text-center text-gray-400" colSpan={12}>
+                  {showTrash ? 'Papierkorb ist leer.' : 'Keine Rechnungen gefunden.'}
+                </td>
+              </tr>
             )}
           </tbody>
         </table>

@@ -15,10 +15,11 @@ export default async function DashboardPage() {
   if (ctx.role === Role.OPERATOR_ADMIN && !ctx.tenantId) redirect('/platform')
   const tenantId = ctx.tenantId as string
 
+  // Weich gelöschte Rechnungen (Papierkorb) tauchen im Dashboard nicht auf
   const [total, byStatus, recent] = await Promise.all([
-    prisma.invoice.count({ where: { tenantId } }),
-    prisma.invoice.groupBy({ by: ['status'], where: { tenantId }, _count: true }),
-    prisma.invoice.findMany({ where: { tenantId }, orderBy: { createdAt: 'desc' }, take: 8 }),
+    prisma.invoice.count({ where: { tenantId, deletedAt: null } }),
+    prisma.invoice.groupBy({ by: ['status'], where: { tenantId, deletedAt: null }, _count: true }),
+    prisma.invoice.findMany({ where: { tenantId, deletedAt: null }, orderBy: { createdAt: 'desc' }, take: 8 }),
   ])
   const count = (s: InvoiceStatus) => byStatus.find((b) => b.status === s)?._count ?? 0
 

@@ -130,6 +130,11 @@ export async function restoreTenantBackup(payload: any, targetTenantId: string):
       encryptionEnabled: Boolean(t.encryptionEnabled),
       encSalt: t.encSalt ?? null,
       encWrappedDek: t.encWrappedDek ?? null,
+      // Dokumenten-ID-Zähler: NIE verkleinern, sonst würden nach dem Restore
+      // neu angelegte Belege wieder eine bereits vergebene docId bekommen
+      // (z. B. beim Einspielen einer älteren Sicherung). Es gilt der größere
+      // der beiden Werte — Bestand des Ziel-Mandanten oder Sicherungsstand.
+      nextDocSeq: Math.max(target.nextDocSeq, Number(t.nextDocSeq ?? 0)),
     },
   })
 
@@ -155,6 +160,7 @@ export async function restoreTenantBackup(payload: any, targetTenantId: string):
   for (const inv of payload.invoices ?? []) {
     if (!inv.id || !inv.vendor) continue
     const data = {
+      docId: inv.docId ?? null,
       vendor: inv.vendor,
       invoiceNumber: inv.invoiceNumber ?? null,
       invoiceDate: inv.invoiceDate ? new Date(inv.invoiceDate) : null,

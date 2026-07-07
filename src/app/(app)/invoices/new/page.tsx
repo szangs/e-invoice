@@ -9,7 +9,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { encryptBytes } from '@/lib/clientCrypto'
+import { encryptBytes, sha256Hex } from '@/lib/clientCrypto'
 import { fetchEncConfig, getCachedDek, unlockWithPassphrase } from '@/lib/keyStore'
 
 const EMPTY = {
@@ -56,10 +56,16 @@ export default function NewInvoicePage() {
               return
             }
           }
-          const cipher = await encryptBytes(dek, await file.arrayBuffer())
+          const plainBuffer = await file.arrayBuffer()
+          // Klartext-Hash VOR dem Verschlüsseln bilden — für Dubletten-Erkennung.
+          // Das Chiffrat hat wegen des zufälligen IV bei jeder Verschlüsselung
+          // einen anderen Hash, auch bei identischem Klartext.
+          const plainHash = await sha256Hex(plainBuffer)
+          const cipher = await encryptBytes(dek, plainBuffer)
           fd.append('file', new Blob([cipher as unknown as BlobPart]), `${file.name}.enc`)
           fd.append('encrypted', '1')
           fd.append('encOrigMime', file.type)
+          fd.append('fileHash', plainHash)
         } else {
           fd.append('file', file)
         }

@@ -38,12 +38,13 @@ export async function buildHashReport(
   })
 
   const header = [
-    'Lieferant', 'Rechnungsnummer', 'Rechnungsdatum', 'Fälligkeit',
+    'Dokumenten-ID', 'Lieferant', 'Rechnungsnummer', 'Rechnungsdatum', 'Fälligkeit',
     'Netto', 'Steuer', 'Brutto', 'Währung', 'Status', 'Beleg-Hash (SHA-256)', 'Erfasst am',
   ].join(';')
   const rows = invoices
     .map((i) =>
       [
+        csvField(i.docId),
         csvField(i.vendor),
         csvField(i.invoiceNumber),
         i.invoiceDate ? i.invoiceDate.toISOString().slice(0, 10) : '',

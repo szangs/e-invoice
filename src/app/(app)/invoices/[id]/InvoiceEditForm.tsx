@@ -38,6 +38,7 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
     status: invoice.status as string,
     tags: invoice.tags ?? '',
     notes: invoice.notes ?? '',
+    directDebitByVendor: invoice.directDebitByVendor,
   })
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
@@ -46,6 +47,9 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
   const [aiReason, setAiReason] = useState('')
   const [aiBusy, setAiBusy] = useState(false)
   const [aiError, setAiError] = useState('')
+  const [aiWarnings, setAiWarnings] = useState<string[]>([])
+  const [aiFlags, setAiFlags] = useState<string[]>([])
+  const [usedAi, setUsedAi] = useState(false)
 
   useEffect(() => {
     if (!canUseAi) return
@@ -64,6 +68,8 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
   async function fillWithAi() {
     setAiBusy(true)
     setAiError('')
+    setAiWarnings([])
+    setAiFlags([])
     try {
       const res = await fetch(`/api/invoices/${invoice.id}/ai-extract`, { method: 'POST' })
       const data = await res.json()
@@ -75,6 +81,7 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
         vendor: string | null; invoiceNumber: string | null; invoiceDate: string | null
         dueDate: string | null; amountNet: number | null; amountTax: number | null
         amountGross: number | null; currency: string | null; tags: string | null
+        uncertainFields: string[]; warnings: string[]
       }
       setF((p) => ({
         ...p,
@@ -88,6 +95,9 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
         currency: d.currency && CURRENCIES.includes(d.currency) ? d.currency : p.currency,
         tags: d.tags ?? p.tags,
       }))
+      setAiFlags(d.uncertainFields ?? [])
+      setAiWarnings(d.warnings ?? [])
+      setUsedAi(true)
       setMsg('KI-Vorschlag übernommen — bitte prüfen und speichern.')
     } catch {
       setAiError('KI-Erkennung fehlgeschlagen.')
@@ -115,6 +125,8 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
         status: f.status,
         tags: f.tags || null,
         notes: f.notes || null,
+        directDebitByVendor: f.directDebitByVendor,
+        ...(usedAi ? { aiAssisted: true } : {}),
       }),
     })
     setBusy(false)
@@ -128,7 +140,7 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
   }
 
   async function remove() {
-    if (!window.confirm('Rechnung wirklich löschen? Der Beleg wird mit entfernt.')) return
+    if (!window.confirm('Rechnung wirklich löschen? Sie wird nur als gelöscht markiert (nicht endgültig entfernt) und kann im Papierkorb wiederhergestellt werden.')) return
     setBusy(true)
     const res = await fetch(`/api/invoices/${invoice.id}`, { method: 'DELETE' })
     setBusy(false)
@@ -138,6 +150,18 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
     } else {
       setMsg('Löschen fehlgeschlagen.')
     }
+  }
+
+  async function restore() {
+    setBusy(true)
+    const res = await fetch(`/api/invoices/${invoice.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ restore: true }),
+    })
+    setBusy(false)
+    if (res.ok) router.refresh()
+    else setMsg('Wiederherstellen fehlgeschlagen.')
   }
 
   async function unmarkDuplicate() {
@@ -151,8 +175,43 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
     if (res.ok) router.refresh()
   }
 
+  async function toggleCheck(key: 'checkElectronic' | 'checkFormal', value: boolean) {
+    setBusy(true)
+    const res = await fetch(`/api/invoices/${invoice.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [key]: value }),
+    })
+    setBusy(false)
+    if (res.ok) router.refresh()
+    else setMsg('Prüfschritt konnte nicht gespeichert werden.')
+  }
+
+  if (invoice.deletedAt) {
+    return (
+      <div className="dp-card max-w-2xl space-y-3">
+        <p className="text-sm font-semibold text-[var(--danger)]">
+          Diese Rechnung wurde am {new Date(invoice.deletedAt).toLocaleString('de-DE')}
+          {invoice.deletedBy ? ` von ${invoice.deletedBy}` : ''} als gelöscht markiert.
+        </p>
+        <p className="text-xs text-gray-500">Der Beleg und alle Daten sind weiterhin vorhanden — nichts wurde endgültig entfernt.</p>
+        <div className="flex gap-2">
+          <button type="button" className="btn-primary" onClick={restore} disabled={busy}>
+            {busy ? '…' : 'Wiederherstellen'}
+          </button>
+          <button type="button" className="btn-secondary" onClick={() => router.push('/invoices')}>Zurück</button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <form onSubmit={save} className="dp-card max-w-2xl space-y-4">
+      {invoice.docId && (
+        <p className="font-mono text-[11px] text-gray-400" title="Eindeutige Dokumenten-ID (GoBD-Referenzierung)">
+          {invoice.docId}
+        </p>
+      )}
       {invoice.duplicateOfId && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2">
           <p className="text-xs font-semibold text-[var(--warn-strong)]">
@@ -190,14 +249,19 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
         <p className="text-[11px] text-gray-400">KI-Erkennung nicht verfügbar: {aiReason}</p>
       )}
       {aiError && <p className="text-sm text-[var(--danger)]">{aiError}</p>}
+      {aiWarnings.length > 0 && (
+        <p className="rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-strong)]">
+          ⚠ Bitte besonders prüfen — {aiWarnings.join(' ')}
+        </p>
+      )}
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Lieferant *" value={f.vendor} onChange={(v) => set('vendor', v)} required />
-        <Field label="Rechnungsnummer" value={f.invoiceNumber} onChange={(v) => set('invoiceNumber', v)} />
-        <Field label="Rechnungsdatum" type="date" value={f.invoiceDate} onChange={(v) => set('invoiceDate', v)} />
-        <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)} />
-        <Field label="Netto" value={f.amountNet} onChange={(v) => set('amountNet', v)} />
-        <Field label="Steuer" value={f.amountTax} onChange={(v) => set('amountTax', v)} />
-        <Field label="Brutto" value={f.amountGross} onChange={(v) => set('amountGross', v)} />
+        <Field label="Lieferant *" value={f.vendor} onChange={(v) => set('vendor', v)} required warn={aiFlags.includes('vendor')} />
+        <Field label="Rechnungsnummer" value={f.invoiceNumber} onChange={(v) => set('invoiceNumber', v)} warn={aiFlags.includes('invoiceNumber')} />
+        <Field label="Rechnungsdatum" type="date" value={f.invoiceDate} onChange={(v) => set('invoiceDate', v)} warn={aiFlags.includes('invoiceDate')} />
+        <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)} warn={aiFlags.includes('dueDate')} />
+        <Field label="Netto" value={f.amountNet} onChange={(v) => set('amountNet', v)} warn={aiFlags.includes('amountNet')} />
+        <Field label="Steuer" value={f.amountTax} onChange={(v) => set('amountTax', v)} warn={aiFlags.includes('amountTax')} />
+        <Field label="Brutto" value={f.amountGross} onChange={(v) => set('amountGross', v)} warn={aiFlags.includes('amountGross')} />
         <div>
           <label className="dp-label">Währung</label>
           <select className="dp-input mt-1" value={f.currency} onChange={(e) => set('currency', e.target.value)}>
@@ -214,10 +278,35 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
         </div>
         <Field label="Tags" value={f.tags} onChange={(v) => set('tags', v)} />
       </div>
+      <label className="flex items-center gap-2 text-sm text-gray-700">
+        <input type="checkbox" checked={f.directDebitByVendor}
+          onChange={(e) => setF((p) => ({ ...p, directDebitByVendor: e.target.checked }))} />
+        Lieferant bucht per Lastschrift/Abbuchung selbst ab (statt Überweisung)
+      </label>
       <div>
         <label className="dp-label">Notizen</label>
         <textarea className="dp-input mt-1" rows={3} value={f.notes}
           onChange={(e) => set('notes', e.target.value)} />
+      </div>
+
+      <div className="border-t border-[var(--line)] pt-3">
+        <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">Rechnungsprüfung</h3>
+        <div className="space-y-1.5">
+          <CheckRow
+            label="Elektronische Vorprüfung"
+            at={invoice.checkElectronicAt} by={invoice.checkElectronicBy}
+            busy={busy} onToggle={(v) => toggleCheck('checkElectronic', v)}
+          />
+          <CheckRow
+            label="Formal richtig"
+            at={invoice.checkFormalAt} by={invoice.checkFormalBy}
+            busy={busy} onToggle={(v) => toggleCheck('checkFormal', v)}
+          />
+        </div>
+        <p className="mt-2 text-[11px] text-gray-400">
+          „Sachlich richtig" und „An Buchhaltung übergeben" werden in der Rechnungsliste abgehakt
+          (Buchhaltungs-Schritte, nicht Teil der Erfassung).
+        </p>
       </div>
       {msg && (
         <p className={`text-sm ${msg === 'Gespeichert.' ? 'text-[var(--accent)]' : 'text-[var(--danger)]'}`}>{msg}</p>
@@ -231,16 +320,42 @@ export function InvoiceEditForm({ invoice }: { invoice: InvoiceDTO }) {
   )
 }
 
-function Field({
-  label, value, onChange, type = 'text', required,
+function CheckRow({
+  label, at, by, busy, onToggle,
 }: {
-  label: string; value: string; onChange: (v: string) => void; type?: string; required?: boolean
+  label: string; at: string | null; by: string | null; busy: boolean; onToggle: (v: boolean) => void
+}) {
+  const checked = at !== null
+  return (
+    <label className="flex flex-wrap items-center gap-2 text-sm text-gray-700">
+      <input type="checkbox" checked={checked} disabled={busy}
+        onChange={(e) => onToggle(e.target.checked)} />
+      {label}
+      {checked && (
+        <span className="text-[11px] text-gray-400">
+          — {by} am {new Date(at as string).toLocaleString('de-DE')}
+        </span>
+      )}
+    </label>
+  )
+}
+
+function Field({
+  label, value, onChange, type = 'text', required, warn,
+}: {
+  label: string; value: string; onChange: (v: string) => void; type?: string; required?: boolean; warn?: boolean
 }) {
   return (
     <div>
-      <label className="dp-label">{label}</label>
-      <input className="dp-input mt-1" type={type} value={value} required={required}
-        onChange={(e) => onChange(e.target.value)} />
+      <label className="dp-label">
+        {label}
+        {warn && <span className="ml-1 text-[var(--warn-strong)]" title="KI ist sich hier unsicher — bitte prüfen">⚠</span>}
+      </label>
+      <input
+        className={`dp-input mt-1 ${warn ? 'border-[var(--warn-border)] bg-[var(--warn-bg)]' : ''}`}
+        type={type} value={value} required={required}
+        onChange={(e) => onChange(e.target.value)}
+      />
     </div>
   )
 }

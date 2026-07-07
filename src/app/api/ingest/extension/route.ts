@@ -8,6 +8,7 @@ import { resolveToken } from '@/lib/apiToken'
 import { audit } from '@/lib/audit'
 import { ApiError } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { nextDocId } from '@/lib/docId'
 import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
 import { analyzeInvoiceFile, type Analysis } from '@/lib/erechnung'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
@@ -70,16 +71,29 @@ export async function POST(req: NextRequest) {
       analysis = await analyzeInvoiceFile(buffer, file.type, filename)
     }
     const d = analysis?.data
-    const fileHash = hashBuffer(buffer)
+    // Wie beim Web-Upload: bei Verschlüsselung NICHT den Chiffrat-Hash bilden
+    // (zufälliges IV pro Verschlüsselung → nie deterministisch). Stattdessen
+    // einen vom Plugin mitgeschickten Klartext-Hash übernehmen, falls
+    // vorhanden (Plugin muss ihn vor dem Verschlüsseln bilden, wie
+    // lib/clientCrypto.ts sha256Hex es für den Web-Upload tut).
+    const suppliedHash = String(form.get('fileHash') ?? '')
+    const fileHash = isEncrypted
+      ? (/^[a-f0-9]{64}$/i.test(suppliedHash) ? suppliedHash : null)
+      : hashBuffer(buffer)
     const duplicateOfId = await detectDuplicate(tenant.id, {
       fileHash,
       invoiceNumber: d?.number ?? null,
       vendor: d?.sellerName ?? null,
     })
 
+    const docId = await nextDocId(tenant.id)
+    const autoElectronicOk = analysis?.validation?.valid === true
     const invoice = await prisma.invoice.create({
       data: {
         tenantId: tenant.id,
+        docId,
+        checkElectronicAt: autoElectronicOk ? new Date() : null,
+        checkElectronicBy: autoElectronicOk ? 'System (automatische Prüfung)' : null,
         vendor: d?.sellerName || vendor,
         invoiceNumber: d?.number ?? null,
         invoiceDate: d?.issueDate ? new Date(d.issueDate) : null,

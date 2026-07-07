@@ -8,6 +8,7 @@ import { ImapFlow } from 'imapflow'
 import { simpleParser, type AddressObject, type ParsedMail } from 'mailparser'
 import { audit } from '@/lib/audit'
 import { prisma } from '@/lib/db'
+import { nextDocId } from '@/lib/docId'
 import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
 import { analyzeInvoiceFile } from '@/lib/erechnung'
 import { getSettings } from '@/lib/settings'
@@ -157,9 +158,14 @@ export async function handleParsedMail(
       vendor: d?.sellerName ?? null,
     })
     const fileName = await saveInvoiceFile(tenant.id, att.filename ?? 'beleg.pdf', buffer)
+    const docId = await nextDocId(tenant.id)
+    const autoElectronicOk = analysis.validation?.valid === true
     const invoice = await prisma.invoice.create({
       data: {
         tenantId: tenant.id,
+        docId,
+        checkElectronicAt: autoElectronicOk ? new Date() : null,
+        checkElectronicBy: autoElectronicOk ? 'System (automatische Prüfung)' : null,
         vendor: d?.sellerName || domainOf(from) || from,
         invoiceNumber: d?.number ?? null,
         invoiceDate: d?.issueDate ? new Date(d.issueDate) : null,

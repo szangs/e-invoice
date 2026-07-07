@@ -71,6 +71,10 @@ model Tenant {
   reportEmail     String?
   lastReportAt    DateTime?
   lastReportHash  String?
+  // Zähler für eindeutige Dokumenten-IDs (<Slug>-<laufende Nummer>, siehe
+  // lib/docId.ts und Invoice.docId) — atomar hochgezählt, damit auch bei
+  // gleichzeitigen Uploads keine Doppelvergabe entsteht.
+  nextDocSeq       Int       @default(0)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
   users            User[]
@@ -191,6 +195,11 @@ model Invoice {
   id            String        @id @default(cuid())
   tenantId      String
   tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  // Eindeutige, lesbare Dokumenten-ID (<Slug>-<laufende Nummer>, z. B.
+  // "musterfirma-000001") — für GoBD-Referenzierung außerhalb der internen
+  // cuid. Nullable für Bestandsdaten vor Einführung dieses Felds (Backfill
+  // per scripts/backfill-doc-ids.ts), danach immer gesetzt.
+  docId         String?       @unique
   vendor        String
   invoiceNumber String?
   invoiceDate   DateTime?
@@ -210,12 +219,37 @@ model Invoice {
   // Dubletten-Prüfung: Datei-Hash + Verweis auf das erkannte Original
   fileHash      String? // SHA-256 der Beleg-Datei
   duplicateOfId String? // gesetzt = als Dublette erkannt
+  // KI-Datenerkennung: true = mindestens ein Feld wurde per KI übernommen
+  // (Erstauswahl beim Scannen oder nachträglich auf der Detailseite), sonst
+  // von Hand erfasst — sichtbar in der Rechnungsliste (source = "SCAN" +
+  // aiAssisted zusammen zeigen dort Herkunft/Erfassungsart).
+  aiAssisted    Boolean @default(false)
   // E-Rechnung (W17): erkanntes Format + Prüfergebnis + XML für die Visualisierung
   docFormat        String? // ZUGFERD | XRECHNUNG_CII | XRECHNUNG_UBL | PDF | OTHER
   xmlData          String? // eingebettetes/originales Rechnungs-XML
   validationOk     Boolean? // Pflichtfeld-Prüfung (EN 16931-Kern) bestanden?
   validationIssues String? // fehlende Pflichtangaben (kommagetrennt)
+  // Rechnungsprüfung (klassischer 4-Augen-Workflow): je Schritt wer + wann
+  // geprüft hat — gesetzt = erledigt, null = offen. Vom Server gestempelt
+  // (angemeldeter Nutzer), nicht vom Client frei setzbar.
+  checkElectronicAt  DateTime? // Elektronische Vorprüfung
+  checkElectronicBy  String?
+  checkFormalAt      DateTime? // Formal richtig
+  checkFormalBy      String?
+  checkSubstantiveAt DateTime? // Sachlich richtig
+  checkSubstantiveBy String?
+  checkAccountingAt  DateTime? // An Buchhaltung übergeben
+  checkAccountingBy  String?
+  // Zahlungsart: Lieferant zieht den Betrag selbst per Lastschrift/Abbuchung
+  // ein (statt Überweisung durch uns)
+  directDebitByVendor Boolean @default(false)
   source        String        @default("UPLOAD")
+  // "Löschen" markiert nur — echtes Entfernen widerspräche der revisionssicheren
+  // Nachvollziehbarkeit (GoBD). Gelöschte Rechnungen verschwinden aus der
+  // normalen Liste, bleiben aber (inkl. Beleg-Datei) erhalten und lassen sich
+  // wiederherstellen.
+  deletedAt     DateTime?
+  deletedBy     String?
   createdById   String?
   createdBy     User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
   createdAt     DateTime      @default(now())
@@ -224,4 +258,5 @@ model Invoice {
   @@index([tenantId, status])
   @@index([tenantId, invoiceDate])
   @@index([tenantId, fileHash])
+  @@index([tenantId, deletedAt])
 }

@@ -6,6 +6,7 @@ import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { nextDocId } from '@/lib/docId'
 import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
 import { analyzeInvoiceFile, type Analysis } from '@/lib/erechnung'
 import { toDTO } from '@/lib/invoices'
@@ -25,6 +26,15 @@ const fieldsSchema = z.object({
   // Zero-Knowledge: "1" = Datei wurde bereits im Browser verschlüsselt
   encrypted: z.string().optional(),
   encOrigMime: z.string().optional(),
+  // Bei verschlüsseltem Upload: SHA-256 des KLARTEXTS, im Browser VOR dem
+  // Verschlüsseln gebildet (siehe lib/clientCrypto.ts sha256Hex) — für die
+  // Dubletten-Erkennung. Wird bei unverschlüsseltem Upload ignoriert
+  // (Server berechnet dort selbst, siehe unten).
+  fileHash: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+  // Herkunft/Erfassungsart — nur diese beiden client-seitig erlaubt (EMAIL/
+  // EXTENSION/RESTORE sind serverseitig gesetzte Herkünfte, nicht spoofbar)
+  source: z.enum(['UPLOAD', 'SCAN']).default('UPLOAD'),
+  aiAssisted: z.string().optional(),
 })
 
 function parseAmount(v?: string): number | null {
@@ -66,7 +76,11 @@ export async function POST(req: NextRequest) {
       if (!isEncrypted) {
         analysis = await analyzeInvoiceFile(buffer, file.type, file.name)
       }
-      fileHash = hashBuffer(buffer)
+      // Dubletten-Hash: bei Verschlüsselung NICHT über das Chiffrat bilden (AES-GCM
+      // nutzt pro Verschlüsselung ein zufälliges IV — derselbe Klartext ergäbe bei
+      // jedem Upload ein anderes Chiffrat und damit nie einen Treffer). Stattdessen
+      // den vom Browser mitgeschickten Klartext-Hash übernehmen.
+      fileHash = isEncrypted ? (fields.fileHash ?? null) : hashBuffer(buffer)
     }
     const d = analysis?.data
     const duplicateOfId = await detectDuplicate(tenantId, {
@@ -75,9 +89,18 @@ export async function POST(req: NextRequest) {
       vendor: fields.vendor || d?.sellerName || null,
     })
 
+    const docId = await nextDocId(tenantId)
+    // Elektronische Vorprüfung automatisch abhaken, wenn die E-Rechnung
+    // (ZUGFeRD/XRechnung) beim Einlesen bereits als formal gültig erkannt
+    // wurde — Stefan 2026-07-07: soll nicht erst manuell gesetzt werden
+    // müssen, wenn die Maschine es ohnehin schon geprüft hat.
+    const autoElectronicOk = analysis?.validation?.valid === true
     const invoice = await prisma.invoice.create({
       data: {
         tenantId,
+        docId,
+        checkElectronicAt: autoElectronicOk ? new Date() : null,
+        checkElectronicBy: autoElectronicOk ? 'System (automatische Prüfung)' : null,
         vendor: fields.vendor || d?.sellerName || 'Unbekannt',
         invoiceNumber: fields.invoiceNumber || d?.number || null,
         invoiceDate: fields.invoiceDate
@@ -100,6 +123,8 @@ export async function POST(req: NextRequest) {
         encOrigMime: isEncrypted ? fields.encOrigMime || null : null,
         fileHash,
         duplicateOfId,
+        source: fields.source,
+        aiAssisted: fields.aiAssisted === '1',
         docFormat: analysis?.format ?? null,
         xmlData: analysis?.xml ?? null,
         validationOk: analysis?.validation?.valid ?? null,

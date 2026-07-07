@@ -101,4 +101,20 @@ export async function decryptBytes(dek: CryptoKey, blob: ArrayBuffer): Promise<A
   )
 }
 
+/**
+ * SHA-256 des KLARTEXTS (Hex) — für die Dubletten-Erkennung bei aktiver
+ * Verschlüsselung. WICHTIG: AES-GCM verwendet pro Verschlüsselung ein neues
+ * zufälliges IV, das Chiffrat ist also bei identischem Klartext nie gleich —
+ * ein serverseitig über das Chiffrat gebildeter Hash kann Dubletten deshalb
+ * nie erkennen. Der Hash hier wird VOR dem Verschlüsseln im Browser gebildet
+ * und nur als Fingerabdruck mitgeschickt (kein Klartext-Inhalt) — mit dem
+ * Zero-Knowledge-Prinzip vereinbar.
+ */
+export async function sha256Hex(data: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', data)
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+}
+
 export { b64encode, b64decode }
