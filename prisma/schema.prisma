@@ -194,6 +194,11 @@ model Invoice {
   mimeType      String?
   encrypted     Boolean @default(false) // Datei liegt als Chiffrat (IV + AES-GCM)
   encOrigMime   String? // ursprünglicher MIME-Typ (für Anzeige nach Entschlüsselung)
+  // E-Rechnung (W17): erkanntes Format + Prüfergebnis + XML für die Visualisierung
+  docFormat        String? // ZUGFERD | XRECHNUNG_CII | XRECHNUNG_UBL | PDF | OTHER
+  xmlData          String? // eingebettetes/originales Rechnungs-XML
+  validationOk     Boolean? // Pflichtfeld-Prüfung (EN 16931-Kern) bestanden?
+  validationIssues String? // fehlende Pflichtangaben (kommagetrennt)
   source        String        @default("UPLOAD")
   createdById   String?
   createdBy     User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)

@@ -8,6 +8,7 @@ import { ImapFlow } from 'imapflow'
 import { simpleParser, type AddressObject, type ParsedMail } from 'mailparser'
 import { audit } from '@/lib/audit'
 import { prisma } from '@/lib/db'
+import { analyzeInvoiceFile } from '@/lib/erechnung'
 import { getSettings } from '@/lib/settings'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
 
@@ -128,21 +129,32 @@ export async function handleParsedMail(
 
   let processed = 0
   for (const att of usable) {
-    const fileName = await saveInvoiceFile(
-      tenant.id,
-      att.filename ?? 'beleg.pdf',
-      Buffer.from(att.content),
-    )
+    const buffer = Buffer.from(att.content)
+    // E-Rechnung (W17): Format erkennen, Daten übernehmen, Pflichtfelder prüfen
+    const analysis = await analyzeInvoiceFile(buffer, att.contentType, att.filename ?? '')
+    const d = analysis.data
+    const fileName = await saveInvoiceFile(tenant.id, att.filename ?? 'beleg.pdf', buffer)
     const invoice = await prisma.invoice.create({
       data: {
         tenantId: tenant.id,
-        vendor: domainOf(from) || from,
+        vendor: d?.sellerName || domainOf(from) || from,
+        invoiceNumber: d?.number ?? null,
+        invoiceDate: d?.issueDate ? new Date(d.issueDate) : null,
+        dueDate: d?.dueDate ? new Date(d.dueDate) : null,
+        amountNet: d?.net ?? null,
+        amountTax: d?.tax ?? null,
+        amountGross: d?.gross ?? null,
+        currency: d?.currency ?? 'EUR',
         status: InvoiceStatus.NEW,
         notes: `E-Mail-Eingang (${via}): ${subject || '(ohne Betreff)'} · von ${from}`,
         fileName,
         originalName: att.filename ?? 'beleg.pdf',
         mimeType: att.contentType,
         source: 'EMAIL',
+        docFormat: analysis.format,
+        xmlData: analysis.xml,
+        validationOk: analysis.validation?.valid ?? null,
+        validationIssues: analysis.validation?.missing.join(', ') || null,
       },
     })
     await prisma.mailIntake.create({
@@ -152,7 +164,7 @@ export async function handleParsedMail(
         toAddress: match.to,
         subject,
         status: 'PROCESSED',
-        detail: att.filename ?? undefined,
+        detail: `${att.filename ?? 'Anhang'} (${analysis.format})`,
         invoiceId: invoice.id,
       },
     })

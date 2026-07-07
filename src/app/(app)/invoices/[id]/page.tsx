@@ -1,8 +1,10 @@
-// Rechnungsdetail — Server lädt, Client-Formular bearbeitet
+// Rechnungsdetail — E-Rechnungs-Ansicht (Rechnungsbild) + Bearbeitungsformular
 import { notFound, redirect } from 'next/navigation'
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { parseInvoiceXml, validateData, type DocFormat } from '@/lib/erechnung'
 import { toDTO } from '@/lib/invoices'
+import { ERechnungView } from './ERechnungView'
 import { InvoiceEditForm } from './InvoiceEditForm'
 
 export const dynamic = 'force-dynamic'
@@ -14,5 +16,22 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
     where: { id: params.id, tenantId: ctx.tenantId },
   })
   if (!invoice) notFound()
-  return <InvoiceEditForm invoice={toDTO(invoice)} />
+
+  // Rechnungsbild: bei digitalen Formaten die XML-Daten visualisieren
+  const parsed = invoice.xmlData ? parseInvoiceXml(invoice.xmlData) : null
+  const data = parsed?.data ?? null
+  const format = (invoice.docFormat as DocFormat | null) ?? parsed?.format ?? null
+
+  return (
+    <div className="space-y-6">
+      {format && format !== 'OTHER' && (format !== 'PDF' || invoice.validationOk !== null) && (
+        <ERechnungView
+          format={format}
+          data={data}
+          validation={data ? validateData(data) : null}
+        />
+      )}
+      <InvoiceEditForm invoice={toDTO(invoice)} />
+    </div>
+  )
 }

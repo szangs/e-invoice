@@ -76,15 +76,16 @@ export default function NewInvoicePage() {
   return (
     <form onSubmit={submit} className="dp-card max-w-2xl space-y-4">
       <div>
-        <label className="dp-label">Beleg (PDF, PNG, JPG, WebP — max. 10 MB)</label>
+        <label className="dp-label">Beleg (PDF, XML, PNG, JPG, WebP — max. 10 MB)</label>
         <input
           type="file"
-          accept="application/pdf,image/png,image/jpeg,image/webp"
+          accept="application/pdf,application/xml,text/xml,.xml,image/png,image/jpeg,image/webp"
           className="dp-input mt-1"
           onChange={(e) => setFile(e.target.files?.[0] ?? null)}
         />
         <p className="mt-0.5 text-[10px] text-gray-400">
-          Automatische KI-Extraktion der Felder folgt in Runde 2 — Felder bitte manuell erfassen.
+          E-Rechnungen (ZUGFeRD/XRechnung) werden automatisch erkannt — Daten wie Nummer,
+          Datum und Beträge werden übernommen, leere Felder kannst du hier vorbelegen.
         </p>
         {encEnabled && (
           <p className="mt-1 text-[11px] font-medium text-[var(--accent)]">

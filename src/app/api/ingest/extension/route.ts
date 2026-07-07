@@ -8,6 +8,7 @@ import { resolveToken } from '@/lib/apiToken'
 import { audit } from '@/lib/audit'
 import { ApiError } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { analyzeInvoiceFile, type Analysis } from '@/lib/erechnung'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
 
 export const dynamic = 'force-dynamic'
@@ -62,10 +63,24 @@ export async function POST(req: NextRequest) {
     const buffer = Buffer.from(await file.arrayBuffer())
     const storedName = await saveInvoiceFile(tenant.id, filename, buffer)
 
+    // E-Rechnung (W17): nur unverschlüsselte Dateien sind serverseitig analysierbar
+    let analysis: Analysis | null = null
+    if (!isEncrypted) {
+      analysis = await analyzeInvoiceFile(buffer, file.type, filename)
+    }
+    const d = analysis?.data
+
     const invoice = await prisma.invoice.create({
       data: {
         tenantId: tenant.id,
-        vendor,
+        vendor: d?.sellerName || vendor,
+        invoiceNumber: d?.number ?? null,
+        invoiceDate: d?.issueDate ? new Date(d.issueDate) : null,
+        dueDate: d?.dueDate ? new Date(d.dueDate) : null,
+        amountNet: d?.net ?? null,
+        amountTax: d?.tax ?? null,
+        amountGross: d?.gross ?? null,
+        currency: d?.currency ?? 'EUR',
         status: InvoiceStatus.NEW,
         notes: sourceUrl ? `Gefangen von: ${sourceUrl}` : null,
         fileName: storedName,
@@ -73,6 +88,10 @@ export async function POST(req: NextRequest) {
         mimeType: isEncrypted ? 'application/octet-stream' : file.type,
         encrypted: isEncrypted,
         encOrigMime: isEncrypted ? encOrigMime : null,
+        docFormat: analysis?.format ?? null,
+        xmlData: analysis?.xml ?? null,
+        validationOk: analysis?.validation?.valid ?? null,
+        validationIssues: analysis?.validation?.missing.join(', ') || null,
         source: 'EXTENSION',
       },
     })

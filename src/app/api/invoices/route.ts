@@ -6,6 +6,7 @@ import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { analyzeInvoiceFile, type Analysis } from '@/lib/erechnung'
 import { toDTO } from '@/lib/invoices'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
 
@@ -44,6 +45,7 @@ export async function POST(req: NextRequest) {
     let fileName: string | null = null
     let originalName: string | null = null
     let mimeType: string | null = null
+    let analysis: Analysis | null = null
     const file = form.get('file')
     if (file instanceof File && file.size > 0) {
       // Verschlüsselte Belege kommen als Chiffrat (octet-stream) — Server kann und
@@ -58,18 +60,27 @@ export async function POST(req: NextRequest) {
       fileName = await saveInvoiceFile(tenantId, file.name, buffer)
       originalName = file.name.replace(/\.enc$/, '')
       mimeType = isEncrypted ? 'application/octet-stream' : file.type
+      // E-Rechnung (W17): nur bei unverschlüsselten Dateien analysierbar
+      if (!isEncrypted) {
+        analysis = await analyzeInvoiceFile(buffer, file.type, file.name)
+      }
     }
+    const d = analysis?.data
 
     const invoice = await prisma.invoice.create({
       data: {
         tenantId,
-        vendor: fields.vendor,
-        invoiceNumber: fields.invoiceNumber || null,
-        invoiceDate: fields.invoiceDate ? new Date(fields.invoiceDate) : null,
-        dueDate: fields.dueDate ? new Date(fields.dueDate) : null,
-        amountNet: parseAmount(fields.amountNet),
-        amountTax: parseAmount(fields.amountTax),
-        amountGross: parseAmount(fields.amountGross),
+        vendor: fields.vendor || d?.sellerName || 'Unbekannt',
+        invoiceNumber: fields.invoiceNumber || d?.number || null,
+        invoiceDate: fields.invoiceDate
+          ? new Date(fields.invoiceDate)
+          : d?.issueDate
+            ? new Date(d.issueDate)
+            : null,
+        dueDate: fields.dueDate ? new Date(fields.dueDate) : d?.dueDate ? new Date(d.dueDate) : null,
+        amountNet: parseAmount(fields.amountNet) ?? d?.net ?? null,
+        amountTax: parseAmount(fields.amountTax) ?? d?.tax ?? null,
+        amountGross: parseAmount(fields.amountGross) ?? d?.gross ?? null,
         currency: fields.currency || 'EUR',
         status: InvoiceStatus.NEW,
         tags: fields.tags || null,
@@ -79,6 +90,10 @@ export async function POST(req: NextRequest) {
         mimeType,
         encrypted: isEncrypted && Boolean(fileName),
         encOrigMime: isEncrypted ? fields.encOrigMime || null : null,
+        docFormat: analysis?.format ?? null,
+        xmlData: analysis?.xml ?? null,
+        validationOk: analysis?.validation?.valid ?? null,
+        validationIssues: analysis?.validation?.missing.join(', ') || null,
         createdById: ctx.userId,
       },
     })

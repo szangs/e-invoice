@@ -5,7 +5,15 @@ import { randomBytes } from 'crypto'
 
 const ROOT = path.join(process.cwd(), 'uploads')
 
-export const ALLOWED_MIME = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp']
+export const ALLOWED_MIME = [
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  // E-Rechnung: XRechnung kommt als reines XML
+  'application/xml',
+  'text/xml',
+]
 export const MAX_FILE_BYTES = 10 * 1024 * 1024 // 10 MB
 
 export async function saveInvoiceFile(
