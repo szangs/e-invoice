@@ -66,7 +66,7 @@ async function buildInvoiceFile(pages: ScanPage[]): Promise<File> {
     }
   }
   const bytes = await out.save()
-  return new File([bytes], 'papierrechnung-scan.pdf', { type: 'application/pdf' })
+  return new File([bytes as unknown as BlobPart], 'papierrechnung-scan.pdf', { type: 'application/pdf' })
 }
 
 export default function ScanInvoicePage() {
