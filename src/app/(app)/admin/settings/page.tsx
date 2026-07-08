@@ -52,6 +52,7 @@ export default async function TenantSettingsPage() {
           datevGegenkonto: tenant.datevGegenkonto ?? '',
           datevWjBeginn: tenant.datevWjBeginn ?? '0101',
           datevFibuEmail: tenant.datevFibuEmail ?? '',
+          costCentersEnabled: tenant.costCentersEnabled,
         }}
         encryptionEnabled={tenant.encryptionEnabled}
         lastBackupAt={tenant.lastBackupAt ? tenant.lastBackupAt.toISOString() : null}

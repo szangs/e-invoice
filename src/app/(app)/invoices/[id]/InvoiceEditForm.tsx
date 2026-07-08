@@ -47,12 +47,14 @@ export function InvoiceEditForm({
   baskets,
   pendingApproval,
   encryptionEnabled,
+  costCentersEnabled,
   colleagues,
 }: {
   invoice: InvoiceDTO
   baskets: { id: string; name: string }[]
   pendingApproval: { targetName: string; approvedBy: string[]; needed: number } | null
   encryptionEnabled: boolean
+  costCentersEnabled: boolean
   colleagues: { id: string; name: string }[]
 }) {
   const router = useRouter()
@@ -69,9 +71,22 @@ export function InvoiceEditForm({
     tags: invoice.tags ?? '',
     notes: invoice.notes ?? '',
     directDebitByVendor: invoice.directDebitByVendor,
+    costCenterCode: invoice.costCenterCode ?? '',
+    costCarrierCode: invoice.costCarrierCode ?? '',
   })
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+
+  // Kostenstellen/Kostenträger (Stefan 2026-07-09, #114): Listen nur laden,
+  // wenn der Mandant die Funktion eingeschaltet hat — Workflow-Feld, immer
+  // Klartext, unabhängig von Verschlüsselung/E-Rechnungs-Sperre.
+  const [costCenters, setCostCenters] = useState<{ id: string; code: string; name: string }[]>([])
+  const [costCarriers, setCostCarriers] = useState<{ id: string; code: string; name: string }[]>([])
+  useEffect(() => {
+    if (!costCentersEnabled) return
+    fetch('/api/admin/cost-codes?kind=KOSTENSTELLE').then((r) => r.json()).then((d) => setCostCenters(d.codes ?? [])).catch(() => undefined)
+    fetch('/api/admin/cost-codes?kind=KOSTENTRAEGER').then((r) => r.json()).then((d) => setCostCarriers(d.codes ?? [])).catch(() => undefined)
+  }, [costCentersEnabled])
 
   // Inhalts-Verschlüsselung (Stefan 2026-07-09): vendor/invoiceNumber/
   // amount*/tags/notes oben sind bei contentEnc nur Platzhalter/leer — hier
@@ -265,6 +280,7 @@ export function InvoiceEditForm({
       dueDate: f.dueDate || null,
       status: f.status,
       directDebitByVendor: f.directDebitByVendor,
+      ...(costCentersEnabled ? { costCenterCode: f.costCenterCode || null, costCarrierCode: f.costCarrierCode || null } : {}),
       ...(usedAi ? { aiAssisted: true } : {}),
     }
     let body: Record<string, unknown>
@@ -575,6 +591,34 @@ export function InvoiceEditForm({
             <span className="text-[var(--warn-strong)]" title="KI ist sich hier unsicher — bitte prüfen">⚠</span>
           )}
         </label>
+        {costCentersEnabled && (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="dp-label" title="Buchungsdimension — Liste in den Mandanten-Einstellungen unter DATEV-Export pflegbar">
+                Kostenstelle
+              </label>
+              <select className="dp-input mt-1" value={f.costCenterCode}
+                onChange={(e) => setF((p) => ({ ...p, costCenterCode: e.target.value }))}>
+                <option value="">— keine —</option>
+                {costCenters.map((c) => (
+                  <option key={c.id} value={c.code}>{c.code} — {c.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="dp-label" title="Buchungsdimension — Liste in den Mandanten-Einstellungen unter DATEV-Export pflegbar">
+                Kostenträger
+              </label>
+              <select className="dp-input mt-1" value={f.costCarrierCode}
+                onChange={(e) => setF((p) => ({ ...p, costCarrierCode: e.target.value }))}>
+                <option value="">— keiner —</option>
+                {costCarriers.map((c) => (
+                  <option key={c.id} value={c.code}>{c.code} — {c.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="dp-card">

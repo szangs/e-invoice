@@ -20,6 +20,7 @@ import { requireInvoiceContentAccess } from '@/lib/basketRights'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { EINVOICE_FORMATS } from '@/lib/erechnung'
+import { hasFeature } from '@/lib/license'
 import { rasterizeFirstPage } from '@/lib/pdfRaster'
 import { readInvoiceFile } from '@/lib/storage'
 
@@ -31,6 +32,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     const tenantId = requireTenant(ctx)
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } })
     if (!tenant?.aiAllowed) throw new ApiError(403, 'KI-Funktionen sind für Ihren Mandanten deaktiviert.')
+    if (!tenant || !hasFeature(tenant, 'AI')) throw new ApiError(403, 'KI-Erkennung ist im aktuellen Tarif nicht enthalten.')
 
     const invoice = await prisma.invoice.findFirst({ where: { id: params.id, tenantId } })
     if (!invoice) throw new ApiError(404, 'Rechnung nicht gefunden.')

@@ -4,8 +4,40 @@
 // Datenschlüssel wird IM BROWSER erzeugt, mit der Passphrase verpackt und nur
 // verpackt an den Server gegeben. Passphrase-Wechsel ohne Umschlüsselung der Dateien.
 import { useEffect, useState } from 'react'
-import { deriveKek, generateDekRaw, randomSaltB64, unwrapDek, wrapDek } from '@/lib/clientCrypto'
+import { deriveKek, generateDekRaw, generatePassphrase, randomSaltB64, unwrapDek, wrapDek } from '@/lib/clientCrypto'
 import { cacheDekRaw, fetchEncConfig, type EncConfig } from '@/lib/keyStore'
+
+// Zertifikat/Ausdruck (Stefan 2026-07-09, #102): druckt die aktuell im
+// Formular stehende Passphrase auf ein eigenes Blatt statt sie nur in der
+// Zwischenablage/im Kopf zu behalten — gedacht zum sicheren Verwahren
+// (Tresor o. ä.), NICHT zum digitalen Speichern. Läuft komplett im Browser
+// über ein neues Fenster + window.print(), nichts geht an den Server.
+function printCertificate(passphrase: string, tenantName: string | null) {
+  const w = window.open('', '_blank', 'width=650,height=820')
+  if (!w) return
+  const now = new Date().toLocaleString('de-DE')
+  w.document.write(`<!DOCTYPE html><html><head><title>Passphrase-Zertifikat</title><meta charset="utf-8"><style>
+    body{font-family:Arial,Helvetica,sans-serif;padding:48px;color:#111}
+    h1{font-size:18px;margin:0 0 4px}
+    .sub{font-size:12px;color:#666;margin:0 0 24px}
+    .pass{font-family:'Courier New',monospace;font-size:22px;letter-spacing:1px;background:#f3f4f6;
+      border:1px solid #ccc;border-radius:10px;padding:20px;margin:24px 0;text-align:center;word-break:break-all}
+    .warn{border:1px solid #d97706;background:#fffbeb;color:#92400e;padding:14px;border-radius:8px;font-size:13px;line-height:1.5}
+    .meta{font-size:11px;color:#999;margin-top:32px}
+  </style></head><body>
+    <h1>E-Invoice — Passphrase-Zertifikat</h1>
+    <p class="sub">${tenantName ? `${tenantName} — ` : ''}erzeugt am ${now}</p>
+    <div class="pass">${passphrase}</div>
+    <div class="warn"><strong>Wichtig:</strong> Diese Passphrase schützt Ihre verschlüsselten Belege
+      (Zero-Knowledge — nur Sie besitzen sie). Geht sie verloren, sind die Belege unwiederbringlich
+      verloren; es gibt keinen Wiederherstellungsweg, auch nicht durch den Betreiber. Diesen Ausdruck
+      sicher und getrennt vom Computer aufbewahren (z. B. Tresor).</div>
+    <p class="meta">Bitte nach dem Ausdrucken nicht digital speichern, fotografieren oder per E-Mail versenden.</p>
+  </body></html>`)
+  w.document.close()
+  w.focus()
+  w.print()
+}
 
 export function EncryptionSetup() {
   const [cfg, setCfg] = useState<EncConfig | null>(null)
@@ -15,12 +47,33 @@ export function EncryptionSetup() {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
+  // Zeigt die Passphrase einmal offen an, nachdem sie generiert wurde — sonst
+  // sähe der Nutzer nie, was in den maskierten Feldern gelandet ist.
+  const [revealed, setRevealed] = useState('')
+  const [copyMsg, setCopyMsg] = useState('')
 
   useEffect(() => {
     fetchEncConfig().then(setCfg).catch(() => setErr('Konfiguration nicht ladbar.'))
   }, [])
 
   if (!cfg) return null
+
+  function generate() {
+    const p = generatePassphrase()
+    setPass1(p)
+    setPass2(p)
+    setRevealed(p)
+    setCopyMsg('')
+  }
+
+  async function copyRevealed() {
+    try {
+      await navigator.clipboard.writeText(revealed)
+      setCopyMsg('In die Zwischenablage kopiert.')
+    } catch {
+      setCopyMsg('Kopieren nicht möglich — bitte manuell markieren.')
+    }
+  }
 
   async function enable(e: React.FormEvent) {
     e.preventDefault()
@@ -45,7 +98,7 @@ export function EncryptionSetup() {
         return
       }
       cacheDekRaw(dekRaw)
-      setCfg({ enabled: true, salt, wrappedDek })
+      setCfg({ enabled: true, salt, wrappedDek, tenantName: cfg?.tenantName ?? null })
       setMsg('Verschlüsselung aktiviert. Neue Belege werden ab jetzt im Browser verschlüsselt.')
       setPass1('')
       setPass2('')
@@ -84,7 +137,7 @@ export function EncryptionSetup() {
         return
       }
       cacheDekRaw(dekRaw)
-      setCfg({ enabled: true, salt, wrappedDek })
+      setCfg({ enabled: true, salt, wrappedDek, tenantName: cfg?.tenantName ?? null })
       setMsg('Passphrase geändert — bestehende Belege bleiben ohne Umschlüsselung lesbar.')
       setOldPass('')
       setPass1('')
@@ -112,18 +165,23 @@ export function EncryptionSetup() {
 
       {!cfg.enabled ? (
         <form onSubmit={enable} className="space-y-3">
+          <button type="button" className="btn-secondary !text-xs" onClick={generate}
+            title="Erzeugt eine zufällige, sehr starke Passphrase (125 Bit) — gedacht zum Ausdrucken/Verwahren statt Merken">
+            🎲 Zufällige Passphrase generieren
+          </button>
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <label className="dp-label">Passphrase (min. 10 Zeichen)</label>
               <input type="password" className="dp-input mt-1" value={pass1}
-                onChange={(e) => setPass1(e.target.value)} />
+                onChange={(e) => { setPass1(e.target.value); setRevealed('') }} />
             </div>
             <div>
               <label className="dp-label">Passphrase wiederholen</label>
               <input type="password" className="dp-input mt-1" value={pass2}
-                onChange={(e) => setPass2(e.target.value)} />
+                onChange={(e) => { setPass2(e.target.value); setRevealed('') }} />
             </div>
           </div>
+          <PassphraseReveal revealed={revealed} tenantName={cfg.tenantName} copyMsg={copyMsg} onCopy={copyRevealed} />
           {err && <p className="text-sm text-[var(--danger)]">{err}</p>}
           {msg && <p className="text-sm text-[var(--accent)]">{msg}</p>}
           <button className="btn-primary" disabled={busy}>
@@ -134,6 +192,10 @@ export function EncryptionSetup() {
         <form onSubmit={rekey} className="space-y-3">
           <p className="text-sm font-semibold text-[var(--accent)]">Verschlüsselung ist aktiv.</p>
           <p className="dp-label">Passphrase ändern</p>
+          <button type="button" className="btn-secondary !text-xs" onClick={generate}
+            title="Erzeugt eine zufällige, sehr starke Passphrase (125 Bit) — gedacht zum Ausdrucken/Verwahren statt Merken">
+            🎲 Zufällige Passphrase generieren
+          </button>
           <div className="grid gap-3 sm:grid-cols-3">
             <div>
               <label className="dp-label">Aktuelle Passphrase</label>
@@ -143,14 +205,15 @@ export function EncryptionSetup() {
             <div>
               <label className="dp-label">Neue Passphrase</label>
               <input type="password" className="dp-input mt-1" value={pass1}
-                onChange={(e) => setPass1(e.target.value)} />
+                onChange={(e) => { setPass1(e.target.value); setRevealed('') }} />
             </div>
             <div>
               <label className="dp-label">Neue wiederholen</label>
               <input type="password" className="dp-input mt-1" value={pass2}
-                onChange={(e) => setPass2(e.target.value)} />
+                onChange={(e) => { setPass2(e.target.value); setRevealed('') }} />
             </div>
           </div>
+          <PassphraseReveal revealed={revealed} tenantName={cfg.tenantName} copyMsg={copyMsg} onCopy={copyRevealed} />
           {err && <p className="text-sm text-[var(--danger)]">{err}</p>}
           {msg && <p className="text-sm text-[var(--accent)]">{msg}</p>}
           <button className="btn-secondary" disabled={busy || !oldPass}>
@@ -159,5 +222,37 @@ export function EncryptionSetup() {
         </form>
       )}
     </section>
+  )
+}
+
+/** Zeigt eine frisch generierte Passphrase einmal offen an (sonst nie sichtbar,
+ *  da die Felder maskiert sind) + Kopieren/Zertifikat-Druck (Stefan 2026-07-09, #102). */
+function PassphraseReveal({
+  revealed, tenantName, copyMsg, onCopy,
+}: {
+  revealed: string
+  tenantName: string | null
+  copyMsg: string
+  onCopy: () => void
+}) {
+  if (!revealed) return null
+  return (
+    <div className="rounded-lg border border-[var(--accent-soft)] bg-[var(--accent-bg)] p-3 space-y-2">
+      <p className="text-[11px] font-medium text-[var(--accent)]">
+        Generierte Passphrase — jetzt notieren/drucken, sie wird hier nicht noch einmal angezeigt:
+      </p>
+      <p className="break-all rounded bg-white px-3 py-2 font-mono text-sm">{revealed}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" className="btn-secondary !px-2 !py-1 text-xs" onClick={onCopy}>
+          Kopieren
+        </button>
+        <button type="button" className="btn-secondary !px-2 !py-1 text-xs"
+          onClick={() => printCertificate(revealed, tenantName)}
+          title="Öffnet ein druckbares Zertifikat mit dieser Passphrase — zum Ausdrucken und sicher Verwahren (z. B. Tresor)">
+          🖨 Zertifikat drucken
+        </button>
+        {copyMsg && <span className="text-[11px] text-gray-500">{copyMsg}</span>}
+      </div>
+    </div>
   )
 }

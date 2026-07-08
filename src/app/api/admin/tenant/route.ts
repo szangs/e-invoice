@@ -4,8 +4,9 @@ import { Role } from '@prisma/client'
 import { z } from 'zod'
 import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
-import { getContext, requireTenant } from '@/lib/context'
+import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { hasFeature } from '@/lib/license'
 
 const schema = z.object({
   aiAllowed: z.boolean().optional(),
@@ -32,6 +33,7 @@ const schema = z.object({
   datevGegenkonto: z.string().max(20).optional(),
   datevWjBeginn: z.string().regex(/^\d{4}$/).optional().or(z.literal('')),
   datevFibuEmail: z.string().email().optional().or(z.literal('')),
+  costCentersEnabled: z.boolean().optional(),
 })
 
 export async function PATCH(req: NextRequest) {
@@ -39,6 +41,12 @@ export async function PATCH(req: NextRequest) {
     const ctx = await getContext({ roles: [Role.TENANT_ADMIN] })
     const tenantId = requireTenant(ctx)
     const data = schema.parse(await req.json())
+    if (data.costCentersEnabled) {
+      const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } })
+      if (!tenant || !hasFeature(tenant, 'COST_CENTERS')) {
+        throw new ApiError(403, 'Kostenstellen/Kostenträger sind im aktuellen Tarif nicht enthalten.')
+      }
+    }
     await prisma.tenant.update({
       where: { id: tenantId },
       data: {

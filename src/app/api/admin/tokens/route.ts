@@ -5,8 +5,9 @@ import { z } from 'zod'
 import { jsonError } from '@/lib/api'
 import { generateToken, hashToken } from '@/lib/apiToken'
 import { audit } from '@/lib/audit'
-import { getContext, requireTenant } from '@/lib/context'
+import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { hasFeature } from '@/lib/license'
 
 export const dynamic = 'force-dynamic'
 
@@ -31,6 +32,10 @@ export async function POST(req: NextRequest) {
   try {
     const ctx = await getContext({ roles: [Role.TENANT_ADMIN] })
     const tenantId = requireTenant(ctx)
+    const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } })
+    if (!tenant || !hasFeature(tenant, 'CATCHER')) {
+      throw new ApiError(403, 'Der Rechnungs-Catcher ist im aktuellen Tarif nicht enthalten.')
+    }
     const { label } = schema.parse(await req.json())
     const token = generateToken()
     await prisma.apiToken.create({ data: { tenantId, label, tokenHash: hashToken(token) } })

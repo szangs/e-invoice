@@ -32,6 +32,11 @@ const schema = z.object({
   status: z.nativeEnum(InvoiceStatus).optional(),
   tags: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
+  // Kostenstellen/Kostenträger (Stefan 2026-07-09, #114): Workflow-Feld wie
+  // Status/Fälligkeit — bleibt IMMER Klartext, auch bei E-Rechnungen (nicht
+  // in TAX_RELEVANT_FIELDS) und bei aktiver Inhalts-Verschlüsselung.
+  costCenterCode: z.string().nullable().optional(),
+  costCarrierCode: z.string().nullable().optional(),
   // Inhalts-Verschlüsselung (Stefan 2026-07-09): ersetzt vendor/invoiceNumber/
   // amount*/currency/tags/notes oben durch ein einziges Chiffrat — siehe
   // clientCrypto.ts encryptJson / /invoices/[id]/InvoiceEditForm.tsx.

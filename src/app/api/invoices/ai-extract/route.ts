@@ -14,6 +14,7 @@ import { extractInvoiceFromImage } from '@/lib/aiExtract'
 import { audit } from '@/lib/audit'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { hasFeature } from '@/lib/license'
 import { rasterizeFirstPage } from '@/lib/pdfRaster'
 
 const MAX_BYTES = 10 * 1024 * 1024
@@ -24,6 +25,7 @@ export async function POST(req: NextRequest) {
     const tenantId = requireTenant(ctx)
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } })
     if (!tenant?.aiAllowed) throw new ApiError(403, 'KI-Funktionen sind für Ihren Mandanten deaktiviert.')
+    if (!tenant || !hasFeature(tenant, 'AI')) throw new ApiError(403, 'KI-Erkennung ist im aktuellen Tarif nicht enthalten.')
     const form = await req.formData()
     const file = form.get('file')
     if (!(file instanceof File) || file.size === 0) throw new ApiError(400, 'Keine Datei erhalten.')

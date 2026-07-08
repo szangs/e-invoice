@@ -12,6 +12,7 @@ import { prisma } from '@/lib/db'
 import { nextDocId } from '@/lib/docId'
 import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
 import { analyzeInvoiceFile, type Analysis } from '@/lib/erechnung'
+import { hasFeature } from '@/lib/license'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
 
 export const dynamic = 'force-dynamic'
@@ -36,6 +37,9 @@ export async function POST(req: NextRequest) {
   try {
     const token = await resolveToken(req)
     const tenant = token.tenant
+    if (!hasFeature(tenant, 'CATCHER')) {
+      throw new ApiError(403, 'Der Rechnungs-Catcher ist im aktuellen Tarif nicht (mehr) enthalten.')
+    }
     const form = await req.formData()
 
     const sourceUrl = String(form.get('sourceUrl') ?? '')

@@ -62,6 +62,7 @@ export async function GET(req: NextRequest) {
     const header = [
       'Dokumenten-ID', 'Lieferant', 'Rechnungsnummer', 'Rechnungsdatum', 'Fälligkeit',
       'Netto', 'Steuer', 'Brutto', 'Währung', 'Status', 'Tags', 'Notizen',
+      'Kostenstelle', 'Kostenträger',
     ].join(';')
     const rows = invoices.map((i) =>
       [
@@ -77,6 +78,10 @@ export async function GET(req: NextRequest) {
         STATUS_LABELS[i.status],
         csvField(i.tags),
         csvField(i.notes),
+        // Kostenstellen/Kostenträger (Stefan 2026-07-09, #114) — leer, wenn
+        // beim Mandanten nicht aktiviert oder auf der Rechnung nicht gesetzt.
+        csvField(i.costCenterCode),
+        csvField(i.costCarrierCode),
       ].join(';'),
     )
     const csv = '﻿' + [header, ...rows].join('\r\n')

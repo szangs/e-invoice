@@ -46,7 +46,7 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
     : null
 
   const [tenant, colleaguesRaw] = await Promise.all([
-    prisma.tenant.findUnique({ where: { id: tenantId }, select: { encryptionEnabled: true } }),
+    prisma.tenant.findUnique({ where: { id: tenantId }, select: { encryptionEnabled: true, costCentersEnabled: true } }),
     prisma.user.findMany({
       where: { tenantId, active: true },
       select: { id: true, email: true, firstName: true, lastName: true },
@@ -84,6 +84,7 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
           baskets={baskets}
           pendingApproval={pending}
           encryptionEnabled={tenant?.encryptionEnabled ?? false}
+          costCentersEnabled={tenant?.costCentersEnabled ?? false}
           colleagues={colleagues}
         />
       </div>

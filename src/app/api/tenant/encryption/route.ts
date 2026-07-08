@@ -9,6 +9,7 @@ import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { hasFeature } from '@/lib/license'
 
 export const dynamic = 'force-dynamic'
 
@@ -18,12 +19,15 @@ export async function GET() {
     const tenantId = requireTenant(ctx)
     const tenant = await prisma.tenant.findUnique({
       where: { id: tenantId },
-      select: { encryptionEnabled: true, encSalt: true, encWrappedDek: true },
+      select: { encryptionEnabled: true, encSalt: true, encWrappedDek: true, name: true },
     })
     return NextResponse.json({
       enabled: tenant?.encryptionEnabled ?? false,
       salt: tenant?.encSalt ?? null,
       wrappedDek: tenant?.encWrappedDek ?? null,
+      // Nur fürs Zertifikat/Ausdruck (Stefan 2026-07-09, #102) — keine
+      // sicherheitsrelevante Information.
+      tenantName: tenant?.name ?? null,
     })
   } catch (e) {
     return jsonError(e)
@@ -41,6 +45,7 @@ export async function POST(req: NextRequest) {
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } })
     if (!tenant) throw new ApiError(404, 'Mandant nicht gefunden')
     if (tenant.encryptionEnabled) throw new ApiError(409, 'Verschlüsselung ist bereits eingerichtet.')
+    if (!hasFeature(tenant, 'ENCRYPTION')) throw new ApiError(403, 'Beleg-Verschlüsselung ist im aktuellen Tarif nicht enthalten.')
 
     await prisma.tenant.update({
       where: { id: tenantId },

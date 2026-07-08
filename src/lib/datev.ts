@@ -13,6 +13,21 @@
 // optionale Spalten weg — laut Spezifikation zulässig, eine Zeile darf nach
 // der letzten belegten Spalte enden. Bitte den ERSTEN Export gemeinsam mit
 // dem Steuerberater/der Fibu gegenprüfen, bevor er produktiv importiert wird.
+//
+// OFFEN (Stefan 2026-07-09, #114): Kostenstelle/Kostenträger (Invoice.
+// costCenterCode/costCarrierCode) werden HIER BEWUSST NOCH NICHT eingebaut.
+// Im EXTF-Buchungsstapel sind das die Felder "KOST1 - Kostenstelle" und
+// "KOST2 - Kostenstelle", die in der DATEV-Spalten-Spezifikation erst nach
+// Spalte 14 folgen (Positionsnummer je nach Version, u. a. um Spalte 45/46
+// herum) — um sie korrekt zu platzieren, müssten alle dazwischenliegenden
+// Spalten 15–44 mit definierten (ggf. leeren) Werten befüllt werden, sonst
+// verschieben sich die Werte in der von der Fibu importierten Datei. Ohne
+// Gegenprüfung anhand der aktuellen DATEV-Schnittstellen-Doku (oder mit dem
+// Steuerberater) ist das Risiko einer stillen Fehlbuchung zu hoch, um es hier
+// zu raten — bitte die genaue Spaltenposition für die verwendete DATEV-
+// Version verifizieren, dann in buildDatevExport() ergänzen. Bis dahin sind
+// Kostenstelle/Kostenträger nur in der Rechnung selbst und im freien
+// CSV-Export (api/invoices/export) sichtbar, nicht im DATEV-Buchungsstapel.
 type DatevInvoice = {
   vendor: string
   invoiceNumber: string | null

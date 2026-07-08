@@ -4,11 +4,11 @@ import { b64decode, b64encode, deriveKek, importDek, unwrapDek } from '@/lib/cli
 
 const STORAGE_KEY = 'einvoice.dek'
 
-export type EncConfig = { enabled: boolean; salt: string | null; wrappedDek: string | null }
+export type EncConfig = { enabled: boolean; salt: string | null; wrappedDek: string | null; tenantName: string | null }
 
 export async function fetchEncConfig(): Promise<EncConfig> {
   const res = await fetch('/api/tenant/encryption', { cache: 'no-store' })
-  if (!res.ok) return { enabled: false, salt: null, wrappedDek: null }
+  if (!res.ok) return { enabled: false, salt: null, wrappedDek: null, tenantName: null }
   return res.json()
 }
 

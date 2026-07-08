@@ -14,6 +14,7 @@ import { ensureSystemBaskets } from '@/lib/baskets'
 import { buildDatevExport } from '@/lib/datev'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { hasFeature } from '@/lib/license'
 import { sendSystemMail } from '@/lib/mail'
 import { readInvoiceFile } from '@/lib/storage'
 
@@ -56,6 +57,7 @@ export async function GET(req: NextRequest) {
       throw new ApiError(400, 'DATEV-Export ist nur im Übergabekorb möglich.')
     }
     if (!tenant) throw new ApiError(404, 'Mandant nicht gefunden.')
+    if (!hasFeature(tenant, 'DATEV')) throw new ApiError(403, 'DATEV-Export ist im aktuellen Tarif nicht enthalten.')
     if (!(await hasBasketRight(ctx.userId, ctx.role, basket.id, 'FIBU'))) {
       throw new ApiError(403, 'Kein Recht zur Übergabe an die Fibu.')
     }
@@ -115,6 +117,7 @@ export async function POST(req: NextRequest) {
       throw new ApiError(400, 'DATEV-Export ist nur im Übergabekorb möglich.')
     }
     if (!tenant) throw new ApiError(404, 'Mandant nicht gefunden.')
+    if (!hasFeature(tenant, 'DATEV')) throw new ApiError(403, 'DATEV-Export ist im aktuellen Tarif nicht enthalten.')
     if (!(await hasBasketRight(ctx.userId, ctx.role, basket.id, 'FIBU'))) {
       throw new ApiError(403, 'Kein Recht zur Übergabe an die Fibu.')
     }

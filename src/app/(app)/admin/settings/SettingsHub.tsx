@@ -6,6 +6,7 @@
 // ununterschieden untereinander zu stapeln.
 import { useRouter } from 'next/navigation'
 import { useRef, useState } from 'react'
+import { CostCodesPanel } from './CostCodesPanel'
 import { DatevAccountsPanel } from './DatevAccountsPanel'
 import { EncryptionSetup } from './EncryptionSetup'
 import { TokenManager } from './TokenManager'
@@ -33,6 +34,7 @@ type Switches = {
   datevGegenkonto: string
   datevWjBeginn: string
   datevFibuEmail: string
+  costCentersEnabled: boolean
 }
 
 const FREQUENCIES = [
@@ -469,9 +471,29 @@ export function SettingsHub({
                 </p>
               )}
             </div>
+            <div className="border-t border-[var(--line)] pt-3">
+              <label className="flex items-start gap-2 text-sm text-gray-700"
+                title="Blendet je Rechnung eine Kostenstellen-/Kostenträger-Auswahl ein, befüllt aus den beiden Listen unten">
+                <input type="checkbox" className="mt-0.5" checked={s.costCentersEnabled}
+                  onChange={(e) => setS((p) => ({ ...p, costCentersEnabled: e.target.checked }))} />
+                <span>
+                  Kostenstellen/Kostenträger verwenden
+                  <span className="block text-[11px] text-gray-400">
+                    Bei „aus" bleibt die Auswahl auf der Rechnung ausgeblendet — bereits zugeordnete
+                    Werte gehen dabei nicht verloren.
+                  </span>
+                </span>
+              </label>
+            </div>
             <SaveBar />
           </section>
           <DatevAccountsPanel />
+          {s.costCentersEnabled && (
+            <>
+              <CostCodesPanel kind="KOSTENSTELLE" label="Kostenstellen" />
+              <CostCodesPanel kind="KOSTENTRAEGER" label="Kostenträger" />
+            </>
+          )}
         </>
       )}
 

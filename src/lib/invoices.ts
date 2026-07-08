@@ -53,6 +53,10 @@ export type InvoiceDTO = {
   deletedBy: string | null
   createdAt: string
   basketId: string | null
+  // Kostenstellen/Kostenträger (Stefan 2026-07-09, #114) — immer Klartext,
+  // auch bei aktiver Inhalts-Verschlüsselung (Workflow-Feld, siehe Schema).
+  costCenterCode: string | null
+  costCarrierCode: string | null
   // Inhalts-Verschlüsselung (Stefan 2026-07-09): gesetzt = vendor/invoice
   // Number/amount*/currency/tags/notes oben sind nur Platzhalter/leer, der
   // echte Inhalt steckt hier drin (AES-GCM, Base64) und muss client-seitig
@@ -99,6 +103,8 @@ export function toDTO(inv: Invoice): InvoiceDTO {
     deletedBy: inv.deletedBy,
     createdAt: inv.createdAt.toISOString(),
     basketId: inv.basketId,
+    costCenterCode: inv.costCenterCode,
+    costCarrierCode: inv.costCarrierCode,
     contentEnc: inv.contentEnc,
   }
 }

@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
+import { PLAN_LABELS, PLANS } from '@/lib/license'
 
 export type TenantFormData = {
   id: string; slug: string; name: string; contactName: string; contactEmail: string
@@ -82,7 +83,15 @@ export function TenantEditForm({ tenant }: { tenant: TenantFormData }) {
         {input('city', 'Ort')}
         {input('employeeCount', 'Beschäftigtenzahl', 'number')}
         {input('maxUsers', 'Max. Benutzer', 'number')}
-        {input('licensePlan', 'Tarif/Umfang')}
+        <div>
+          <label className="dp-label">Tarif/Umfang</label>
+          <select className="dp-input mt-1" value={f.licensePlan}
+            onChange={(e) => setF((p) => ({ ...p, licensePlan: e.target.value }))}>
+            {PLANS.map((p) => (
+              <option key={p} value={p}>{PLAN_LABELS[p]}</option>
+            ))}
+          </select>
+        </div>
         {input('licenseSerial', 'Seriennummer')}
         {input('licenseExpiresAt', 'Lizenz-Ablauf (leer = unbegrenzt)', 'date')}
         <div>

@@ -19,6 +19,22 @@ export function randomSaltB64(): string {
   return b64encode(crypto.getRandomValues(new Uint8Array(16)))
 }
 
+// Automatische Passphrase-Generierung (Stefan 2026-07-09, #102): "Beides
+// anbieten" — Kunde kann weiter frei eine eigene Passphrase wählen ODER sich
+// eine zufällige erzeugen lassen (gedacht zum Ausdrucken/Verwahren statt
+// Merken, siehe Zertifikat-Druck in EncryptionSetup.tsx). Alphabet ohne
+// leicht verwechselbare Zeichen (0/O, 1/I/L); 25 Zeichen aus 32-Zeichen-
+// Alphabet ≈ 125 Bit Entropie, in 5er-Gruppen für bessere Lesbarkeit.
+const PASSPHRASE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+
+export function generatePassphrase(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(25))
+  const chars = Array.from(bytes, (b) => PASSPHRASE_ALPHABET[b % PASSPHRASE_ALPHABET.length])
+  const groups: string[] = []
+  for (let i = 0; i < chars.length; i += 5) groups.push(chars.slice(i, i + 5).join(''))
+  return groups.join('-')
+}
+
 /** KEK aus der Kunden-Passphrase ableiten (verlässt nie den Browser). */
 export async function deriveKek(passphrase: string, saltB64: string): Promise<CryptoKey> {
   const material = await crypto.subtle.importKey(

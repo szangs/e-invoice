@@ -106,6 +106,15 @@ model Tenant {
   // dass die Fibu die Dokumente selbst sehen will/muss, nicht nur die
   // Buchungsdaten aus dem DATEV-CSV (Stefan 2026-07-08).
   datevFibuEmail       String?
+  // Kostenstellen/Kostenträger (Stefan 2026-07-09, #114): optionale, im
+  // Mandanten-Stamm abschaltbare Buchungsdimension — genau wie bei den
+  // Lieferanten-Konten oben wird eine Liste (Code+Bezeichnung) importiert,
+  // aus der beim Bearbeiten einer Rechnung ausgewählt werden kann (siehe
+  // CostCode/Invoice.costCenterCode/costCarrierCode). Bei "aus" bleibt die
+  // Auswahl in der Rechnung ausgeblendet, bereits gesetzte Werte gehen dabei
+  // nicht verloren.
+  costCentersEnabled Boolean @default(false)
+  costCodes          CostCode[]
   // Zähler für eindeutige Dokumenten-IDs (<Slug>-<laufende Nummer>, siehe
   // lib/docId.ts und Invoice.docId) — atomar hochgezählt, damit auch bei
   // gleichzeitigen Uploads keine Doppelvergabe entsteht.
@@ -135,6 +144,32 @@ model VendorAccount {
   updatedAt  DateTime @updatedAt
 
   @@unique([tenantId, vendorName])
+}
+
+// ── Kostenstellen/Kostenträger (Stefan 2026-07-09, #114) ── optionale,
+// abschaltbare Buchungsdimension, genau wie VendorAccount per CSV-Import
+// befüllbar (Code;Bezeichnung). Ein Code wird auf der Rechnung als einfacher
+// STRING gespeichert (Invoice.costCenterCode/costCarrierCode), nicht als
+// Fremdschlüssel — wird ein Code später aus dieser Liste gelöscht/umbenannt,
+// bleibt der historische Buchungswert auf bereits zugeordneten Rechnungen
+// unverändert (GoBD: einmal gebuchte Werte nicht rückwirkend verändern).
+enum CostCodeKind {
+  KOSTENSTELLE
+  KOSTENTRAEGER
+}
+
+model CostCode {
+  id        String       @id @default(cuid())
+  tenantId  String
+  tenant    Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kind      CostCodeKind
+  code      String
+  name      String
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@unique([tenantId, kind, code])
+  @@index([tenantId, kind])
 }
 
 // ── Sicherungspakete (Stefan 2026-07-08) ── ZIP-Datei einer Sicherung
@@ -455,6 +490,13 @@ model Invoice {
   // verschlüsselte Mandanten client-seitig laufen (Folgearbeit, siehe Task
   // #101/#102) — hier wird zunächst nur das Datenmodell dafür vorbereitet.
   contentEnc    String?
+  // Kostenstellen/Kostenträger (Stefan 2026-07-09, #114): optionale
+  // Buchungsdimension, nur nutzbar wenn Tenant.costCentersEnabled — als
+  // freier Code-String statt Fremdschlüssel gespeichert (siehe CostCode-
+  // Kommentar oben, GoBD-Grund). Workflow-Feld, bleibt IMMER im Klartext,
+  // auch bei aktiver Inhalts-Verschlüsselung (wie dueDate/status).
+  costCenterCode  String?
+  costCarrierCode String?
   // Dubletten-Prüfung: Datei-Hash + Verweis auf das erkannte Original
   fileHash      String? // SHA-256 der Beleg-Datei
   duplicateOfId String? // gesetzt = als Dublette erkannt

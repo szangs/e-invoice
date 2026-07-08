@@ -5,6 +5,7 @@ import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { PLANS } from '@/lib/license'
 
 const schema = z.object({
   name: z.string().min(2).optional(),
@@ -15,7 +16,9 @@ const schema = z.object({
   city: z.string().optional(),
   employeeCount: z.coerce.number().int().min(0).optional(),
   maxUsers: z.coerce.number().int().min(1).optional(),
-  licensePlan: z.string().optional(),
+  // Lizenz-/Tarifsystem (Stefan 2026-07-09, #105) — vorher Freitext ohne
+  // Wirkung, jetzt fester Satz an Werten, siehe lib/license.ts.
+  licensePlan: z.enum(PLANS as [string, ...string[]]).optional(),
   licenseSerial: z.string().optional(),
   licenseExpiresAt: z.string().nullable().optional(),
   active: z.boolean().optional(),
