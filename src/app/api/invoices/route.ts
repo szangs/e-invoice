@@ -9,7 +9,7 @@ import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { nextDocId } from '@/lib/docId'
 import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
-import { analyzeInvoiceFile, type Analysis } from '@/lib/erechnung'
+import { analyzeInvoiceFile, EINVOICE_FORMATS, type Analysis } from '@/lib/erechnung'
 import { toDTO } from '@/lib/invoices'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
 
@@ -85,6 +85,14 @@ export async function POST(req: NextRequest) {
       fileHash = isEncrypted ? (fields.fileHash ?? null) : hashBuffer(buffer)
     }
     const d = analysis?.data
+    // Steuerlich relevante Felder aus einer ZUGFeRD/XRechnung sind das
+    // rechtsverbindliche Original — die client-seitige Sperre (siehe
+    // /invoices/new) verhindert das Bearbeiten in der UI schon vor dem
+    // Speichern, aber ohne serverseitige Durchsetzung könnte ein direkter
+    // API-Aufruf sie trotzdem überschreiben (Stefan 2026-07-08: dieselbe
+    // GoBD-Sperre wie beim späteren Bearbeiten in InvoiceEditForm/PATCH
+    // muss schon beim ersten Einlesen gelten, nicht erst danach).
+    const isEInvoiceUpload = Boolean(analysis && (EINVOICE_FORMATS as string[]).includes(analysis.format))
     const duplicateOfId = await detectDuplicate(tenantId, {
       fileHash,
       invoiceNumber: fields.invoiceNumber || d?.number || null,
@@ -107,18 +115,22 @@ export async function POST(req: NextRequest) {
         basketId,
         checkElectronicAt: autoElectronicOk ? new Date() : null,
         checkElectronicBy: autoElectronicOk ? 'System (automatische Prüfung)' : null,
-        vendor: fields.vendor || d?.sellerName || 'Unbekannt',
-        invoiceNumber: fields.invoiceNumber || d?.number || null,
-        invoiceDate: fields.invoiceDate
-          ? new Date(fields.invoiceDate)
-          : d?.issueDate
-            ? new Date(d.issueDate)
-            : null,
-        dueDate: fields.dueDate ? new Date(fields.dueDate) : d?.dueDate ? new Date(d.dueDate) : null,
-        amountNet: parseAmount(fields.amountNet) ?? d?.net ?? null,
-        amountTax: parseAmount(fields.amountTax) ?? d?.tax ?? null,
-        amountGross: parseAmount(fields.amountGross) ?? d?.gross ?? null,
-        currency: fields.currency || 'EUR',
+        vendor: isEInvoiceUpload ? (d?.sellerName || 'Unbekannt') : (fields.vendor || d?.sellerName || 'Unbekannt'),
+        invoiceNumber: isEInvoiceUpload ? (d?.number || null) : (fields.invoiceNumber || d?.number || null),
+        invoiceDate: isEInvoiceUpload
+          ? (d?.issueDate ? new Date(d.issueDate) : null)
+          : fields.invoiceDate
+            ? new Date(fields.invoiceDate)
+            : d?.issueDate
+              ? new Date(d.issueDate)
+              : null,
+        dueDate: isEInvoiceUpload
+          ? (d?.dueDate ? new Date(d.dueDate) : null)
+          : fields.dueDate ? new Date(fields.dueDate) : d?.dueDate ? new Date(d.dueDate) : null,
+        amountNet: isEInvoiceUpload ? (d?.net ?? null) : (parseAmount(fields.amountNet) ?? d?.net ?? null),
+        amountTax: isEInvoiceUpload ? (d?.tax ?? null) : (parseAmount(fields.amountTax) ?? d?.tax ?? null),
+        amountGross: isEInvoiceUpload ? (d?.gross ?? null) : (parseAmount(fields.amountGross) ?? d?.gross ?? null),
+        currency: isEInvoiceUpload ? (d?.currency || 'EUR') : (fields.currency || 'EUR'),
         status: InvoiceStatus.NEW,
         tags: fields.tags || null,
         notes: fields.notes || null,

@@ -7,16 +7,21 @@
 // Mitarbeiter müssen den Wechsel in einen Zielkorb freigeben, bevor er
 // ausgeführt wird — unabhängig von der Rechnungsprüfung (4 Häkchen) auf der
 // Rechnung selbst.
-import { BasketKind } from '@prisma/client'
+import { BasketKind, Role } from '@prisma/client'
 import { audit } from '@/lib/audit'
+import { hasBasketRight } from '@/lib/basketRights'
+import { ApiError } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { sendSystemMail } from '@/lib/mail'
 
-/** Legt Eingangs-/Übergabekorb an, falls für den Mandanten noch nicht vorhanden. */
-export async function ensureSystemBaskets(tenantId: string): Promise<{ inboxId: string; handoverId: string }> {
-  const [inbox, handover] = await Promise.all([
-    prisma.basket.findFirst({ where: { tenantId, kind: BasketKind.INBOX } }),
-    prisma.basket.findFirst({ where: { tenantId, kind: BasketKind.HANDOVER } }),
+/** Legt Eingangs-/Übergabe-/Ablagekorb an, falls für den Mandanten noch nicht vorhanden. */
+export async function ensureSystemBaskets(
+  tenantId: string,
+): Promise<{ inboxId: string; handoverId: string; archiveId: string }> {
+  const [inbox, handover, archive] = await Promise.all([
+    prisma.basket.findFirst({ where: { tenantId, kind: BasketKind.INBOX, deletedAt: null } }),
+    prisma.basket.findFirst({ where: { tenantId, kind: BasketKind.HANDOVER, deletedAt: null } }),
+    prisma.basket.findFirst({ where: { tenantId, kind: BasketKind.ARCHIVE, deletedAt: null } }),
   ])
   const inboxId = inbox
     ? inbox.id
@@ -28,13 +33,141 @@ export async function ensureSystemBaskets(tenantId: string): Promise<{ inboxId: 
     : (await prisma.basket.create({
         data: { tenantId, name: 'Übergabekorb', kind: BasketKind.HANDOVER, position: 999 },
       })).id
-  return { inboxId, handoverId }
+  // Ablage (Stefan 2026-07-09): landet ganz am Ende, nach dem Übergabekorb —
+  // Rechnungen kommen hier automatisch an, sobald sie vollständig übergeben sind.
+  const archiveId = archive
+    ? archive.id
+    : (await prisma.basket.create({
+        data: { tenantId, name: 'Ablage', kind: BasketKind.ARCHIVE, position: 1000 },
+      })).id
+  return { inboxId, handoverId, archiveId }
 }
 
 /** Bequemer Zugriff für die Rechnungs-Anlage: liefert nur die Eingangskorb-ID. */
 export async function getInboxBasketId(tenantId: string): Promise<string> {
   const { inboxId } = await ensureSystemBaskets(tenantId)
   return inboxId
+}
+
+/**
+ * Feste Reihenfolge für die Anzeige (Stefan 2026-07-08): Eingangskorb immer
+ * zuerst (oben), Übergabekorb an FiBu immer zuletzt (unten) — dazwischen die
+ * frei anlegbaren Körbe nach ihrer eigenen `position`. Wird überall verwendet,
+ * wo Körbe für die Anzeige geladen werden, statt sich auf eine reine
+ * DB-Sortierung nach `position` zu verlassen (die beiden System-Körbe haben
+ * zwar auch eine feste position 0/999, aber diese Funktion macht die Regel
+ * explizit und ist robust, falls das mal geändert wird).
+ */
+export function sortBaskets<T extends { kind: BasketKind; position: number }>(baskets: T[]): T[] {
+  const rank = (k: BasketKind) =>
+    k === BasketKind.INBOX ? 0 : k === BasketKind.HANDOVER ? 2 : k === BasketKind.ARCHIVE ? 3 : 1
+  return [...baskets].sort((a, b) => rank(a.kind) - rank(b.kind) || a.position - b.position)
+}
+
+export type BasketCounts = {
+  unprocessed: number
+  processed: number
+  total: number
+  dueSoon: number
+  overdue: number
+  /** Ungelesene, an DIESEN Nutzer adressierte Nachrichten in diesem Korb (Stefan 2026-07-08). */
+  unreadNotes: number
+}
+
+// Zahlungsziel-Vorwarnung (Stefan 2026-07-08): "bald fällig" = Zahlungsbedingungs-
+// datum (dueDate) liegt innerhalb der nächsten N Tage. Feste Schwelle statt
+// Mandanten-Einstellung, damit die Körbe-Kacheln ohne Zusatzkonfiguration sofort
+// nutzbar sind — kann bei Bedarf später in ein Tenant-Feld verlegt werden.
+const DUE_SOON_DAYS = 7
+
+/**
+ * Bearbeitet/unbearbeitet je Korb für Dashboard und Rechnungsliste (Stefan
+ * 2026-07-08): "bearbeitet" = mindestens eines der beiden ersten
+ * Prüfschritte (Elektronische Vorprüfung ODER Formal richtig) ist gesetzt —
+ * die Rechnung wurde also schon angefasst, auch wenn die Buchhaltungs-Schritte
+ * (Sachlich richtig/An Buchhaltung übergeben) noch offen sind.
+ *
+ * "bald fällig"/"überfällig" je Korb (Stefan 2026-07-08): anhand des
+ * Zahlungsbedingungsdatums (dueDate). Ausgenommen sind Rechnungen, die per
+ * Lastschrift vom Lieferanten selbst abgebucht werden (directDebitByVendor —
+ * kein Zahlungsziel, das WIR einhalten müssen) sowie bereits an die
+ * Buchhaltung übergebene Rechnungen (checkAccountingAt gesetzt — Fälligkeit
+ * ist dann Sache der Fibu, nicht mehr der Körbe-Bearbeitung).
+ *
+ * `userId` (optional): wenn gesetzt, zusätzlich ungelesene, an DIESEN Nutzer
+ * gerichtete Nachrichten je Korb zählen (Stefan 2026-07-08) — dasselbe
+ * 💬-Symbol wie in der Rechnungsliste, hier auf Korb-Ebene aggregiert, damit
+ * eine Nachricht auffällt, ohne den Korb erst öffnen zu müssen.
+ */
+export async function getBasketCounts(tenantId: string, userId?: string): Promise<Record<string, BasketCounts>> {
+  const now = new Date()
+  const soonThreshold = new Date(now.getTime() + DUE_SOON_DAYS * 24 * 60 * 60 * 1000)
+  const [unprocessed, processed, overdue, dueSoon, unreadNoteRows] = await Promise.all([
+    prisma.invoice.groupBy({
+      by: ['basketId'],
+      where: { tenantId, deletedAt: null, checkElectronicAt: null, checkFormalAt: null },
+      _count: { _all: true },
+    }),
+    prisma.invoice.groupBy({
+      by: ['basketId'],
+      where: {
+        tenantId, deletedAt: null,
+        OR: [{ checkElectronicAt: { not: null } }, { checkFormalAt: { not: null } }],
+      },
+      _count: { _all: true },
+    }),
+    prisma.invoice.groupBy({
+      by: ['basketId'],
+      where: {
+        tenantId, deletedAt: null, checkAccountingAt: null, directDebitByVendor: false,
+        dueDate: { lt: now },
+      },
+      _count: { _all: true },
+    }),
+    prisma.invoice.groupBy({
+      by: ['basketId'],
+      where: {
+        tenantId, deletedAt: null, checkAccountingAt: null, directDebitByVendor: false,
+        dueDate: { gte: now, lte: soonThreshold },
+      },
+      _count: { _all: true },
+    }),
+    userId
+      ? prisma.invoiceNote.findMany({
+          where: { tenantId, toUserId: userId, readAt: null, invoice: { deletedAt: null } },
+          select: { invoice: { select: { basketId: true } } },
+        })
+      : Promise.resolve([]),
+  ])
+  const result: Record<string, BasketCounts> = {}
+  function ensure(basketId: string): BasketCounts {
+    if (!result[basketId]) result[basketId] = { unprocessed: 0, processed: 0, total: 0, dueSoon: 0, overdue: 0, unreadNotes: 0 }
+    return result[basketId]
+  }
+  for (const row of unprocessed) {
+    if (!row.basketId) continue
+    ensure(row.basketId).unprocessed = row._count._all
+    ensure(row.basketId).total += row._count._all
+  }
+  for (const row of processed) {
+    if (!row.basketId) continue
+    ensure(row.basketId).processed = row._count._all
+    ensure(row.basketId).total += row._count._all
+  }
+  for (const row of overdue) {
+    if (!row.basketId) continue
+    ensure(row.basketId).overdue = row._count._all
+  }
+  for (const row of dueSoon) {
+    if (!row.basketId) continue
+    ensure(row.basketId).dueSoon = row._count._all
+  }
+  for (const row of unreadNoteRows) {
+    const basketId = row.invoice.basketId
+    if (!basketId) continue
+    ensure(basketId).unreadNotes += 1
+  }
+  return result
 }
 
 export type MoveResult =
@@ -52,6 +185,7 @@ export async function requestMove(
   targetBasketId: string,
   userId: string,
   userEmail: string,
+  userRole: Role,
 ): Promise<MoveResult> {
   const invoice = await prisma.invoice.findFirst({
     where: { id: invoiceId, tenantId },
@@ -59,12 +193,26 @@ export async function requestMove(
   })
   if (!invoice) throw new Error('Rechnung nicht gefunden')
 
-  const target = await prisma.basket.findFirst({ where: { id: targetBasketId, tenantId } })
+  const target = await prisma.basket.findFirst({ where: { id: targetBasketId, tenantId, deletedAt: null } })
   if (!target) throw new Error('Zielkorb nicht gefunden')
 
   const fromBasket = invoice.basketId
     ? await prisma.basket.findFirst({ where: { id: invoice.basketId, tenantId } })
     : null
+
+  // Korb-Rechte (Stefan 2026-07-08): Verschieben braucht mindestens MOVE auf
+  // dem AUSGANGSKORB — bei Verschiebung IN den Übergabekorb sogar HANDOVER
+  // (das ist die höhere Stufe "Übergabe an den Übergabekorb"). Ohne
+  // Ausgangskorb (Bestandsrechnung ohne basketId) wird nicht eingeschränkt.
+  if (fromBasket) {
+    const required = target.kind === BasketKind.HANDOVER ? 'HANDOVER' : 'MOVE'
+    const allowed = await hasBasketRight(userId, userRole, fromBasket.id, required)
+    if (!allowed) {
+      throw new ApiError(403, target.kind === BasketKind.HANDOVER
+        ? 'Kein Recht zur Übergabe an den Übergabekorb.'
+        : 'Kein Recht zum Verschieben aus diesem Korb.')
+    }
+  }
 
   const gate = fromBasket?.fourEyesEnabled === true
 
@@ -144,7 +292,7 @@ function dueForHours(last: Date | null, hours: number | null): boolean {
 export async function runDueBasketNotifications(force = false): Promise<string[]> {
   const log: string[] = []
   const baskets = await prisma.basket.findMany({
-    where: { notificationEnabled: true },
+    where: { notificationEnabled: true, deletedAt: null },
     include: {
       members: { include: { user: { select: { email: true, active: true } } } },
       tenant: { select: { name: true, active: true } },

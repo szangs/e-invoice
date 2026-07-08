@@ -15,9 +15,23 @@ const schema = z.object({
   mailAllowedDomains: z.string().max(500).optional(),
   backupFrequency: z.enum(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY']).optional(),
   backupEmail: z.string().email().optional().or(z.literal('')),
+  // Sicherungs-Umstellung (Stefan 2026-07-08): Download-Link + Erinnerung + optionales WebDAV-Ziel
+  backupReminderDays: z.coerce.number().int().min(0).max(90).optional(),
+  backupWebdavUrl: z.string().max(500).optional(),
+  backupWebdavUser: z.string().max(200).optional(),
+  backupWebdavPass: z.string().max(200).optional(),
   reportEnabled: z.boolean().optional(),
   reportFrequency: z.enum(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY']).optional(),
   reportEmail: z.string().email().optional().or(z.literal('')),
+  // DATEV-Export (Übergabekorb → Fibu, Stefan 2026-07-08)
+  datevBeraternr: z.string().max(20).optional(),
+  datevMandantnr: z.string().max(20).optional(),
+  datevSkr: z.string().max(10).optional(),
+  datevSachkontenlaenge: z.number().int().min(4).max(8).optional(),
+  datevKreditorenkonto: z.string().max(20).optional(),
+  datevGegenkonto: z.string().max(20).optional(),
+  datevWjBeginn: z.string().regex(/^\d{4}$/).optional().or(z.literal('')),
+  datevFibuEmail: z.string().email().optional().or(z.literal('')),
 })
 
 export async function PATCH(req: NextRequest) {
@@ -30,15 +44,24 @@ export async function PATCH(req: NextRequest) {
       data: {
         ...data,
         backupEmail: data.backupEmail === '' ? null : data.backupEmail,
+        backupWebdavUrl: data.backupWebdavUrl === '' ? null : data.backupWebdavUrl,
+        backupWebdavUser: data.backupWebdavUser === '' ? null : data.backupWebdavUser,
+        backupWebdavPass: data.backupWebdavPass === '' ? null : data.backupWebdavPass,
         reportEmail: data.reportEmail === '' ? null : data.reportEmail,
+        datevWjBeginn: data.datevWjBeginn === '' ? null : data.datevWjBeginn,
+        datevFibuEmail: data.datevFibuEmail === '' ? null : data.datevFibuEmail,
       },
     })
+    // Passwort nie im Klartext ins (für mehrere Personen einsehbare) Audit-Protokoll schreiben
+    const SECRET_FIELDS = new Set(['backupWebdavPass'])
     await audit({
       tenantId,
       actorId: ctx.userId,
       actorName: ctx.email,
       action: 'TENANT_SWITCHES',
-      details: `Schalter geändert: ${Object.entries(data).map(([k, v]) => `${k}=${v}`).join(', ')}`,
+      details: `Schalter geändert: ${Object.entries(data)
+        .map(([k, v]) => `${k}=${SECRET_FIELDS.has(k) ? '••••' : v}`)
+        .join(', ')}`,
     })
     return NextResponse.json({ ok: true })
   } catch (e) {

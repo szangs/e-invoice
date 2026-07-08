@@ -1,11 +1,11 @@
-// E-Mail-Eingang (Weiterleitungs-Modell W1/W2) — gemeinsame Verarbeitung für BEIDE Wege:
-// (A) IMAP-Abruf eines bestimmten Postfachs (pollMailbox)
-// (B) eigener SMTP-Empfänger auf der Subdomain (scripts/smtp-server.ts, Catch-All)
-// Absender-Beschränkung: global (MAIL_IN_ALLOWED_DOMAINS) und je Mandant (mailAllowedDomains).
-// Hinweis: E-Mail-Eingang ist prinzipbedingt nicht Ende-zu-Ende-verschlüsselbar.
+// E-Mail-Eingang (Weiterleitungs-Modell W1/W2): eigener SMTP-Empfänger auf
+// der Subdomain (scripts/smtp-server.ts, Catch-All) — IMAP-Postfachabruf
+// wurde am 2026-07-08 auf Stefans Wunsch entfernt (nur noch der Weg über den
+// eigenen SMTP-Empfänger). Absender-Beschränkung: global
+// (MAIL_IN_ALLOWED_DOMAINS) und je Mandant (mailAllowedDomains). Hinweis:
+// E-Mail-Eingang ist prinzipbedingt nicht Ende-zu-Ende-verschlüsselbar.
 import { InvoiceStatus } from '@prisma/client'
-import { ImapFlow } from 'imapflow'
-import { simpleParser, type AddressObject, type ParsedMail } from 'mailparser'
+import { type AddressObject, type ParsedMail } from 'mailparser'
 import { audit } from '@/lib/audit'
 import { getInboxBasketId } from '@/lib/baskets'
 import { prisma } from '@/lib/db'
@@ -14,14 +14,6 @@ import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
 import { analyzeInvoiceFile } from '@/lib/erechnung'
 import { getSettings } from '@/lib/settings'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
-
-export type PollResult = {
-  ok: boolean
-  message: string
-  fetched?: number
-  processed?: number
-  rejected?: number
-}
 
 function addressList(value: AddressObject | AddressObject[] | undefined): string[] {
   if (!value) return []
@@ -52,7 +44,7 @@ function domainAllowed(from: string, list: string | null | undefined): boolean {
 export async function handleParsedMail(
   parsed: ParsedMail,
   rcpts: string[],
-  via: 'IMAP' | 'SMTP',
+  via: 'SMTP' = 'SMTP',
 ): Promise<{ processed: number; ok: boolean }> {
   const s = await getSettings()
   const domain = (s.MAIL_IN_DOMAIN || '').toLowerCase()
@@ -211,73 +203,4 @@ export async function handleParsedMail(
     details: `${processed} Beleg(e) aus E-Mail von ${from}`,
   })
   return { processed, ok: true }
-}
-
-/** Weg A: IMAP-Abruf eines bestimmten Postfachs (auch Catch-All-Postfach möglich). */
-export async function pollMailbox(): Promise<PollResult> {
-  const s = await getSettings()
-  if (s.MAIL_IN_ENABLED !== '1') {
-    return { ok: false, message: 'E-Mail-Eingang ist deaktiviert (Systemeinstellungen → Mail-Eingang).' }
-  }
-  if (!s.MAIL_IN_HOST || !s.MAIL_IN_USER || !s.MAIL_IN_DOMAIN) {
-    return { ok: false, message: 'Mail-Eingang unvollständig konfiguriert (Host, Benutzer, Domain).' }
-  }
-
-  const client = new ImapFlow({
-    host: s.MAIL_IN_HOST,
-    port: Number(s.MAIL_IN_PORT || 993),
-    secure: s.MAIL_IN_SECURE !== '',
-    auth: { user: s.MAIL_IN_USER, pass: s.MAIL_IN_PASS },
-    logger: false,
-  })
-
-  let fetched = 0
-  let processed = 0
-  let rejected = 0
-  try {
-    await client.connect()
-    const lock = await client.getMailboxLock('INBOX')
-    try {
-      const unseen = await client.search({ seen: false })
-      const uids = (unseen || []).slice(0, 25)
-      for (const uid of uids) {
-        fetched++
-        try {
-          const msg = await client.fetchOne(String(uid), { source: true })
-          if (!msg || !msg.source) continue
-          const parsed = await simpleParser(msg.source)
-          const result = await handleParsedMail(parsed, [], 'IMAP')
-          if (result.ok) processed += result.processed
-          else rejected++
-        } catch (e) {
-          rejected++
-          await prisma.mailIntake.create({
-            data: {
-              fromAddress: '—',
-              toAddress: '—',
-              status: 'ERROR',
-              detail: e instanceof Error ? e.message.slice(0, 300) : 'Unbekannter Fehler',
-            },
-          })
-        }
-        await client.messageFlagsAdd(String(uid), ['\\Seen']).catch(() => undefined)
-      }
-    } finally {
-      lock.release()
-    }
-    await client.logout()
-    return {
-      ok: true,
-      message: `Abruf fertig: ${fetched} neu, ${processed} Beleg(e) angelegt, ${rejected} abgewiesen.`,
-      fetched,
-      processed,
-      rejected,
-    }
-  } catch (e) {
-    await client.logout().catch(() => undefined)
-    return {
-      ok: false,
-      message: `Postfach nicht erreichbar: ${e instanceof Error ? e.message : 'Fehler'}`,
-    }
-  }
 }

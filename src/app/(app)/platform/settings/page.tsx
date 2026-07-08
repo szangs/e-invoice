@@ -7,12 +7,21 @@ import { BackupOps } from './BackupOps'
 
 type Settings = Record<string, string>
 
+const FREQUENCIES = [
+  { value: 'DAILY', label: 'täglich' },
+  { value: 'WEEKLY', label: 'wöchentlich' },
+  { value: 'MONTHLY', label: 'monatlich' },
+  { value: 'YEARLY', label: 'jährlich' },
+]
+
 export default function SystemSettingsPage() {
   const [s, setS] = useState<Settings | null>(null)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [aiTest, setAiTest] = useState('')
   const [aiModels, setAiModels] = useState<string[]>([])
+  const [smtpTest, setSmtpTest] = useState('')
+  const [smtpTo, setSmtpTo] = useState('')
 
   useEffect(() => {
     fetch('/api/platform/settings')
@@ -47,11 +56,35 @@ export default function SystemSettingsPage() {
     setAiModels(data.models ?? [])
   }
 
+  async function testSmtp() {
+    setSmtpTest('Sende …')
+    await save()
+    const res = await fetch('/api/platform/settings/test-smtp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: smtpTo }),
+    })
+    const data = await res.json()
+    setSmtpTest(data.message ?? 'Unbekanntes Ergebnis')
+  }
+
   const input = (key: string, label: string, type = 'text', hint?: string) => (
     <div>
       <label className="dp-label">{label}</label>
       <input className="dp-input mt-1" type={type} value={s[key] ?? ''}
         onChange={(e) => set(key, e.target.value)} />
+      {hint && <p className="mt-0.5 text-[10px] text-gray-400">{hint}</p>}
+    </div>
+  )
+  const select = (key: string, label: string, options: { value: string; label: string }[], hint?: string) => (
+    <div>
+      <label className="dp-label">{label}</label>
+      <select className="dp-input mt-1" value={s[key] ?? options[0]?.value ?? ''}
+        onChange={(e) => set(key, e.target.value)}>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
       {hint && <p className="mt-0.5 text-[10px] text-gray-400">{hint}</p>}
     </div>
   )
@@ -79,37 +112,38 @@ export default function SystemSettingsPage() {
         </div>
         {toggle('SMTP_SECURE', 'TLS/SSL (secure) verwenden')}
         {toggle('WELCOME_MAIL_ENABLED', 'Willkommens-Mail mit Zugangsdaten automatisch versenden')}
+        <div className="border-t border-[var(--line)] pt-3">
+          <label className="dp-label">Test-Mail senden an</label>
+          <div className="mt-1 flex flex-wrap items-center gap-3">
+            <input className="dp-input max-w-xs" type="email" value={smtpTo} placeholder="ihre@adresse.de"
+              onChange={(e) => setSmtpTo(e.target.value)} />
+            <button className="btn-secondary" onClick={testSmtp} disabled={busy || !smtpTo}
+              title="Speichert die obigen SMTP-Einstellungen und verschickt eine Testmail">
+              Test-Mail senden
+            </button>
+            {smtpTest && <span className="text-xs text-gray-600">{smtpTest}</span>}
+          </div>
+        </div>
       </section>
 
       <section className="dp-card space-y-4">
-        <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Mail-Eingang (Einlieferungs-Postfach)</h2>
+        <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Mail-Eingang (eigener SMTP-Empfänger)</h2>
         <p className="text-[11px] text-gray-400">
           Adressmuster: <span className="font-mono">beliebig@&lt;kurzname&gt;.&lt;basis-domain&gt;</span> —
           der Kurzname des Mandanten ist die Subdomain, die Basis-Domain gilt für alle Mandanten.
           Der Verlauf erscheint im Cockpit (alle Mandanten) und beim Mandanten (RE03).
         </p>
+        <p className="text-[11px] text-gray-400">
+          Läuft als eigener Prozess (<span className="font-mono">npm run smtp</span>). Der Server
+          wartet auf weitergeleitete Mails und nimmt jede Adresse nach dem Muster
+          Präfix+Kurzname@Domain aktiver Mandanten an — MX-Eintrag der Subdomain nötig.
+        </p>
         <div className="grid gap-4 sm:grid-cols-2">
           {input('MAIL_IN_DOMAIN', 'Basis-Domain (für alle Mandanten)', 'text', 'z. B. einvoice.de → firmaxy.einvoice.de')}
-          {input('MAIL_IN_HOST', 'IMAP-Host (Postfach-Variante)')}
-          {input('MAIL_IN_PORT', 'IMAP-Port', 'number', 'Standard 993')}
-          {input('MAIL_IN_USER', 'IMAP-Benutzer', 'text', 'Catch-All- oder bestimmtes Postfach')}
-          {input('MAIL_IN_PASS', 'IMAP-Passwort (maskiert)')}
+          {input('MAIL_SMTP_PORT', 'SMTP-Port', 'number', 'Standard 2525; Produktion: Port 25 weiterleiten')}
+          {input('MAIL_IN_ALLOWED_DOMAINS', 'Nur Absender dieser Domänen (global)', 'text', 'kommagetrennt, leer = alle')}
         </div>
-        {toggle('MAIL_IN_SECURE', 'TLS/SSL (secure) verwenden')}
-        {toggle('MAIL_IN_ENABLED', 'Mail-Eingang aktiv (IMAP-Abruf erlaubt)')}
-        <div className="border-t border-[var(--line)] pt-3">
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-            Alternative: eigener SMTP-Empfänger (Catch-All über die Subdomain)
-          </p>
-          <p className="mb-3 text-[11px] text-gray-400">
-            Läuft als eigener Prozess (<span className="font-mono">npm run smtp</span>). Der Server
-            wartet auf weitergeleitete Mails und nimmt jede Adresse nach dem Muster
-            Präfix+Kurzname@Domain aktiver Mandanten an — MX-Eintrag der Subdomain nötig.
-          </p>
-          <div className="grid gap-4 sm:grid-cols-2">
-            {input('MAIL_SMTP_PORT', 'SMTP-Port', 'number', 'Standard 2525; Produktion: Port 25 weiterleiten')}
-            {input('MAIL_IN_ALLOWED_DOMAINS', 'Nur Absender dieser Domänen (global)', 'text', 'kommagetrennt, leer = alle — gilt für IMAP und SMTP')}
-          </div>
+        <div>
           {toggle('MAIL_SMTP_ENABLED', 'SMTP-Empfänger aktiv')}
         </div>
       </section>
@@ -123,7 +157,9 @@ export default function SystemSettingsPage() {
           {input('AI_API_KEY', 'Zugangsschlüssel (maskiert)')}
         </div>
         <div className="flex items-center gap-3">
-          <button className="btn-secondary" onClick={testAi} disabled={busy}>Verbindungs-Test</button>
+          <button className="btn-secondary" onClick={testAi} disabled={busy} title="Speichert die obigen Einstellungen und prüft die Verbindung zum KI-Anbieter">
+            Verbindungs-Test
+          </button>
           {aiTest && <span className="text-xs text-gray-600">{aiTest}</span>}
         </div>
         {aiModels.length > 0 && (
@@ -168,7 +204,7 @@ export default function SystemSettingsPage() {
         <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Datensicherung Gesamtsystem (§17)</h2>
         <div className="grid gap-4 sm:grid-cols-2">
           {input('BACKUP_TARGET_DIR', 'Sicherungsziel (Verzeichnis auf dem Server)', 'text', 'z. B. D:\\Backups\\einvoice oder \\\\NAS\\backup')}
-          {input('BACKUP_SYSTEM_FREQ', 'Häufigkeit', 'text', 'DAILY, WEEKLY, MONTHLY oder YEARLY')}
+          {select('BACKUP_SYSTEM_FREQ', 'Häufigkeit', FREQUENCIES)}
           {input('BACKUP_SYSTEM_EMAIL', 'Zusätzlich per E-Mail an (optional)', 'email')}
         </div>
         {toggle('BACKUP_SYSTEM_ENABLED', 'Automatische System-Sicherung aktiv (Prozess: npm run backup)')}

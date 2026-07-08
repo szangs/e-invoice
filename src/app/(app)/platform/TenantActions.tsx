@@ -64,36 +64,41 @@ export function TenantActions({
 
   return (
     <div className="flex flex-wrap items-center gap-1.5 whitespace-nowrap">
-      <Link href={`/platform/tenants/${tenantId}`} className="btn-secondary !px-2 !py-1 text-xs">
+      <Link href={`/platform/tenants/${tenantId}`} className="btn-secondary !px-2 !py-1 text-xs"
+        title="Mandanten-Stammdaten und Limits bearbeiten">
         Bearbeiten
       </Link>
       <button
         disabled={busy}
         className="btn-secondary !px-2 !py-1 text-xs"
+        title={active ? 'Mandant sperren — Nutzer können sich nicht mehr anmelden' : 'Mandant wieder freischalten'}
         onClick={() => call(`/api/platform/tenants/${tenantId}`, 'PATCH', { active: !active })}
       >
         {active ? 'Sperren' : 'Entsperren'}
       </button>
       <button
         disabled={busy}
-        className="btn-danger !px-2 !py-1 text-xs"
+        className="btn-secondary !px-2 !py-1 text-xs"
+        title="Alle Nutzer dieses Mandanten sofort abmelden und den Mandanten sperren (Fernwartungs-Sitzungen bleiben unberührt, §11)"
         onClick={() =>
           call(
             `/api/platform/tenants/${tenantId}/killswitch`,
             'POST',
             undefined,
-            `Killswitch für "${tenantName}"?\nAlle Nutzer werden sofort abgemeldet, der Mandant wird gesperrt.\n(Fernwartungs-Sitzungen sind davon getrennt, §11.)`,
+            `Alle Nutzer von "${tenantName}" abmelden und den Mandanten sperren?\n(Fernwartungs-Sitzungen sind davon getrennt, §11.)`,
           )
         }
       >
-        Killswitch
+        Abmelden
       </button>
-      <button disabled={busy || !active} className="btn-secondary !px-2 !py-1 text-xs" onClick={impersonate}>
-        Übernehmen
+      <button disabled={busy || !active} className="btn-secondary !px-2 !py-1 text-xs" onClick={impersonate}
+        title="Impersonation: als Administrator dieses Mandanten anmelden (Einmal-Ticket, §12)">
+        Impersonation
       </button>
       <button
         disabled={busy || !active}
         className="btn-secondary !px-2 !py-1 text-xs"
+        title="Fernwartungssitzung anfragen — Nutzer muss aktiv zustimmen (§14A)"
         onClick={() =>
           call(
             '/api/platform/support',
@@ -105,12 +110,14 @@ export function TenantActions({
       >
         Fernwartung
       </button>
-      <a className="btn-secondary !px-2 !py-1 text-xs" href={`/api/platform/backup?tenantId=${tenantId}`}>
+      <a className="btn-secondary !px-2 !py-1 text-xs" href={`/api/platform/backup?tenantId=${tenantId}`}
+        title="Sicherung dieses Mandanten sofort herunterladen">
         Backup
       </a>
       <button
         disabled={busy}
         className="btn-secondary !px-2 !py-1 text-xs"
+        title="Neues Passwort für den Mandanten-Administrator erzeugen und per Mail zusenden"
         onClick={() =>
           call(
             `/api/platform/tenants/${tenantId}/credentials`,

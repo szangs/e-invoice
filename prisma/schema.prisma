@@ -62,6 +62,24 @@ model Tenant {
   backupFrequency String? // DAILY | WEEKLY | MONTHLY | YEARLY
   backupEmail     String?
   lastBackupAt    DateTime?
+  // Sicherungs-Umstellung (Stefan 2026-07-08): die Sicherung wird nicht mehr
+  // als E-Mail-Anhang verschickt, sondern als ZIP-Paket (Hash + alle
+  // Belegdateien) serverseitig abgelegt — die E-Mail enthält nur noch einen
+  // Download-Link (siehe BackupPackage). backupReminderDays steuert, wie
+  // lange erinnert wird, solange das Paket noch nicht heruntergeladen wurde
+  // (0/leer = keine Erinnerung).
+  backupReminderDays Int? @default(14)
+  // Optionales externes Sicherungsziel per WebDAV (z. B. Nextcloud/ownCloud;
+  // "klassisches" WebDAV-fähiges OneDrive for Business/SharePoint geht
+  // ebenfalls — das moderne OneDrive-Verbraucherprodukt bietet KEIN WebDAV
+  // mehr an, siehe Hinweistext in der Mandanten-Einstellungs-UI). Passwort
+  // hier bewusst einfach als Text abgelegt wie die übrigen Mandanten-
+  // Einstellungen dieser App — für ein produktives Setup mit hohem
+  // Schutzbedarf sollte das Feld zusätzlich verschlüsselt werden.
+  backupWebdavUrl  String?
+  backupWebdavUser String?
+  backupWebdavPass String?
+  backupPackages   BackupPackage[]
   // Revisionssicherer Hash-Bericht (Whitepaper-Preismodell Punkt 4): eigener,
   // schlanker Lauf — Rechnungsliste + Beleg-Hashes an eine feste Kunden-Adresse,
   // unabhängig von Sicherung/Restore. lastReportHash verkettet die Berichte
@@ -71,6 +89,23 @@ model Tenant {
   reportEmail     String?
   lastReportAt    DateTime?
   lastReportHash  String?
+  // DATEV-Export (Übergabekorb → Fibu, Stefan 2026-07-08): Beraternummer/
+  // Mandantennummer/Kontenrahmen sind je Mandant unterschiedlich (eigener
+  // Steuerberater), daher hier statt in den globalen Betreiber-Einstellungen.
+  // Erster Entwurf mit einem Sammelkonto für alle Lieferanten (Stefans Wahl)
+  // — die weitere Kontierung je Lieferant bleibt Aufgabe der Fibu in DATEV.
+  datevBeraternr       String?
+  datevMandantnr       String?
+  datevSkr             String? // SKR03 | SKR04 — nur Beschriftung/Doku, keine Kontenlogik
+  datevSachkontenlaenge Int?    @default(4)
+  datevKreditorenkonto String? // Sammelkonto für alle Kreditoren (Feld "Konto")
+  datevGegenkonto      String? // Sammel-Gegenkonto (Feld "Gegenkonto", z. B. Wareneingang/Kosten)
+  datevWjBeginn        String? // Wirtschaftsjahr-Beginn als TTMM, z. B. "0101"
+  // Optional zusätzlich zum CSV-Sammel-Export: eine EINZELNE E-Mail je Beleg
+  // an die Fibu, mit dem Original-Beleg (PDF/Bild) im Anhang — für den Fall,
+  // dass die Fibu die Dokumente selbst sehen will/muss, nicht nur die
+  // Buchungsdaten aus dem DATEV-CSV (Stefan 2026-07-08).
+  datevFibuEmail       String?
   // Zähler für eindeutige Dokumenten-IDs (<Slug>-<laufende Nummer>, siehe
   // lib/docId.ts und Invoice.docId) — atomar hochgezählt, damit auch bei
   // gleichzeitigen Uploads keine Doppelvergabe entsteht.
@@ -81,6 +116,53 @@ model Tenant {
   invoices         Invoice[]
   apiTokens        ApiToken[]
   baskets          Basket[]
+  vendorAccounts   VendorAccount[]
+}
+
+// ── Optionale Verknüpfung vorhandener Fibu-Konten zu Lieferanten (Stefan
+// 2026-07-08): per CSV-Import befüllbar (z. B. Export der Kreditoren-
+// Stammdaten aus DATEV/der Fibu). Beim DATEV-Export wird für einen
+// Lieferanten dieses Konto verwendet, wenn der Name übereinstimmt — sonst
+// gilt weiterhin das Sammelkonto (Tenant.datevKreditorenkonto). Komplett
+// optional, ohne Import bleibt alles beim Sammelkonto-Verhalten von v1.
+model VendorAccount {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  vendorName String // Abgleich mit Invoice.vendor, case-insensitiv/exakt
+  konto      String // DATEV-Kontonummer für diesen Lieferanten
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([tenantId, vendorName])
+}
+
+// ── Sicherungspakete (Stefan 2026-07-08) ── ZIP-Datei einer Sicherung
+// (Mandant oder Gesamtsystem), serverseitig abgelegt mit SHA-256-Prüfsumme.
+// Die Zustell-E-Mail enthält nur den Download-Link (downloadToken) statt des
+// Pakets selbst; runBackupReminders() erinnert, solange nicht heruntergeladen
+// und innerhalb von tenant.backupReminderDays.
+model BackupPackage {
+  id             String    @id @default(cuid())
+  tenantId       String? // null = System-Sicherung (alle Mandanten)
+  tenant         Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kind           String // TENANT | SYSTEM
+  fileName       String // gespeicherter Dateiname unter backup-packages/{tenantId|system}/
+  originalName   String // Downloadname für den Nutzer (…-<hash8>.zip)
+  sha256         String
+  sizeBytes      Int
+  downloadToken  String    @unique
+  createdAt      DateTime  @default(now())
+  expiresAt      DateTime
+  downloadedAt   DateTime?
+  lastReminderAt DateTime?
+  reminderCount  Int       @default(0)
+  // Ergebnis des optionalen zusätzlichen WebDAV-Uploads (Tenant.backupWebdavUrl)
+  remoteStoredAt DateTime?
+  remoteError    String?
+
+  @@index([tenantId, createdAt])
+  @@index([downloadedAt])
 }
 
 // ── API-Token für die Browser-Extension (Rechnungs-Catcher) ──
@@ -102,6 +184,13 @@ model User {
   email           String
   username        String    @unique // global eindeutiger technischer Name
   passwordHash    String
+  // Stammdaten (Stefan 2026-07-08): für Mitarbeiter-Übersicht, Anrede in
+  // Mails und Zuordnung in Körben — alle optional, da Bestandsnutzer sie
+  // noch nicht haben.
+  firstName       String?
+  lastName        String?
+  department      String? // Abteilung
+  jobTitle        String? // Funktion
   role            Role      @default(USER)
   active          Boolean   @default(true)
   language        String    @default("de")
@@ -113,6 +202,10 @@ model User {
   invoices        Invoice[]
   basketMemberships BasketMember[]
   basketApprovals   BasketApproval[]
+  basketRights      BasketUserRight[]
+  uploadedAttachments   InvoiceAttachment[]
+  notesAuthored         InvoiceNote[]       @relation("InvoiceNoteAuthor")
+  notesReceived         InvoiceNote[]       @relation("InvoiceNoteRecipient")
 
   // E-Mail ist PRO MANDANT eindeutig, nicht global (§2)
   @@unique([tenantId, email])
@@ -196,6 +289,12 @@ enum BasketKind {
   INBOX
   HANDOVER
   CUSTOM
+  // Ablage (Stefan 2026-07-09): fester Systemordner, in den Rechnungen nach
+  // vollständiger Übergabe automatisch wandern und dort bleiben. Nur
+  // Mandanten-Admin/Betreiber dürfen Belege von dort wieder herausverschieben
+  // — Korb-Rechte MOVE und höher lassen sich für ARCHIVE-Körbe gar nicht erst
+  // vergeben (siehe admin/baskets/[id]/rights/route.ts).
+  ARCHIVE
 }
 
 model Basket {
@@ -218,13 +317,52 @@ model Basket {
   notificationEnabled       Boolean   @default(false)
   notificationIntervalHours Int?      // frei wählbares Intervall in Stunden
   lastNotifiedAt            DateTime?
+  // Weiches Löschen (Stefan 2026-07-08): nur leere eigene Körbe löschbar (siehe
+  // DELETE-Route), landen dann im "Papierkorb für Körbe" und lassen sich
+  // wiederherstellen — analog zum Rechnungs-Papierkorb.
+  deletedAt DateTime?
+  deletedBy String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   members   BasketMember[]
   invoices  Invoice[]
   approvals BasketApproval[]
+  userRights BasketUserRight[]
 
   @@index([tenantId, kind])
+}
+
+// ── Korb-Rechte je Rolle (Stefan 2026-07-08) ── Nur der Mandanten-Admin
+// (und der Betreiber, der immer alle Rechte hat) kann diese Zuordnung in der
+// Körbe-Verwaltung ändern. Für Rollen ohne Eintrag gilt: KEIN Zugriff auf
+// diesen Korb (auch nicht "sehen"). Sechsstufige Rangfolge, jede Stufe
+// schließt alle darunter liegenden ein (siehe lib/basketRights.ts RIGHT_RANK):
+// sehen < Inhalt anzeigen < verschieben < sachlich freigeben <
+// Übergabe an den Übergabekorb < Übergabe an die Fibu.
+enum BasketRight {
+  VIEW     // Korb wird überhaupt angezeigt
+  CONTENT  // Rechnungsinhalt im Korb einsehen
+  MOVE     // Rechnungen in/aus diesem Korb verschieben
+  APPROVE  // "Sachlich richtig" auf Rechnungen in diesem Korb freigeben
+  HANDOVER // Übergabe einer Rechnung an den (festen) Übergabekorb
+  FIBU     // Übergabe an die Fibu auslösen (DATEV-Export/Einzel-Mail)
+}
+
+// Stefan 2026-07-08: ursprünglich rollenbasiert (BasketRolePermission) — auf
+// Wunsch von Stefan direkt auf Mitarbeiter-Auswahl umgestellt, da die
+// Rollen-Zuordnung in der Praxis nur verwirrt hat. Jede Zeile = ein
+// Mitarbeiter mit einem Recht auf einem Korb; ohne Zeile = kein Zugriff.
+model BasketUserRight {
+  id        String      @id @default(cuid())
+  basketId  String
+  basket    Basket      @relation(fields: [basketId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  right     BasketRight
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@unique([basketId, userId])
 }
 
 // Mitarbeiter-Zuordnung zu einem Korb (wer ist zuständig / wird benachrichtigt)
@@ -339,10 +477,61 @@ model Invoice {
   createdBy     User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
+  attachments   InvoiceAttachment[]
+  messages      InvoiceNote[]
 
   @@index([tenantId, status])
   @@index([tenantId, invoiceDate])
   @@index([tenantId, fileHash])
   @@index([tenantId, deletedAt])
   @@index([basketId])
+}
+
+// ── Zusätzliche Dokumente zu einer Rechnung (Stefan 2026-07-08): neben dem
+// eigentlichen Beleg lassen sich jederzeit weitere Dateien anhängen (z. B.
+// Lieferschein, Vertrag, Mail-Verlauf, Bestellung) — unabhängig vom
+// Haupt-Beleg und dessen GoBD-Sperre bei E-Rechnungen (Anhänge sind reine
+// Zusatzinformation, keine Rechnungsdaten, daher jederzeit hinzufügbar/
+// löschbar, auch bei ZUGFeRD/XRechnung). Nutzt denselben Datei-Speicher wie
+// der Hauptbeleg (lib/storage.ts), aber OHNE Zero-Knowledge-Verschlüsselung
+// (v1) — bei aktiver Beleg-Verschlüsselung des Mandanten wird der Upload
+// serverseitig gesperrt, um keine unverschlüsselten sensiblen Anhänge neben
+// verschlüsselten Belegen abzulegen.
+model InvoiceAttachment {
+  id           String   @id @default(cuid())
+  invoiceId    String
+  invoice      Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  tenantId     String
+  fileName     String // gespeicherter Dateiname unter uploads/{tenantId}/
+  originalName String
+  mimeType     String
+  size         Int
+  uploadedById String?
+  uploadedBy   User?    @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+
+  @@index([invoiceId])
+}
+
+// ── Gerichtete Nachricht an einen Mitarbeiter (Stefan 2026-07-08): anders
+// als das freie Notizfeld (Invoice.notes, z. B. Kontierung) ist dies eine
+// ADRESSIERTE Nachricht an einen bestimmten Kollegen — z. B. "bitte
+// Kostenstelle prüfen, betrifft Projekt X" — wichtig für dessen nächsten
+// Bearbeitungsschritt. Mehrere Nachrichten pro Rechnung möglich (kleiner
+// Verlauf statt Überschreiben), mit Lese-Status.
+model InvoiceNote {
+  id        String    @id @default(cuid())
+  invoiceId String
+  invoice   Invoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  tenantId  String
+  authorId  String?
+  author    User?     @relation("InvoiceNoteAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  toUserId  String?
+  toUser    User?     @relation("InvoiceNoteRecipient", fields: [toUserId], references: [id], onDelete: SetNull)
+  text      String
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([invoiceId])
+  @@index([toUserId, readAt])
 }

@@ -25,6 +25,16 @@ const EMPTY = {
 }
 const CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP']
 
+// Dieselbe Sperre wie beim späteren Bearbeiten (InvoiceEditForm.tsx) — muss
+// schon beim ERSTEN Einlesen einer ZUGFeRD/XRechnung gelten, nicht erst
+// danach (Stefan 2026-07-08: sonst könnte man die aus dem rechtsverbindlichen
+// XML übernommenen Werte hier noch vor dem Speichern verändern, was dieselbe
+// GoBD-Unveränderbarkeit verletzen würde, die auf der Detailseite gilt).
+// Serverseitig zusätzlich erzwungen in /api/invoices (Defense-in-Depth).
+const LOCK_REASON =
+  'Aus der elektronischen Rechnung (ZUGFeRD/XRechnung) automatisch übernommen — laut GoBD nicht änderbar, ' +
+  'da die Anzeige sonst vom rechtsverbindlichen Original abweichen würde.'
+
 function toInput(n: number | null): string {
   return n === null ? '' : String(n).replace('.', ',')
 }
@@ -269,7 +279,8 @@ export default function NewInvoicePage() {
         />
         <p className="mt-0.5 text-[10px] text-gray-400">
           E-Rechnungen (ZUGFeRD/XRechnung) werden automatisch erkannt — Daten wie Nummer,
-          Datum und Beträge werden übernommen, leere Felder kannst du hier vorbelegen.
+          Datum und Beträge werden übernommen und sind laut GoBD nicht änderbar (🔒 unten).
+          Bei anderen Belegen kannst du die Felder frei ausfüllen.
         </p>
         {encEnabled && (
           <p className="mt-1 text-[11px] font-medium text-[var(--accent)]">
@@ -317,9 +328,12 @@ export default function NewInvoicePage() {
         </p>
       )}
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Lieferant *" value={f.vendor} onChange={(v) => set('vendor', v)} required warn={aiFlags.includes('vendor')} />
-        <Field label="Rechnungsnummer" value={f.invoiceNumber} onChange={(v) => set('invoiceNumber', v)} warn={aiFlags.includes('invoiceNumber')} />
-        <Field label="Rechnungsdatum" type="date" value={f.invoiceDate} onChange={(v) => set('invoiceDate', v)} warn={aiFlags.includes('invoiceDate')} />
+        <Field label="Lieferant *" value={f.vendor} onChange={(v) => set('vendor', v)} required
+          warn={aiFlags.includes('vendor')} locked={isEInvoice} lockReason={LOCK_REASON} />
+        <Field label="Rechnungsnummer" value={f.invoiceNumber} onChange={(v) => set('invoiceNumber', v)}
+          warn={aiFlags.includes('invoiceNumber')} locked={isEInvoice} lockReason={LOCK_REASON} />
+        <Field label="Rechnungsdatum" type="date" value={f.invoiceDate} onChange={(v) => set('invoiceDate', v)}
+          warn={aiFlags.includes('invoiceDate')} locked={isEInvoice} lockReason={LOCK_REASON} />
         {f.directDebitByVendor ? (
           <div>
             <label className="dp-label">Fälligkeit</label>
@@ -328,19 +342,39 @@ export default function NewInvoicePage() {
             </p>
           </div>
         ) : (
-          <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)} warn={aiFlags.includes('dueDate')} />
+          <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)}
+            warn={aiFlags.includes('dueDate')} locked={isEInvoice} lockReason={LOCK_REASON} />
         )}
-        <Field label="Netto (z. B. 1.234,56)" value={f.amountNet} onChange={(v) => set('amountNet', v)} warn={aiFlags.includes('amountNet')} />
-        <Field label="Steuer" value={f.amountTax} onChange={(v) => set('amountTax', v)} warn={aiFlags.includes('amountTax')} />
-        <Field label="Brutto" value={f.amountGross} onChange={(v) => set('amountGross', v)} warn={aiFlags.includes('amountGross')} />
+        <Field label="Netto (z. B. 1.234,56)" value={f.amountNet} onChange={(v) => set('amountNet', v)}
+          warn={aiFlags.includes('amountNet')} locked={isEInvoice} lockReason={LOCK_REASON} />
+        <Field label="Steuer" value={f.amountTax} onChange={(v) => set('amountTax', v)}
+          warn={aiFlags.includes('amountTax')} locked={isEInvoice} lockReason={LOCK_REASON} />
+        <Field label="Brutto" value={f.amountGross} onChange={(v) => set('amountGross', v)}
+          warn={aiFlags.includes('amountGross')} locked={isEInvoice} lockReason={LOCK_REASON} />
         <div>
-          <label className="dp-label">Währung</label>
-          <select className="dp-input mt-1" value={f.currency} onChange={(e) => set('currency', e.target.value)}>
-            <option>EUR</option><option>USD</option><option>CHF</option><option>GBP</option>
-          </select>
+          <label className="dp-label">
+            Währung
+            {isEInvoice && <span className="ml-1 text-gray-400" title={LOCK_REASON}>🔒</span>}
+          </label>
+          {isEInvoice ? (
+            <p className="dp-input mt-1 flex items-center bg-[var(--surface-muted)] text-gray-500" title={LOCK_REASON}>
+              {f.currency}
+            </p>
+          ) : (
+            <select className="dp-input mt-1" value={f.currency} onChange={(e) => set('currency', e.target.value)}
+              title="Rechnungswährung">
+              <option>EUR</option><option>USD</option><option>CHF</option><option>GBP</option>
+            </select>
+          )}
         </div>
         <Field label="Tags (kommagetrennt)" value={f.tags} onChange={(v) => set('tags', v)} warn={aiFlags.includes('tags')} />
       </div>
+      {isEInvoice && (
+        <p className="text-[11px] text-gray-400">
+          🔒 Gesperrte Felder stammen aus der elektronischen Rechnung und sind laut GoBD nicht änderbar
+          (serverseitig zusätzlich erzwungen). Tags und Notizen sind davon nicht betroffen.
+        </p>
+      )}
       <label className="flex items-center gap-2 text-sm text-gray-700">
         <input type="checkbox" checked={f.directDebitByVendor}
           onChange={(e) => setF((p) => ({ ...p, directDebitByVendor: e.target.checked }))} />
@@ -365,21 +399,29 @@ export default function NewInvoicePage() {
 }
 
 function Field({
-  label, value, onChange, type = 'text', required, warn,
+  label, value, onChange, type = 'text', required, warn, locked, lockReason,
 }: {
   label: string; value: string; onChange: (v: string) => void; type?: string; required?: boolean; warn?: boolean
+  locked?: boolean; lockReason?: string
 }) {
   return (
     <div>
       <label className="dp-label">
         {label}
         {warn && <span className="ml-1 text-[var(--warn-strong)]" title="KI ist sich hier unsicher — bitte prüfen">⚠</span>}
+        {locked && <span className="ml-1 text-gray-400" title={lockReason}>🔒</span>}
       </label>
-      <input
-        className={`dp-input mt-1 ${warn ? 'border-[var(--warn-border)] bg-[var(--warn-bg)]' : ''}`}
-        type={type} value={value} required={required}
-        onChange={(e) => onChange(e.target.value)}
-      />
+      {locked ? (
+        <p className="dp-input mt-1 flex items-center bg-[var(--surface-muted)] text-gray-500" title={lockReason}>
+          {value || '—'}
+        </p>
+      ) : (
+        <input
+          className={`dp-input mt-1 ${warn ? 'border-[var(--warn-border)] bg-[var(--warn-bg)]' : ''}`}
+          type={type} value={value} required={required}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      )}
     </div>
   )
 }

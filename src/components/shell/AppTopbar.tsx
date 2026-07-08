@@ -39,14 +39,16 @@ export function AppTopbar({
       </div>
       <div className="flex items-center gap-3">
         {impersonatorName && (
-          <span className="rounded-full bg-[var(--warn-bg)] px-2.5 py-1 text-xs font-medium text-[var(--warn-strong)]">
-            Übernahme durch {impersonatorName}
+          <span className="rounded-full bg-[var(--warn-bg)] px-2.5 py-1 text-xs font-medium text-[var(--warn-strong)]"
+            title="Diese Sitzung läuft als Impersonation — der Betreiber ist vorübergehend als dieser Nutzer angemeldet (§12)">
+            Impersonation durch {impersonatorName}
           </span>
         )}
         <span className="hidden max-w-[200px] truncate text-sm font-medium text-gray-700 sm:block">
           {tenantName ?? 'Plattform'}
         </span>
-        <span className="rounded-full bg-[var(--accent-bg)] px-2.5 py-1 text-xs font-medium text-[var(--accent)]">
+        <span className="rounded-full bg-[var(--accent-bg)] px-2.5 py-1 text-xs font-medium text-[var(--accent)]"
+          title="Ihre Rolle in diesem Mandanten">
           {ROLE_LABELS[role]}
         </span>
         <span className="hidden text-xs text-gray-400 md:block">{email}</span>

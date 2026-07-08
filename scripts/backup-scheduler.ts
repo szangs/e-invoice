@@ -16,6 +16,7 @@ try {
 
 /* eslint-disable import/first */
 import { runDueBackups } from '../src/lib/backup'
+import { runBackupReminders } from '../src/lib/backupPackage'
 import { runDueBasketNotifications } from '../src/lib/baskets'
 import { runDueReports } from '../src/lib/report'
 
@@ -43,6 +44,13 @@ async function tick() {
     else log.forEach((l) => console.log(`[${stamp}] ${l}`))
   } catch (e) {
     console.error('Korb-Benachrichtigungslauf fehlgeschlagen:', e)
+  }
+  try {
+    const log = await runBackupReminders(false)
+    if (log.length === 0) console.log(`[${stamp}] Keine Sicherungs-Erinnerung fällig.`)
+    else log.forEach((l) => console.log(`[${stamp}] ${l}`))
+  } catch (e) {
+    console.error('Sicherungs-Erinnerungslauf fehlgeschlagen:', e)
   }
 }
 

@@ -10,11 +10,14 @@ export function BasketMoveSelect({
   currentBasketId,
   baskets,
   pending,
+  disabled,
 }: {
   invoiceId: string
   currentBasketId: string | null
   baskets: BasketOption[]
   pending: { targetName: string; approvedBy: string[]; needed: number } | null
+  /** Kein Verschieben-Recht auf dem aktuellen Korb (Stefan 2026-07-08) — Auswahl ausgeblendet. */
+  disabled?: boolean
 }) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
@@ -37,6 +40,10 @@ export function BasketMoveSelect({
       window.alert(`Freigabe erfasst — noch ${data.approvalsNeeded} weitere Freigabe(n) nötig (Vier-Augen-Korb).`)
     }
     router.refresh()
+  }
+
+  if (disabled) {
+    return <span className="text-[10px] text-gray-400" title="Kein Recht zum Verschieben aus diesem Korb">kein Zugriff</span>
   }
 
   return (

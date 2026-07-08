@@ -8,7 +8,7 @@ import { audit } from '@/lib/audit'
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { sendSystemMail } from '@/lib/mail'
-import { generatePassword, generateUsername } from '@/lib/password'
+import { generatePassword, usernameBaseFromName } from '@/lib/password'
 import { getSetting } from '@/lib/settings'
 
 /** Kurzliste aller Mandanten (für Auswahlfelder, z. B. Rücksicherung). */
@@ -39,7 +39,26 @@ const schema = z.object({
   licenseSerial: z.string().optional(),
   licenseExpiresAt: z.string().optional(), // ISO oder leer = unbegrenzt
   adminEmail: z.string().email(),
+  adminFirstName: z.string().min(1, 'Vorname des Administrators fehlt').max(80),
+  adminLastName: z.string().min(1, 'Nachname des Administrators fehlt').max(80),
 })
+
+/** Benutzername aus Vor-/Nachname, bei Kollision mit Zähler eindeutig gemacht
+ * (username ist global @unique) — dieselbe Regel wie bei der Mandanten-eigenen
+ * Benutzeranlage (admin/users/route.ts), damit auch der erste Administrator
+ * eines neuen Mandanten KEINEN Slug-Präfix im Benutzernamen bekommt (Stefan
+ * 2026-07-08: das war die letzte verbliebene Stelle mit dem alten Muster). */
+async function generateUniqueUsername(firstName: string, lastName: string): Promise<string> {
+  const base = usernameBaseFromName(firstName, lastName)
+  let candidate = base
+  let n = 1
+  // eslint-disable-next-line no-await-in-loop
+  while (await prisma.user.findUnique({ where: { username: candidate } })) {
+    n++
+    candidate = `${base}${n}`
+  }
+  return candidate
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -50,6 +69,7 @@ export async function POST(req: NextRequest) {
     if (exists) return NextResponse.json({ error: 'Kurzname bereits vergeben.' }, { status: 409 })
 
     const password = generatePassword()
+    const adminUsername = await generateUniqueUsername(data.adminFirstName, data.adminLastName)
     const tenant = await prisma.tenant.create({
       data: {
         slug: data.slug,
@@ -67,7 +87,9 @@ export async function POST(req: NextRequest) {
         users: {
           create: {
             email: data.adminEmail.toLowerCase(),
-            username: generateUsername(data.slug),
+            username: adminUsername,
+            firstName: data.adminFirstName,
+            lastName: data.adminLastName,
             passwordHash: await bcrypt.hash(password, 10),
             role: Role.TENANT_ADMIN,
             active: true,

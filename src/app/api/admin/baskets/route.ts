@@ -5,7 +5,7 @@ import { BasketKind, Role } from '@prisma/client'
 import { z } from 'zod'
 import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
-import { ensureSystemBaskets } from '@/lib/baskets'
+import { ensureSystemBaskets, sortBaskets } from '@/lib/baskets'
 import { getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 
@@ -15,14 +15,13 @@ export async function GET() {
     const tenantId = requireTenant(ctx)
     await ensureSystemBaskets(tenantId)
     const baskets = await prisma.basket.findMany({
-      where: { tenantId },
-      orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+      where: { tenantId, deletedAt: null },
       include: {
         members: { include: { user: { select: { id: true, email: true, username: true } } } },
         _count: { select: { invoices: { where: { deletedAt: null } } } },
       },
     })
-    return NextResponse.json({ baskets })
+    return NextResponse.json({ baskets: sortBaskets(baskets) })
   } catch (e) {
     return jsonError(e)
   }

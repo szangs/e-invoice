@@ -20,11 +20,14 @@ export function AppSidebar({ role }: { role: Role }) {
 
   const isOperator = role === Role.OPERATOR_ADMIN
   const isTenantAdmin = role === Role.TENANT_ADMIN
+  const isAuditor = role === Role.AUDITOR
   const groups = NAV_GROUPS.filter((g) => {
     if (g.operatorOnly && !isOperator) return false
     // Mandanten-Verwaltung nur für Mandanten-Admins — der Betreiber nutzt die
     // Plattform-Benutzerverwaltung (PL03) bzw. Identitätsübernahme
     if (g.adminOnly && !isTenantAdmin) return false
+    // Audit-Protokoll: Mandanten-Admin UND die Rolle "Prüfer" (enger als adminOnly)
+    if (g.auditOnly && !(isTenantAdmin || isAuditor)) return false
     // Mandanten-Funktionen (Rechnungen etc.) sind für den Betreiber ohne Kontext sinnlos
     if (g.tenantOnly && isOperator) return false
     return true
@@ -47,6 +50,7 @@ export function AppSidebar({ role }: { role: Role }) {
       {!isOperator && (
         <Link
           href={DASHBOARD.href}
+          title={DASHBOARD.hint}
           className={`mb-3 flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm ${
             isActive(pathname, DASHBOARD.href)
               ? 'bg-[var(--accent-bg)] font-semibold text-[var(--accent)]'
@@ -64,6 +68,7 @@ export function AppSidebar({ role }: { role: Role }) {
           <div key={g.title} className={open ? 'my-2 rounded-xl bg-gray-50 py-1' : ''}>
             <button
               onClick={() => toggle(g.title)}
+              title={g.hint}
               className={`flex w-full items-center justify-between px-3 py-2 text-[11px] font-bold uppercase tracking-widest ${
                 open ? 'text-gray-700' : 'text-gray-400 hover:text-gray-700'
               }`}
@@ -78,7 +83,7 @@ export function AppSidebar({ role }: { role: Role }) {
               g.items.map((i) => {
                 const active = isActive(pathname, i.href)
                 return (
-                  <Link key={i.href} href={i.href}
+                  <Link key={i.href} href={i.href} title={i.hint}
                     className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm ${
                       active
                         ? 'bg-[var(--accent-bg)] font-semibold text-[var(--accent)]'
@@ -104,6 +109,7 @@ export function AppSidebar({ role }: { role: Role }) {
         className="fixed left-3 top-3 z-50 rounded-lg bg-white/80 p-2 text-gray-500 shadow lg:hidden print:hidden"
         onClick={() => setMobileOpen((v) => !v)}
         aria-label="Menü"
+        title="Menü öffnen/schließen"
       >
         <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
@@ -132,6 +138,7 @@ export function AppSidebar({ role }: { role: Role }) {
         <div className="mt-4 border-t border-[var(--line)] px-3 py-3">
           <button
             onClick={() => signOut({ callbackUrl: '/auth/login' })}
+            title="Sitzung beenden und abmelden"
             className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-gray-700 hover:bg-red-50 hover:text-red-600"
           >
             <svg className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">

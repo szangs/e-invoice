@@ -16,6 +16,8 @@ const schema = z.object({
   notificationEnabled: z.boolean().optional(),
   notificationIntervalHours: z.number().int().min(1).max(24 * 30).nullable().optional(),
   position: z.number().int().optional(),
+  // Wiederherstellen eines weich gelöschten (leeren) Korbs (siehe DELETE-Handler)
+  restore: z.literal(true).optional(),
 })
 
 async function findOwn(id: string, tenantId: string) {
@@ -29,8 +31,11 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     const ctx = await getContext({ roles: [Role.TENANT_ADMIN] })
     const tenantId = requireTenant(ctx)
     const existing = await findOwn(params.id, tenantId)
-    const data = schema.parse(await req.json())
+    const { restore, ...data } = schema.parse(await req.json())
 
+    if (existing.deletedAt && !restore) {
+      throw new ApiError(409, 'Korb ist gelöscht — bitte zuerst wiederherstellen.')
+    }
     if (existing.kind !== BasketKind.CUSTOM && data.fourEyesEnabled) {
       throw new ApiError(400, 'Eingangs- und Übergabekorb können kein Vier-Augen-Prinzip verwenden')
     }
@@ -38,13 +43,18 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       throw new ApiError(400, 'Bitte ein Intervall in Stunden angeben')
     }
 
-    const basket = await prisma.basket.update({ where: { id: existing.id }, data })
+    const basket = await prisma.basket.update({
+      where: { id: existing.id },
+      data: { ...data, ...(restore ? { deletedAt: null, deletedBy: null } : {}) },
+    })
     await audit({
       tenantId,
       actorId: ctx.userId,
       actorName: ctx.email,
-      action: 'BASKET_UPDATE',
-      details: `Korb "${existing.name}" geändert: ${Object.entries(data).map(([k, v]) => `${k}=${v}`).join(', ')}`,
+      action: restore ? 'BASKET_RESTORE' : 'BASKET_UPDATE',
+      details: restore
+        ? `Korb "${existing.name}" wiederhergestellt`
+        : `Korb "${existing.name}" geändert: ${Object.entries(data).map(([k, v]) => `${k}=${v}`).join(', ')}`,
     })
     return NextResponse.json({ basket })
   } catch (e) {
@@ -60,17 +70,25 @@ export async function DELETE(_req: NextRequest, { params }: { params: { id: stri
     if (existing.kind !== BasketKind.CUSTOM) {
       throw new ApiError(400, 'Eingangs- und Übergabekorb können nicht gelöscht werden')
     }
+    if (existing.deletedAt) {
+      throw new ApiError(409, 'Korb ist bereits gelöscht.')
+    }
     const invoiceCount = await prisma.invoice.count({ where: { basketId: existing.id, deletedAt: null } })
     if (invoiceCount > 0) {
       throw new ApiError(409, `Korb enthält noch ${invoiceCount} Rechnung(en) — bitte zuerst verschieben`)
     }
-    await prisma.basket.delete({ where: { id: existing.id } })
+    // Weiches Löschen (Stefan 2026-07-08) — nur leere Körbe (siehe Prüfung
+    // oben), landet im Papierkorb für Körbe und lässt sich wiederherstellen.
+    await prisma.basket.update({
+      where: { id: existing.id },
+      data: { deletedAt: new Date(), deletedBy: ctx.email },
+    })
     await audit({
       tenantId,
       actorId: ctx.userId,
       actorName: ctx.email,
       action: 'BASKET_DELETE',
-      details: `Korb "${existing.name}" gelöscht`,
+      details: `Korb "${existing.name}" gelöscht (weich, wiederherstellbar)`,
     })
     return NextResponse.json({ ok: true })
   } catch (e) {

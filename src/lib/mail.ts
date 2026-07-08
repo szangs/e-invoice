@@ -26,6 +26,13 @@ export async function sendSystemMail(
     return { sent: true }
   } catch (e) {
     console.error('Mailversand fehlgeschlagen:', e)
-    return { sent: false, reason: 'SMTP-Versand fehlgeschlagen' }
+    // Im Dev-Modus die echte SMTP-Fehlermeldung durchreichen (z. B. falsches
+    // Passwort, Host nicht erreichbar) — in Produktion bewusst generisch,
+    // um keine Infrastrukturdetails nach außen zu geben.
+    const detail = e instanceof Error ? e.message : String(e)
+    return {
+      sent: false,
+      reason: process.env.NODE_ENV === 'development' ? `SMTP-Versand fehlgeschlagen: ${detail}` : 'SMTP-Versand fehlgeschlagen',
+    }
   }
 }

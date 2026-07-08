@@ -265,74 +265,115 @@ export async function runDueBackups(force = false): Promise<string[]> {
   const settings = await getSettings()
   const targetDir = settings.BACKUP_TARGET_DIR
 
-  // Mandanten
+  // Mandanten — Stefan 2026-07-08: die Sicherung wird nicht mehr als
+  // E-Mail-Anhang verschickt, sondern als ZIP-Paket serverseitig abgelegt
+  // (siehe lib/backupPackage.ts); die E-Mail enthält nur noch den
+  // Download-Link. Das Paket gilt als erstellt, sobald es auf der Platte
+  // liegt — unabhängig vom Erfolg der Hinweis-Mail (die ist nur Benachrichtigung,
+  // nicht mehr der Transportweg selbst).
   const tenants = await prisma.tenant.findMany({ where: { backupEnabled: true, active: true } })
   for (const t of tenants) {
     if (!force && !isDue(t.lastBackupAt, t.backupFrequency)) continue
     try {
-      const { filename, json } = await buildTenantBackup(t.id)
-      let delivered = false
-      if (t.backupEmail) {
-        const mail = await sendSystemMail(
-          t.backupEmail,
-          `E-Invoice Datensicherung — ${t.name}`,
-          `Guten Tag,\n\nanbei die automatische Datensicherung Ihres Mandanten "${t.name}".\nAufbewahrung gemäß Ihren eigenen Sicherungsregeln.\n`,
-          [{ filename, content: json }],
-        )
-        delivered = mail.sent
-        log.push(`${t.slug}: E-Mail an ${t.backupEmail} — ${mail.sent ? 'versendet' : mail.reason}`)
-      }
+      const { buildTenantBackupZip, storeBackupPackage, uploadToWebdav } = await import('@/lib/backupPackage')
+      const { buffer, originalName, sha256 } = await buildTenantBackupZip(t.id)
+      const pkg = await storeBackupPackage({ tenantId: t.id, kind: 'TENANT', buffer, originalName, sha256 })
+      log.push(`${t.slug}: Paket erstellt (${originalName}, ${(buffer.length / 1024 / 1024).toFixed(1)} MB)`)
+
       if (targetDir) {
         await mkdir(targetDir, { recursive: true })
-        await writeFile(path.join(targetDir, filename), json)
-        delivered = true
-        log.push(`${t.slug}: Datei → ${path.join(targetDir, filename)}`)
+        await writeFile(path.join(targetDir, originalName), buffer)
+        log.push(`${t.slug}: zusätzlich → ${path.join(targetDir, originalName)}`)
       }
-      if (delivered) {
-        await prisma.tenant.update({ where: { id: t.id }, data: { lastBackupAt: new Date() } })
+
+      if (t.backupWebdavUrl) {
+        const remote = await uploadToWebdav(t, buffer, originalName)
+        await prisma.backupPackage.update({
+          where: { id: pkg.id },
+          data: remote.ok ? { remoteStoredAt: new Date() } : { remoteError: remote.error },
+        })
+        log.push(`${t.slug}: externes Ziel — ${remote.ok ? 'hochgeladen' : `fehlgeschlagen (${remote.error})`}`)
+      }
+
+      let mailSent = false
+      if (t.backupEmail) {
+        const appUrl = process.env.NEXTAUTH_URL ?? 'http://localhost:3000'
+        const downloadUrl = `${appUrl}/backup-download/${pkg.downloadToken}`
+        const reminderLine = t.backupReminderDays && t.backupReminderDays > 0
+          ? `\nSolange die Datei nicht heruntergeladen wurde, erinnern wir Sie alle paar Tage — bis zu ${t.backupReminderDays} Tage lang.`
+          : ''
+        const mail = await sendSystemMail(
+          t.backupEmail,
+          `E-Invoice Datensicherung bereit — ${t.name}`,
+          [
+            'Guten Tag,', '',
+            `Ihre automatische Datensicherung "${t.name}" steht zum Download bereit.`, '',
+            `Download-Link: ${downloadUrl}`,
+            `SHA-256-Prüfsumme: ${sha256}`,
+            `Verfügbar bis: ${pkg.expiresAt.toLocaleDateString('de-DE')}`,
+            reminderLine, '',
+            'Bitte speichern Sie die Datei an einem sicheren, von E-Invoice unabhängigen Ort.',
+          ].join('\n'),
+        )
+        mailSent = mail.sent
+        log.push(`${t.slug}: E-Mail an ${t.backupEmail} — ${mail.sent ? 'versendet' : mail.reason}`)
+      } else {
+        log.push(`${t.slug}: keine Ziel-E-Mail hinterlegt — Paket liegt bereit, niemand benachrichtigt`)
+      }
+
+      // Das Sicherungspaket selbst ist erstellt und sicher abgelegt — das
+      // zählt als "Sicherung erfolgt", unabhängig vom Mail-Erfolg (anders als
+      // im alten Anhang-Modell, wo die Mail der einzige Transportweg war).
+      await prisma.tenant.update({ where: { id: t.id }, data: { lastBackupAt: new Date() } })
+      await audit({
+        tenantId: t.id,
+        actorName: 'Sicherung',
+        action: 'BACKUP_CREATED',
+        details: `Automatisches Sicherungspaket erstellt (${t.backupFrequency}): ${originalName}, SHA-256 ${sha256.slice(0, 16)}…` +
+          (mailSent ? '' : ' — Hinweis-Mail nicht zugestellt, siehe BACKUP_MAIL_FAILED'),
+      })
+      if (t.backupEmail && !mailSent) {
         await audit({
           tenantId: t.id,
           actorName: 'Sicherung',
-          action: 'BACKUP_CREATED',
-          details: `Automatische Sicherung erstellt (${t.backupFrequency})`,
+          action: 'BACKUP_MAIL_FAILED',
+          details: `Zustellungs-Mail für Paket ${originalName} fehlgeschlagen`,
         })
-      } else if (!t.backupEmail && !targetDir) {
-        log.push(`${t.slug}: kein Ziel konfiguriert (weder E-Mail noch Verzeichnis)`)
       }
     } catch (e) {
-      log.push(`${t.slug}: FEHLER — ${e instanceof Error ? e.message : 'unbekannt'}`)
+      const reason = e instanceof Error ? e.message : 'unbekannt'
+      log.push(`${t.slug}: FEHLER — ${reason}`)
+      await audit({ tenantId: t.id, actorName: 'Sicherung', action: 'BACKUP_FAILED', details: `Fehler: ${reason}` })
     }
   }
 
-  // Gesamtsystem
+  // Gesamtsystem — ebenfalls als ZIP-Paket mit Download-Link statt Anhang.
   if (settings.BACKUP_SYSTEM_ENABLED === '1') {
     const last = settings.BACKUP_SYSTEM_LAST ? new Date(settings.BACKUP_SYSTEM_LAST) : null
     if (force || isDue(last, settings.BACKUP_SYSTEM_FREQ || 'WEEKLY')) {
       try {
-        const { filename, json } = await buildSystemBackup()
-        let delivered = false
+        const { buildSystemBackupZip, storeBackupPackage } = await import('@/lib/backupPackage')
+        const { buffer, originalName, sha256 } = await buildSystemBackupZip()
+        const pkg = await storeBackupPackage({ tenantId: null, kind: 'SYSTEM', buffer, originalName, sha256 })
+        log.push(`System: Paket erstellt (${originalName}, ${(buffer.length / 1024 / 1024).toFixed(1)} MB)`)
+
         if (targetDir) {
           await mkdir(targetDir, { recursive: true })
-          await writeFile(path.join(targetDir, filename), json)
-          delivered = true
-          log.push(`System: Datei → ${path.join(targetDir, filename)}`)
+          await writeFile(path.join(targetDir, originalName), buffer)
+          log.push(`System: zusätzlich → ${path.join(targetDir, originalName)}`)
         }
         if (settings.BACKUP_SYSTEM_EMAIL) {
+          const appUrl = process.env.NEXTAUTH_URL ?? 'http://localhost:3000'
+          const downloadUrl = `${appUrl}/backup-download/${pkg.downloadToken}`
           const mail = await sendSystemMail(
             settings.BACKUP_SYSTEM_EMAIL,
-            'E-Invoice System-Datensicherung',
-            'Anbei die automatische Sicherung des Gesamtsystems.',
-            [{ filename, content: json }],
+            'E-Invoice System-Datensicherung bereit',
+            `Download-Link: ${downloadUrl}\nSHA-256-Prüfsumme: ${sha256}\nVerfügbar bis: ${pkg.expiresAt.toLocaleDateString('de-DE')}`,
           )
-          delivered = delivered || mail.sent
           log.push(`System: E-Mail — ${mail.sent ? 'versendet' : mail.reason}`)
         }
-        if (delivered) {
-          await setSetting('BACKUP_SYSTEM_LAST', new Date().toISOString())
-          await audit({ actorName: 'Sicherung', action: 'BACKUP_SYSTEM_CREATED', details: 'System-Sicherung erstellt' })
-        } else {
-          log.push('System: kein Ziel konfiguriert')
-        }
+        await setSetting('BACKUP_SYSTEM_LAST', new Date().toISOString())
+        await audit({ actorName: 'Sicherung', action: 'BACKUP_SYSTEM_CREATED', details: `System-Sicherungspaket erstellt: ${originalName}` })
       } catch (e) {
         log.push(`System: FEHLER — ${e instanceof Error ? e.message : 'unbekannt'}`)
       }

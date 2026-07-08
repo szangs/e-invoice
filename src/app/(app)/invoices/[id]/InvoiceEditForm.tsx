@@ -6,9 +6,22 @@ import { FileLink } from '@/components/crypto/FileLink'
 import { EINVOICE_FORMATS } from '@/lib/docFormat'
 import type { InvoiceDTO } from '@/lib/invoices'
 import { BasketMoveSelect } from '../BasketMoveSelect'
+import { AttachmentsPanel } from './AttachmentsPanel'
+import { InvoiceNotesPanel } from './InvoiceNotesPanel'
 
 const AI_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp']
 const CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP']
+
+// Steuerlich relevante Felder bei ZUGFeRD/XRechnung sind gesperrt (Stefan
+// 2026-07-08): das XML ist das rechtsverbindliche Original — würde man
+// Lieferant, Nummer, Datum oder Beträge hier überschreiben, würde die Anzeige
+// vom Original abweichen (GoBD-Unveränderbarkeit/Nachvollziehbarkeit). Bei
+// Papierrechnungen/Scans (keine strukturierte Quelle) gilt diese Sperre NICHT.
+// Notizen, Tags, Status, Zahlungsart und Korb bleiben immer frei editierbar —
+// das ist unsere eigene Workflow-Metadaten-Ebene, keine Rechnungsdaten.
+const LOCK_REASON =
+  'Aus der elektronischen Rechnung (ZUGFeRD/XRechnung) automatisch übernommen — laut GoBD nicht änderbar, ' +
+  'da die Anzeige sonst vom rechtsverbindlichen Original abweichen würde.'
 
 const STATUS_OPTIONS = [
   { value: 'NEW', label: 'Neu' },
@@ -30,10 +43,14 @@ export function InvoiceEditForm({
   invoice,
   baskets,
   pendingApproval,
+  encryptionEnabled,
+  colleagues,
 }: {
   invoice: InvoiceDTO
   baskets: { id: string; name: string }[]
   pendingApproval: { targetName: string; approvedBy: string[]; needed: number } | null
+  encryptionEnabled: boolean
+  colleagues: { id: string; name: string }[]
 }) {
   const router = useRouter()
   const [f, setF] = useState({
@@ -60,6 +77,11 @@ export function InvoiceEditForm({
   const isImage = AI_IMAGE_MIMES.includes(invoice.mimeType ?? '')
   const isPlainPdf = invoice.mimeType === 'application/pdf' && !isEInvoice
   const canUseAi = invoice.hasFile && !invoice.encrypted && (isImage || isPlainPdf)
+  // Bild-Abgleich (Stefan 2026-07-08): nur bei ZUGFeRD/Factur-X sinnvoll — da
+  // steckt ein sichtbares PDF-Bild UND ein XML im selben Beleg, beide sollten
+  // übereinstimmen. Reine XRechnung (nur XML, kein eigenes Bild) hat nichts
+  // zum Gegenprüfen.
+  const canCompareXml = invoice.hasFile && !invoice.encrypted && invoice.docFormat === 'ZUGFERD' && invoice.mimeType === 'application/pdf'
   const [aiAvailable, setAiAvailable] = useState(false)
   const [aiReason, setAiReason] = useState('')
   const [aiBusy, setAiBusy] = useState(false)
@@ -67,9 +89,12 @@ export function InvoiceEditForm({
   const [aiWarnings, setAiWarnings] = useState<string[]>([])
   const [aiFlags, setAiFlags] = useState<string[]>([])
   const [usedAi, setUsedAi] = useState(false)
+  const [compareBusy, setCompareBusy] = useState(false)
+  const [compareError, setCompareError] = useState('')
+  const [compareResult, setCompareResult] = useState<{ field: string; label: string; xmlValue: string; aiValue: string }[] | null>(null)
 
   useEffect(() => {
-    if (!canUseAi) return
+    if (!canUseAi && !canCompareXml) return
     fetch(`/api/ai/config?invoiceId=${invoice.id}`)
       .then((r) => r.json())
       .then((d) => {
@@ -78,7 +103,26 @@ export function InvoiceEditForm({
       })
       .catch(() => undefined)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canUseAi, invoice.id])
+  }, [canUseAi, canCompareXml, invoice.id])
+
+  async function compareXml() {
+    setCompareBusy(true)
+    setCompareError('')
+    setCompareResult(null)
+    try {
+      const res = await fetch(`/api/invoices/${invoice.id}/xml-compare`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) {
+        setCompareError(data.error ?? 'Abgleich fehlgeschlagen.')
+        return
+      }
+      setCompareResult(data.deviations ?? [])
+    } catch {
+      setCompareError('Abgleich fehlgeschlagen.')
+    } finally {
+      setCompareBusy(false)
+    }
+  }
 
   const set = (key: keyof typeof f, value: string) => setF((p) => ({ ...p, [key]: value }))
 
@@ -215,7 +259,8 @@ export function InvoiceEditForm({
         </p>
         <p className="text-xs text-gray-500">Der Beleg und alle Daten sind weiterhin vorhanden — nichts wurde endgültig entfernt.</p>
         <div className="flex gap-2">
-          <button type="button" className="btn-primary" onClick={restore} disabled={busy}>
+          <button type="button" className="btn-primary" onClick={restore} disabled={busy}
+            title="Löschmarkierung aufheben — Rechnung erscheint wieder in der normalen Liste">
             {busy ? '…' : 'Wiederherstellen'}
           </button>
           <button type="button" className="btn-secondary" onClick={() => router.push('/invoices')}>Zurück</button>
@@ -249,7 +294,8 @@ export function InvoiceEditForm({
             Als Dublette erkannt —{' '}
             <a className="underline" href={`/invoices/${invoice.duplicateOfId}`}>Original öffnen</a>
           </p>
-          <button type="button" className="btn-secondary !px-2 !py-1 text-xs" onClick={unmarkDuplicate} disabled={busy}>
+          <button type="button" className="btn-secondary !px-2 !py-1 text-xs" onClick={unmarkDuplicate} disabled={busy}
+            title="Dubletten-Markierung aufheben — diese Rechnung wird als eigenständig behandelt">
             Keine Dublette
           </button>
         </div>
@@ -267,7 +313,8 @@ export function InvoiceEditForm({
       )}
       {canUseAi && aiAvailable && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] px-3 py-2">
-          <button type="button" className="btn-secondary" onClick={fillWithAi} disabled={aiBusy}>
+          <button type="button" className="btn-secondary" onClick={fillWithAi} disabled={aiBusy}
+            title="Beleg per KI auslesen und Felder unten vorschlagen — Ergebnis bitte immer gegenprüfen">
             {aiBusy ? 'KI liest die Rechnung …' : '✨ Mit KI erkennen'}
           </button>
           <p className="text-[11px] text-gray-500">
@@ -286,9 +333,12 @@ export function InvoiceEditForm({
         </p>
       )}
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Lieferant *" value={f.vendor} onChange={(v) => set('vendor', v)} required warn={aiFlags.includes('vendor')} />
-        <Field label="Rechnungsnummer" value={f.invoiceNumber} onChange={(v) => set('invoiceNumber', v)} warn={aiFlags.includes('invoiceNumber')} />
-        <Field label="Rechnungsdatum" type="date" value={f.invoiceDate} onChange={(v) => set('invoiceDate', v)} warn={aiFlags.includes('invoiceDate')} />
+        <Field label="Lieferant *" value={f.vendor} onChange={(v) => set('vendor', v)} required
+          warn={aiFlags.includes('vendor')} locked={isEInvoice} lockReason={LOCK_REASON} />
+        <Field label="Rechnungsnummer" value={f.invoiceNumber} onChange={(v) => set('invoiceNumber', v)}
+          warn={aiFlags.includes('invoiceNumber')} locked={isEInvoice} lockReason={LOCK_REASON} />
+        <Field label="Rechnungsdatum" type="date" value={f.invoiceDate} onChange={(v) => set('invoiceDate', v)}
+          warn={aiFlags.includes('invoiceDate')} locked={isEInvoice} lockReason={LOCK_REASON} />
         {f.directDebitByVendor ? (
           <div>
             <label className="dp-label">Fälligkeit</label>
@@ -297,20 +347,35 @@ export function InvoiceEditForm({
             </p>
           </div>
         ) : (
-          <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)} warn={aiFlags.includes('dueDate')} />
+          <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)}
+            warn={aiFlags.includes('dueDate')} locked={isEInvoice} lockReason={LOCK_REASON} />
         )}
-        <Field label="Netto" value={f.amountNet} onChange={(v) => set('amountNet', v)} warn={aiFlags.includes('amountNet')} />
-        <Field label="Steuer" value={f.amountTax} onChange={(v) => set('amountTax', v)} warn={aiFlags.includes('amountTax')} />
-        <Field label="Brutto" value={f.amountGross} onChange={(v) => set('amountGross', v)} warn={aiFlags.includes('amountGross')} />
+        <Field label="Netto" value={f.amountNet} onChange={(v) => set('amountNet', v)}
+          warn={aiFlags.includes('amountNet')} locked={isEInvoice} lockReason={LOCK_REASON} />
+        <Field label="Steuer" value={f.amountTax} onChange={(v) => set('amountTax', v)}
+          warn={aiFlags.includes('amountTax')} locked={isEInvoice} lockReason={LOCK_REASON} />
+        <Field label="Brutto" value={f.amountGross} onChange={(v) => set('amountGross', v)}
+          warn={aiFlags.includes('amountGross')} locked={isEInvoice} lockReason={LOCK_REASON} />
         <div>
-          <label className="dp-label">Währung</label>
-          <select className="dp-input mt-1" value={f.currency} onChange={(e) => set('currency', e.target.value)}>
-            <option>EUR</option><option>USD</option><option>CHF</option><option>GBP</option>
-          </select>
+          <label className="dp-label">
+            Währung
+            {isEInvoice && <span className="ml-1 text-gray-400" title={LOCK_REASON}>🔒</span>}
+          </label>
+          {isEInvoice ? (
+            <p className="dp-input mt-1 flex items-center bg-[var(--surface-muted)] text-gray-500" title={LOCK_REASON}>
+              {f.currency}
+            </p>
+          ) : (
+            <select className="dp-input mt-1" value={f.currency} onChange={(e) => set('currency', e.target.value)}
+              title="Rechnungswährung">
+              <option>EUR</option><option>USD</option><option>CHF</option><option>GBP</option>
+            </select>
+          )}
         </div>
         <div>
           <label className="dp-label">Status</label>
-          <select className="dp-input mt-1" value={f.status} onChange={(e) => set('status', e.target.value)}>
+          <select className="dp-input mt-1" value={f.status} onChange={(e) => set('status', e.target.value)}
+            title="Bearbeitungsstatus für den internen Workflow — jederzeit frei änderbar">
             {STATUS_OPTIONS.map((s) => (
               <option key={s.value} value={s.value}>{s.label}</option>
             ))}
@@ -318,7 +383,48 @@ export function InvoiceEditForm({
         </div>
         <Field label="Tags" value={f.tags} onChange={(v) => set('tags', v)} />
       </div>
-      <label className="flex items-center gap-2 text-sm text-gray-700">
+      {isEInvoice && (
+        <p className="text-[11px] text-gray-400">
+          🔒 Gesperrte Felder stammen aus der elektronischen Rechnung und sind laut GoBD nicht änderbar.
+          Notizen, Tags, Status, Zahlungsart und Korb sind davon nicht betroffen und bleiben frei editierbar.
+        </p>
+      )}
+      {canCompareXml && aiAvailable && (
+        <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] px-3 py-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" className="btn-secondary" onClick={compareXml} disabled={compareBusy}
+              title="Liest das PDF-Bild per KI und vergleicht es mit den aus dem XML übernommenen Feldern oben — reine Plausibilitätsprüfung, ändert nichts an den gespeicherten Daten">
+              {compareBusy ? 'Vergleiche Bild mit XML …' : '🔍 Bild mit XML abgleichen'}
+            </button>
+            <p className="text-[11px] text-gray-500">
+              Prüft per KI-Bilderkennung, ob das sichtbare PDF-Bild von den oben gesperrten XML-Werten abweicht.
+            </p>
+          </div>
+          {compareError && <p className="mt-1.5 text-sm text-[var(--danger)]">{compareError}</p>}
+          {compareResult && compareResult.length === 0 && (
+            <p className="mt-1.5 text-xs font-medium text-[var(--accent)]">✓ Keine Abweichungen gefunden — Bild und XML stimmen überein.</p>
+          )}
+          {compareResult && compareResult.length > 0 && (
+            <div className="mt-1.5 rounded-lg bg-[var(--warn-bg)] px-2.5 py-2">
+              <p className="text-xs font-semibold text-[var(--warn-strong)]">
+                ⚠ {compareResult.length} Abweichung{compareResult.length === 1 ? '' : 'en'} zwischen Bild und XML — bitte prüfen:
+              </p>
+              <ul className="mt-1 space-y-0.5 text-xs text-[var(--warn-strong)]">
+                {compareResult.map((d) => (
+                  <li key={d.field}>
+                    <span className="font-medium">{d.label}:</span> XML „{d.xmlValue}" vs. Bild „{d.aiValue}"
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+      {canCompareXml && !aiAvailable && aiReason && (
+        <p className="text-[11px] text-gray-400">Bild-Abgleich nicht verfügbar: {aiReason}</p>
+      )}
+      <label className="flex items-center gap-2 text-sm text-gray-700"
+        title="Zahlungsart ist keine steuerlich relevante Angabe der Rechnung — immer frei änderbar">
         <input type="checkbox" checked={f.directDebitByVendor}
           onChange={(e) => setF((p) => ({ ...p, directDebitByVendor: e.target.checked }))} />
         Lieferant bucht per Lastschrift/Abbuchung selbst ab (statt Überweisung)
@@ -327,8 +433,11 @@ export function InvoiceEditForm({
         )}
       </label>
       <div>
-        <label className="dp-label">Notizen</label>
+        <label className="dp-label" title="Interne Notiz, Kontierung oder ergänzende Information — nicht Teil der Rechnung selbst, immer frei editierbar">
+          Notizen (z. B. Kontierung, interne Vermerke)
+        </label>
         <textarea className="dp-input mt-1" rows={3} value={f.notes}
+          title="Interne Notiz, Kontierung oder ergänzende Information — nicht Teil der Rechnung selbst, immer frei editierbar"
           onChange={(e) => set('notes', e.target.value)} />
       </div>
 
@@ -337,11 +446,13 @@ export function InvoiceEditForm({
         <div className="space-y-1.5">
           <CheckRow
             label="Elektronische Vorprüfung"
+            hint="Wird bei gültigem ZUGFeRD/XRechnung-Format automatisch gesetzt — hier auch manuell änderbar"
             at={invoice.checkElectronicAt} by={invoice.checkElectronicBy}
             busy={busy} onToggle={(v) => toggleCheck('checkElectronic', v)}
           />
           <CheckRow
             label="Formal richtig"
+            hint="Rechnung enthält alle formal nötigen Pflichtangaben"
             at={invoice.checkFormalAt} by={invoice.checkFormalBy}
             busy={busy} onToggle={(v) => toggleCheck('checkFormal', v)}
           />
@@ -351,26 +462,35 @@ export function InvoiceEditForm({
           (Buchhaltungs-Schritte, nicht Teil der Erfassung).
         </p>
       </div>
+      <AttachmentsPanel invoiceId={invoice.id} encryptionEnabled={encryptionEnabled} />
+      <InvoiceNotesPanel invoiceId={invoice.id} colleagues={colleagues} />
       {msg && (
         <p className={`text-sm ${msg === 'Gespeichert.' ? 'text-[var(--accent)]' : 'text-[var(--danger)]'}`}>{msg}</p>
       )}
       <div className="flex gap-2">
-        <button type="submit" className="btn-primary" disabled={busy}>{busy ? 'Speichere …' : 'Speichern'}</button>
-        <button type="button" className="btn-secondary" onClick={() => router.push('/invoices')}>Zurück</button>
-        <button type="button" className="btn-danger ml-auto" onClick={remove} disabled={busy}>Löschen</button>
+        <button type="submit" className="btn-primary" disabled={busy} title="Änderungen speichern">
+          {busy ? 'Speichere …' : 'Speichern'}
+        </button>
+        <button type="button" className="btn-secondary" onClick={() => router.push('/invoices')} title="Ohne Speichern zurück zur Liste">
+          Zurück
+        </button>
+        <button type="button" className="btn-danger ml-auto" onClick={remove} disabled={busy}
+          title="Rechnung als gelöscht markieren — Beleg bleibt erhalten, im Papierkorb wiederherstellbar">
+          Löschen
+        </button>
       </div>
     </form>
   )
 }
 
 function CheckRow({
-  label, at, by, busy, onToggle,
+  label, hint, at, by, busy, onToggle,
 }: {
-  label: string; at: string | null; by: string | null; busy: boolean; onToggle: (v: boolean) => void
+  label: string; hint?: string; at: string | null; by: string | null; busy: boolean; onToggle: (v: boolean) => void
 }) {
   const checked = at !== null
   return (
-    <label className="flex flex-wrap items-center gap-2 text-sm text-gray-700">
+    <label className="flex flex-wrap items-center gap-2 text-sm text-gray-700" title={hint}>
       <input type="checkbox" checked={checked} disabled={busy} className="accent-green-600"
         onChange={(e) => onToggle(e.target.checked)} />
       {checked && <span className="text-green-600">✓</span>}
@@ -385,21 +505,29 @@ function CheckRow({
 }
 
 function Field({
-  label, value, onChange, type = 'text', required, warn,
+  label, value, onChange, type = 'text', required, warn, locked, lockReason,
 }: {
   label: string; value: string; onChange: (v: string) => void; type?: string; required?: boolean; warn?: boolean
+  locked?: boolean; lockReason?: string
 }) {
   return (
     <div>
       <label className="dp-label">
         {label}
         {warn && <span className="ml-1 text-[var(--warn-strong)]" title="KI ist sich hier unsicher — bitte prüfen">⚠</span>}
+        {locked && <span className="ml-1 text-gray-400" title={lockReason}>🔒</span>}
       </label>
-      <input
-        className={`dp-input mt-1 ${warn ? 'border-[var(--warn-border)] bg-[var(--warn-bg)]' : ''}`}
-        type={type} value={value} required={required}
-        onChange={(e) => onChange(e.target.value)}
-      />
+      {locked ? (
+        <p className="dp-input mt-1 flex items-center bg-[var(--surface-muted)] text-gray-500" title={lockReason}>
+          {value || '—'}
+        </p>
+      ) : (
+        <input
+          className={`dp-input mt-1 ${warn ? 'border-[var(--warn-border)] bg-[var(--warn-bg)]' : ''}`}
+          type={type} value={value} required={required}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      )}
     </div>
   )
 }

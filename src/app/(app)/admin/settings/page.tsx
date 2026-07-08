@@ -3,9 +3,7 @@ import { Role } from '@prisma/client'
 import { redirect } from 'next/navigation'
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
-import { EncryptionSetup } from './EncryptionSetup'
-import { TenantSwitches } from './TenantSwitches'
-import { TokenManager } from './TokenManager'
+import { SettingsHub } from './SettingsHub'
 
 export const dynamic = 'force-dynamic'
 
@@ -30,7 +28,7 @@ export default async function TenantSettingsPage() {
             : 'unbegrenzt'}
         </p>
       </section>
-      <TenantSwitches
+      <SettingsHub
         initial={{
           aiAllowed: tenant.aiAllowed,
           ipLoggingAllowed: tenant.ipLoggingAllowed,
@@ -39,13 +37,25 @@ export default async function TenantSettingsPage() {
           mailAllowedDomains: tenant.mailAllowedDomains ?? '',
           backupFrequency: tenant.backupFrequency ?? 'WEEKLY',
           backupEmail: tenant.backupEmail ?? '',
+          backupReminderDays: tenant.backupReminderDays ?? 14,
+          backupWebdavUrl: tenant.backupWebdavUrl ?? '',
+          backupWebdavUser: tenant.backupWebdavUser ?? '',
+          backupWebdavPass: tenant.backupWebdavPass ?? '',
           reportEnabled: tenant.reportEnabled,
           reportFrequency: tenant.reportFrequency ?? 'MONTHLY',
           reportEmail: tenant.reportEmail ?? '',
+          datevBeraternr: tenant.datevBeraternr ?? '',
+          datevMandantnr: tenant.datevMandantnr ?? '',
+          datevSkr: tenant.datevSkr ?? 'SKR04',
+          datevSachkontenlaenge: tenant.datevSachkontenlaenge ?? 4,
+          datevKreditorenkonto: tenant.datevKreditorenkonto ?? '',
+          datevGegenkonto: tenant.datevGegenkonto ?? '',
+          datevWjBeginn: tenant.datevWjBeginn ?? '0101',
+          datevFibuEmail: tenant.datevFibuEmail ?? '',
         }}
+        encryptionEnabled={tenant.encryptionEnabled}
+        lastBackupAt={tenant.lastBackupAt ? tenant.lastBackupAt.toISOString() : null}
       />
-      <EncryptionSetup />
-      <TokenManager />
     </div>
   )
 }

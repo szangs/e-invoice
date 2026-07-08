@@ -25,13 +25,7 @@ export const SETTING_KEYS = [
   'MAINTENANCE_LOCK', // "1" = Anmeldesperre für normale Nutzer
   'SERVICE_STATUS_TEXT',
   'SUPPORT_TIMEOUT_MIN', // globaler Zeitabschluss für Fernwartungs-Sitzungen (§9/§14)
-  // E-Mail-Eingang (Einlieferungs-Postfach, Weiterleitungs-Modell W1/W2)
-  'MAIL_IN_ENABLED', // "1" = Abruf aktiv
-  'MAIL_IN_HOST',
-  'MAIL_IN_PORT',
-  'MAIL_IN_SECURE', // "1" = TLS
-  'MAIL_IN_USER',
-  'MAIL_IN_PASS', // maskiert
+  // E-Mail-Eingang (Weiterleitungs-Modell, eigener SMTP-Empfänger — IMAP-Abruf am 2026-07-08 entfernt)
   'MAIL_IN_DOMAIN', // z. B. einvoice.deltaplus.de (Subdomain für Einlieferung)
   'MAIL_IN_PREFIX', // z. B. "rechnung-" → rechnung-<kurzname>@<domain>
   'MAIL_IN_ALLOWED_DOMAINS', // global: nur Absender dieser Domänen (kommagetrennt, leer = alle)
@@ -49,7 +43,7 @@ export const SETTING_KEYS = [
 export type SettingKey = (typeof SETTING_KEYS)[number]
 
 /** Schlüssel, deren Werte nie im Klartext an das Frontend gehen (nur Maske). */
-export const SECRET_KEYS: SettingKey[] = ['SMTP_PASS', 'AI_API_KEY', 'REMOTE_RELAY_KEY', 'MAIL_IN_PASS']
+export const SECRET_KEYS: SettingKey[] = ['SMTP_PASS', 'AI_API_KEY', 'REMOTE_RELAY_KEY']
 
 export async function getSetting(key: SettingKey): Promise<string> {
   const row = await prisma.systemSetting.findUnique({ where: { key } })

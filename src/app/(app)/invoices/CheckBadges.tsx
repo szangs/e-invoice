@@ -19,6 +19,10 @@ type Props = {
   substantiveBy: string | null
   accountingAt: string | null
   accountingBy: string | null
+  /** Korb-Recht APPROVE ("Sachlich freigeben") auf dem aktuellen Korb der Rechnung (Stefan 2026-07-08). */
+  canApprove?: boolean
+  /** Korb-Recht HANDOVER ("Übergabe an den Übergabekorb") auf dem aktuellen Korb der Rechnung. */
+  canAccounting?: boolean
 }
 
 function fmt(at: string | null, by: string | null): string {
@@ -29,6 +33,7 @@ function fmt(at: string | null, by: string | null): string {
 export function CheckBadges({
   invoiceId, electronicAt, electronicBy, formalAt, formalBy,
   substantiveAt, substantiveBy, accountingAt, accountingBy,
+  canApprove = true, canAccounting = true,
 }: Props) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
@@ -57,19 +62,19 @@ export function CheckBadges({
       <span className={`${base} ${formalAt ? on : off}`} title={`Formal richtig — ${fmt(formalAt, formalBy)}`}>{label(formalAt, 'F')}</span>
       <button
         type="button"
-        disabled={busy}
+        disabled={busy || !canApprove}
         onClick={() => toggle('checkSubstantive', !substantiveAt)}
-        className={`${base} ${substantiveAt ? on : off} cursor-pointer hover:opacity-75`}
-        title={`Sachlich richtig — ${fmt(substantiveAt, substantiveBy)} (klicken zum Umschalten)`}
+        className={`${base} ${substantiveAt ? on : off} ${canApprove ? 'cursor-pointer hover:opacity-75' : 'cursor-not-allowed opacity-50'}`}
+        title={canApprove ? `Sachlich richtig — ${fmt(substantiveAt, substantiveBy)} (klicken zum Umschalten)` : 'Kein Recht, „Sachlich richtig" freizugeben'}
       >
         {label(substantiveAt, 'S')}
       </button>
       <button
         type="button"
-        disabled={busy}
+        disabled={busy || !canAccounting}
         onClick={() => toggle('checkAccounting', !accountingAt)}
-        className={`${base} ${accountingAt ? on : off} cursor-pointer hover:opacity-75`}
-        title={`An Buchhaltung übergeben — ${fmt(accountingAt, accountingBy)} (klicken zum Umschalten)`}
+        className={`${base} ${accountingAt ? on : off} ${canAccounting ? 'cursor-pointer hover:opacity-75' : 'cursor-not-allowed opacity-50'}`}
+        title={canAccounting ? `An Buchhaltung übergeben — ${fmt(accountingAt, accountingBy)} (klicken zum Umschalten)` : 'Nur im Übergabekorb möglich (und nur mit dem passenden Recht)'}
       >
         {label(accountingAt, 'B')}
       </button>

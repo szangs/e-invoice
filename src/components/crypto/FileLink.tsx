@@ -73,6 +73,7 @@ export function FileLink({
   return (
     <>
       <button type="button" onClick={onOpen} disabled={busy}
+        title={encrypted ? 'Verschlüsselter Beleg — Passphrase zum Entschlüsseln nötig' : 'Beleg in neuem Tab öffnen'}
         className="text-[var(--accent)] underline disabled:opacity-50">
         {encrypted ? `🔒 ${label}` : label}
       </button>

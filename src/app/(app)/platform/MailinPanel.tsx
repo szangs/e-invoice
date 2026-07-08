@@ -31,8 +31,6 @@ export function MailinPanel() {
   const [entries, setEntries] = useState<Entry[]>([])
   const [enabled, setEnabled] = useState(true)
   const [configured, setConfigured] = useState(true)
-  const [busy, setBusy] = useState(false)
-  const [msg, setMsg] = useState('')
 
   useEffect(() => {
     setShow(localStorage.getItem(SHOW_KEY) === '1')
@@ -68,15 +66,6 @@ export function MailinPanel() {
     localStorage.setItem(SHOW_KEY, next ? '1' : '')
   }
 
-  async function pollNow() {
-    setBusy(true)
-    setMsg('')
-    const res = await fetch('/api/platform/mailin', { method: 'POST' })
-    const data = await res.json().catch(() => ({}))
-    setMsg(data.message ?? 'Fehler beim Abruf')
-    setBusy(false)
-  }
-
   return (
     <section className="dp-card">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -84,12 +73,8 @@ export function MailinPanel() {
           E-Mail-Eingang (alle Mandanten)
         </h2>
         <div className="flex items-center gap-2">
-          {show && (
-            <button className="btn-secondary !px-3 !py-1.5 text-xs" onClick={pollNow} disabled={busy}>
-              {busy ? 'Rufe ab …' : 'Jetzt abrufen'}
-            </button>
-          )}
           <button className={show ? 'btn-primary !px-3 !py-1.5 text-xs' : 'btn-secondary !px-3 !py-1.5 text-xs'}
+            title="Live-Protokoll aller über den SMTP-Empfänger eingegangenen Mails ein-/ausblenden"
             onClick={toggle}>
             {show ? 'Anzeige aus' : 'E-Mail-Eingang anzeigen'}
           </button>
@@ -105,10 +90,9 @@ export function MailinPanel() {
           )}
           {configured && !enabled && (
             <p className="mb-2 rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-strong)]">
-              Abruf ist deaktiviert (Schalter in SP01 → „Mail-Eingang aktiv").
+              SMTP-Empfänger ist deaktiviert (Schalter in SP01 → „SMTP-Empfänger aktiv").
             </p>
           )}
-          {msg && <p className="mb-2 text-xs text-gray-600">{msg}</p>}
           <div className="max-h-72 overflow-y-auto">
             <table className="w-full min-w-[760px]">
               <thead>

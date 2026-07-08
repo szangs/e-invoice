@@ -26,7 +26,7 @@ export async function GET() {
         ? `rechnung@${ctx.tenantSlug}.${settings.MAIL_IN_DOMAIN}`
         : null
     return NextResponse.json({
-      enabled: settings.MAIL_IN_ENABLED === '1',
+      enabled: settings.MAIL_SMTP_ENABLED === '1',
       address,
       entries: entries.map((e) => ({
         id: e.id,

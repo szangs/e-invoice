@@ -19,7 +19,8 @@ export function RestoreButton({ invoiceId }: { invoiceId: string }) {
   }
 
   return (
-    <button type="button" className="btn-secondary !px-2 !py-1 text-xs" onClick={restore} disabled={busy}>
+    <button type="button" className="btn-secondary !px-2 !py-1 text-xs" onClick={restore} disabled={busy}
+      title="Löschmarkierung aufheben — Rechnung erscheint wieder in der normalen Liste">
       {busy ? '…' : 'Wiederherstellen'}
     </button>
   )

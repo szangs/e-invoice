@@ -14,6 +14,14 @@ type Switches = {
   reportEnabled: boolean
   reportFrequency: string
   reportEmail: string
+  datevBeraternr: string
+  datevMandantnr: string
+  datevSkr: string
+  datevSachkontenlaenge: number
+  datevKreditorenkonto: string
+  datevGegenkonto: string
+  datevWjBeginn: string
+  datevFibuEmail: string
 }
 
 const FREQUENCIES = [
@@ -23,7 +31,15 @@ const FREQUENCIES = [
   { value: 'YEARLY', label: 'jährlich' },
 ]
 
-export function TenantSwitches({ initial }: { initial: Switches }) {
+export function TenantSwitches({
+  initial,
+  encryptionEnabled,
+  lastBackupAt,
+}: {
+  initial: Switches
+  encryptionEnabled: boolean
+  lastBackupAt: string | null
+}) {
   const router = useRouter()
   const [s, setS] = useState(initial)
   const [busy, setBusy] = useState(false)
@@ -146,6 +162,21 @@ export function TenantSwitches({ initial }: { initial: Switches }) {
           Einstellungen mit „Speichern" oben sichern. Die Sicherung enthält Stammdaten, Benutzer,
           Rechnungen und Belegdateien — verschlüsselte Belege bleiben verschlüsselt.
         </p>
+        <p className="text-xs text-gray-600">
+          Letzte Sicherung:{' '}
+          <span className={lastBackupAt ? '' : 'text-[var(--warn-strong)]'}>
+            {lastBackupAt ? new Date(lastBackupAt).toLocaleString('de-DE') : 'noch nie'}
+          </span>
+        </p>
+        {s.backupEnabled && (
+          <p className="rounded-lg bg-[var(--warn-bg)] px-2.5 py-1.5 text-[11px] text-[var(--warn-strong)]">
+            Hinweis: die regelmäßige Sicherung läuft in einem eigenen Hintergrund-Prozess
+            (<span className="font-mono">npm run backup</span>), der dauerhaft laufen muss (z. B. als
+            pm2-/Windows-Dienst) — läuft er nicht, wird nie automatisch gesichert, auch wenn hier
+            alles aktiviert ist. Mit „Jetzt per E-Mail senden" unten lässt sich der Mailversand an
+            sich unabhängig davon testen.
+          </p>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           <a className="btn-secondary" href="/api/admin/backup">Backup herunterladen</a>
           <button className="btn-secondary" onClick={sendBackupNow} disabled={busy}>
@@ -201,6 +232,83 @@ export function TenantSwitches({ initial }: { initial: Switches }) {
           </button>
         </div>
         {reportMsg && <p className="text-sm text-gray-700">{reportMsg}</p>}
+      </section>
+
+      <section className="dp-card space-y-3">
+        <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">DATEV-Export (Übergabekorb → Fibu)</h2>
+        <p className="text-[11px] text-gray-400">
+          Wird beim „An Fibu übergeben"-Button im Übergabekorb verwendet. Erster Entwurf mit einem
+          Sammelkonto für alle Lieferanten — die genaue Kontierung je Lieferant erfolgt weiterhin
+          in DATEV durch die Fibu. Bitte diese Angaben mit Ihrem Steuerberater abstimmen.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="dp-label" title="DATEV-Beraternummer, von Ihrem Steuerberater vergeben">Beraternummer</label>
+            <input className="dp-input mt-1" value={s.datevBeraternr}
+              onChange={(e) => setS((p) => ({ ...p, datevBeraternr: e.target.value }))} />
+          </div>
+          <div>
+            <label className="dp-label" title="DATEV-Mandantennummer bei Ihrem Steuerberater">Mandantennummer</label>
+            <input className="dp-input mt-1" value={s.datevMandantnr}
+              onChange={(e) => setS((p) => ({ ...p, datevMandantnr: e.target.value }))} />
+          </div>
+          <div>
+            <label className="dp-label" title="Nur zur Dokumentation — beeinflusst den Export selbst nicht">Kontenrahmen</label>
+            <select className="dp-input mt-1" value={s.datevSkr}
+              onChange={(e) => setS((p) => ({ ...p, datevSkr: e.target.value }))}>
+              <option value="SKR03">SKR03</option>
+              <option value="SKR04">SKR04</option>
+            </select>
+          </div>
+          <div>
+            <label className="dp-label" title="Länge der Sachkontonummern in Ihrem Kontenrahmen, meist 4">Sachkontenlänge</label>
+            <input type="number" min={4} max={8} className="dp-input mt-1" value={s.datevSachkontenlaenge}
+              onChange={(e) => setS((p) => ({ ...p, datevSachkontenlaenge: Number(e.target.value) || 4 }))} />
+          </div>
+          <div>
+            <label className="dp-label" title="Sammelkonto, auf das alle Kreditoren-Beträge gebucht werden (z. B. 70000 bei SKR04, 1600 bei SKR03)">
+              Sammel-Kreditorenkonto
+            </label>
+            <input className="dp-input mt-1" value={s.datevKreditorenkonto}
+              placeholder="z. B. 70000"
+              onChange={(e) => setS((p) => ({ ...p, datevKreditorenkonto: e.target.value }))} />
+          </div>
+          <div>
+            <label className="dp-label" title="Sammel-Gegenkonto (z. B. ein Zwischen-/Kostenkonto) — die Fibu sortiert in DATEV weiter zu">
+              Sammel-Gegenkonto
+            </label>
+            <input className="dp-input mt-1" value={s.datevGegenkonto}
+              onChange={(e) => setS((p) => ({ ...p, datevGegenkonto: e.target.value }))} />
+          </div>
+          <div>
+            <label className="dp-label" title="Beginn Ihres Wirtschaftsjahres als Tag+Monat, z. B. 0101 für 1. Januar">
+              Wirtschaftsjahr-Beginn (TTMM)
+            </label>
+            <input className="dp-input mt-1" value={s.datevWjBeginn} placeholder="0101"
+              onChange={(e) => setS((p) => ({ ...p, datevWjBeginn: e.target.value }))} />
+          </div>
+        </div>
+        <div className="border-t border-[var(--line)] pt-3">
+          <label className="dp-label" title="Optional zusätzlich zum CSV-Sammel-Export: eine einzelne E-Mail je Beleg mit dem Original-Dokument im Anhang">
+            Fibu-E-Mail für Einzel-Belege (optional)
+          </label>
+          <input type="email" className="dp-input mt-1" value={s.datevFibuEmail}
+            placeholder="z. B. fibu@meinefirma.de"
+            onChange={(e) => setS((p) => ({ ...p, datevFibuEmail: e.target.value }))} />
+          <p className="mt-0.5 text-[10px] text-gray-400">
+            Wenn gesetzt, kann beim „An Fibu übergeben"-Export zusätzlich eine einzelne E-Mail je
+            Beleg mit dem Original-Dokument im Anhang an diese Adresse verschickt werden — der
+            DATEV-CSV-Export enthält nur Buchungsdaten, keine Dokumente.
+          </p>
+          {encryptionEnabled && (
+            <p className="mt-1.5 rounded-lg bg-[var(--warn-bg)] px-2.5 py-1.5 text-[11px] text-[var(--warn-strong)]">
+              🔒 Beleg-Verschlüsselung ist für diesen Mandanten aktiv (Zero-Knowledge) — der Server
+              kann verschlüsselte Belege nicht entschlüsseln, um sie an eine E-Mail anzuhängen.
+              Einzel-Mails enthalten für solche Belege nur die Daten, ohne Dokumenten-Anhang.
+            </p>
+          )}
+        </div>
+        <p className="text-[11px] text-gray-400">Einstellungen mit „Speichern" oben sichern.</p>
       </section>
     </>
   )

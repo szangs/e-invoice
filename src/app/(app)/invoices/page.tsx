@@ -5,20 +5,43 @@ import { de } from 'date-fns/locale'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { FileLink } from '@/components/crypto/FileLink'
-import { ensureSystemBaskets } from '@/lib/baskets'
+import { BasketStrip } from '@/components/baskets/BasketStrip'
+import { getBasketRightMap, RIGHT_RANK } from '@/lib/basketRights'
+import { ensureSystemBaskets, getBasketCounts, sortBaskets } from '@/lib/baskets'
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { formatAmount, STATUS_LABELS } from '@/lib/invoices'
-import { BasketMoveSelect } from './BasketMoveSelect'
 import { CheckBadges } from './CheckBadges'
+import { DatevExportButton } from './DatevExportButton'
+import { DeleteInvoiceButton } from './DeleteInvoiceButton'
+import { DraggableInvoiceRow } from './DraggableInvoiceRow'
+import { InterfaceRequestForm } from './InterfaceRequestForm'
 import { RestoreButton } from './RestoreButton'
 
 export const dynamic = 'force-dynamic'
 
+// Frei wählbare Sortierung (Stefan 2026-07-08): Spaltenüberschriften klickbar,
+// Feld + Richtung landen in den Query-Parametern sort/dir, damit der Link
+// teilbar/lesezeichenfähig bleibt statt client-seitigem State.
+function orderByFor(field: string, dir: 'asc' | 'desc'): Prisma.InvoiceOrderByWithRelationInput | null {
+  switch (field) {
+    case 'docId': return { docId: dir }
+    case 'vendor': return { vendor: dir }
+    case 'invoiceNumber': return { invoiceNumber: dir }
+    case 'invoiceDate': return { invoiceDate: dir }
+    case 'dueDate': return { dueDate: dir }
+    case 'createdAt': return { createdAt: dir }
+    case 'amountNet': return { amountNet: dir }
+    case 'amountGross': return { amountGross: dir }
+    case 'status': return { status: dir }
+    default: return null
+  }
+}
+
 export default async function InvoicesPage({
   searchParams,
 }: {
-  searchParams: { q?: string; status?: string; dup?: string; trash?: string; basket?: string }
+  searchParams: { q?: string; status?: string; dup?: string; trash?: string; basket?: string; sort?: string; dir?: string }
 }) {
   const ctx = await getContext()
   if (!ctx.tenantId) redirect('/platform')
@@ -32,10 +55,71 @@ export default async function InvoicesPage({
   const hideDuplicates = searchParams.dup === 'hide'
   // Papierkorb: weich gelöschte Rechnungen sind normalerweise ausgeblendet
   const showTrash = searchParams.trash === '1'
-  const basketFilter = searchParams.basket || undefined
+  const requestedBasket = searchParams.basket || undefined
+  const sortDir: 'asc' | 'desc' = searchParams.dir === 'asc' ? 'asc' : 'desc'
+  const sortOrderBy = searchParams.sort ? orderByFor(searchParams.sort, sortDir) : null
+  const sortField = sortOrderBy ? searchParams.sort ?? null : null
+  const orderBy: Prisma.InvoiceOrderByWithRelationInput[] = sortOrderBy
+    ? [sortOrderBy]
+    : [{ invoiceDate: 'desc' }, { createdAt: 'desc' }]
+  // Körbe zuerst laden — "Alle Körbe" gibt es nicht mehr (Stefan 2026-07-08):
+  // die Liste zeigt immer genau einen Korb, ohne Auswahl fällt sie auf den
+  // Eingangskorb zurück (dort landet jede neue Rechnung ohnehin zuerst).
+  const [basketsRaw, basketCounts, rightMap] = await Promise.all([
+    prisma.basket.findMany({ where: { tenantId, deletedAt: null } }),
+    getBasketCounts(tenantId, ctx.userId),
+    getBasketRightMap(tenantId, ctx.userId, ctx.role),
+  ])
+  const baskets = sortBaskets(basketsRaw)
+  const basketById = new Map(baskets.map((b) => [b.id, b]))
+  const inboxBasket = baskets.find((b) => b.kind === 'INBOX') ?? null
+
+  // Korb-Rechte (Stefan 2026-07-08): Körbe ohne mindestens VIEW werden nicht
+  // einmal angezeigt; ein ausgewählter Korb ohne mindestens CONTENT weicht
+  // auf den ersten zugänglichen Korb aus (bzw. bleibt leer, falls keiner da ist).
+  function rank(id: string | null | undefined): number {
+    return id ? (rightMap[id] ?? 0) : 0
+  }
+  const visibleBaskets = baskets.filter((b) => rank(b.id) >= RIGHT_RANK.VIEW)
+
+  let basketFilter: string | undefined = showTrash ? undefined : (requestedBasket || inboxBasket?.id)
+  if (!showTrash && rank(basketFilter) < RIGHT_RANK.CONTENT) {
+    basketFilter = visibleBaskets.find((b) => rank(b.id) >= RIGHT_RANK.CONTENT)?.id
+  }
+  const noBasketAccess = !showTrash && !basketFilter
+  const activeBasket = basketFilter ? basketById.get(basketFilter) ?? null : null
+  const activeRank = rank(basketFilter)
+  const canMove = activeRank >= RIGHT_RANK.MOVE
+  const canApprove = activeRank >= RIGHT_RANK.APPROVE
+  // "An Buchhaltung übergeben" darf nur im Übergabekorb selbst passieren
+  // (Stefan 2026-07-09) — das HANDOVER-Recht allein reicht nicht, sonst
+  // könnte jemand mit diesem Recht auf einem anderen Korb die Rechnung schon
+  // dort als "übergeben" markieren, bevor sie den Übergabekorb je erreicht hat.
+  const canHandover = activeRank >= RIGHT_RANK.HANDOVER && activeBasket?.kind === 'HANDOVER'
+  const canFibu = activeRank >= RIGHT_RANK.FIBU
+
+  // Basis-Query-Parameter für Sortier-/Papierkorb-Links — bestehende Filter erhalten
+  const baseParams: Record<string, string> = {
+    ...(q ? { q } : {}),
+    ...(status ? { status } : {}),
+    ...(hideDuplicates ? { dup: 'hide' } : {}),
+    ...(basketFilter ? { basket: basketFilter } : {}),
+  }
+  function sortHref(field: string): string {
+    const dir = sortField === field && sortDir === 'desc' ? 'asc' : 'desc'
+    const params = new URLSearchParams({ ...baseParams, sort: field, dir })
+    return `/invoices?${params.toString()}`
+  }
+  function sortArrow(field: string): string {
+    if (sortField !== field) return ''
+    return sortDir === 'asc' ? ' ▲' : ' ▼'
+  }
   const where: Prisma.InvoiceWhereInput = {
     tenantId: ctx.tenantId,
     deletedAt: showTrash ? { not: null } : null,
+    // Kein zugänglicher Korb (Korb-Rechte) → erzwungenermaßen leeres Ergebnis,
+    // statt ohne Korb-Filter versehentlich alle Rechnungen des Mandanten zu zeigen.
+    ...(noBasketAccess ? { id: '__no_basket_access__' } : {}),
     ...(hideDuplicates ? { duplicateOfId: null } : {}),
     ...(status ? { status } : {}),
     ...(basketFilter ? { basketId: basketFilter } : {}),
@@ -49,15 +133,45 @@ export default async function InvoicesPage({
         }
       : {}),
   }
-  const [invoices, baskets] = await Promise.all([
-    prisma.invoice.findMany({
-      where,
-      orderBy: [{ invoiceDate: 'desc' }, { createdAt: 'desc' }],
-      take: 200,
-    }),
-    prisma.basket.findMany({ where: { tenantId }, orderBy: [{ position: 'asc' }, { createdAt: 'asc' }] }),
+  const [invoices, trashCount] = await Promise.all([
+    prisma.invoice.findMany({ where, orderBy, take: 200 }),
+    prisma.invoice.count({ where: { tenantId, deletedAt: { not: null } } }),
   ])
-  const basketById = new Map(baskets.map((b) => [b.id, b]))
+  // Zähler + Fibu-Mail-Konfiguration für den DATEV-Export-Button — nur relevant im Übergabekorb
+  let datevExportCount = 0
+  let fibuEmailConfigured = false
+  let tenantEncryptionEnabled = false
+  if (activeBasket?.kind === 'HANDOVER') {
+    const [count, tenantRow] = await Promise.all([
+      prisma.invoice.count({
+        where: {
+          tenantId,
+          basketId: activeBasket.id,
+          deletedAt: null,
+          checkAccountingAt: null,
+          amountGross: { not: null },
+          checkElectronicAt: { not: null },
+          checkFormalAt: { not: null },
+          checkSubstantiveAt: { not: null },
+        },
+      }),
+      prisma.tenant.findUnique({ where: { id: tenantId }, select: { datevFibuEmail: true, encryptionEnabled: true } }),
+    ])
+    datevExportCount = count
+    fibuEmailConfigured = Boolean(tenantRow?.datevFibuEmail)
+    tenantEncryptionEnabled = Boolean(tenantRow?.encryptionEnabled)
+  }
+
+  // Ungelesene, an mich adressierte Nachrichten (Stefan 2026-07-08) — kleiner
+  // Hinweis in der Liste, damit die Nachricht auch auffällt, ohne jede
+  // Rechnung einzeln öffnen zu müssen.
+  const unreadNoteRows = ctx.userId
+    ? await prisma.invoiceNote.findMany({
+        where: { invoiceId: { in: invoices.map((i) => i.id) }, toUserId: ctx.userId, readAt: null },
+        select: { invoiceId: true },
+      })
+    : []
+  const unreadNoteInvoiceIds = new Set(unreadNoteRows.map((r) => r.invoiceId))
 
   const pendingApprovals = showTrash
     ? []
@@ -82,91 +196,154 @@ export default async function InvoicesPage({
   }
 
   const exportUrl = `/api/invoices/export?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`
-  const trashParams = new URLSearchParams({
-    ...(q ? { q } : {}),
-    ...(status ? { status } : {}),
-    ...(hideDuplicates ? { dup: 'hide' } : {}),
-    ...(showTrash ? {} : { trash: '1' }),
-  })
+  const trashParams = new URLSearchParams({ ...baseParams, ...(showTrash ? {} : { trash: '1' }) })
   const trashHref = `/invoices?${trashParams.toString()}`
+  // Basis für die Korb-Kacheln — Filter/Sortierung bleiben beim Wechsel erhalten
+  const basketBaseParams: Record<string, string> = {
+    ...(q ? { q } : {}), ...(status ? { status } : {}), ...(hideDuplicates ? { dup: 'hide' } : {}),
+  }
 
   return (
     <div className="space-y-4">
+      <div className="dp-card">
+        <h2 className="mb-3 font-serif text-lg font-semibold text-gray-800" title="Rechnungen wandern durch Körbe wie in der klassischen Rechnungseingangsverarbeitung — die Liste unten zeigt den ausgewählten Korb. Eine Rechnungszeile lässt sich per Drag&Drop auf einen Korb ziehen, um sie zu verschieben.">
+          🗂️ Körbe
+        </h2>
+        <BasketStrip
+          baskets={visibleBaskets.map((b) => ({
+            id: b.id, name: b.name, kind: b.kind,
+            unprocessed: basketCounts[b.id]?.unprocessed ?? 0,
+            processed: basketCounts[b.id]?.processed ?? 0,
+            dueSoon: basketCounts[b.id]?.dueSoon ?? 0,
+            overdue: basketCounts[b.id]?.overdue ?? 0,
+            unreadNotes: basketCounts[b.id]?.unreadNotes ?? 0,
+          }))}
+          activeBasketId={basketFilter ?? null}
+          basePath="/invoices"
+          baseParams={basketBaseParams}
+          allowDrop={!showTrash}
+          trash={{ href: trashHref, active: showTrash, count: trashCount, canDelete: canApprove }}
+        />
+      </div>
       <form className="dp-card flex flex-wrap items-end gap-3" method="get">
+        {basketFilter && <input type="hidden" name="basket" value={basketFilter} />}
         <div className="min-w-[220px] flex-1">
-          <label className="dp-label" htmlFor="q">Suche (Lieferant, Nummer, Tags)</label>
-          <input id="q" name="q" className="dp-input mt-1" defaultValue={q} />
+          <label className="dp-label" htmlFor="q" title="Durchsucht Lieferant, Rechnungsnummer und Tags gleichzeitig">
+            Suche (Lieferant, Nummer, Tags)
+          </label>
+          <input id="q" name="q" className="dp-input mt-1" defaultValue={q}
+            title="Durchsucht Lieferant, Rechnungsnummer und Tags gleichzeitig" />
         </div>
         <div>
           <label className="dp-label" htmlFor="status">Status</label>
-          <select id="status" name="status" className="dp-input mt-1" defaultValue={status ?? ''}>
+          <select id="status" name="status" className="dp-input mt-1" defaultValue={status ?? ''}
+            title="Nur Rechnungen mit diesem Bearbeitungsstatus anzeigen">
             <option value="">Alle</option>
             {Object.entries(STATUS_LABELS).map(([value, label]) => (
               <option key={value} value={value}>{label}</option>
             ))}
           </select>
         </div>
-        {!showTrash && (
-          <div>
-            <label className="dp-label" htmlFor="basket">Korb</label>
-            <select id="basket" name="basket" className="dp-input mt-1" defaultValue={basketFilter ?? ''}>
-              <option value="">Alle Körbe</option>
-              {baskets.map((b) => (
-                <option key={b.id} value={b.id}>{b.name}</option>
-              ))}
-            </select>
-          </div>
-        )}
-        <label className="flex items-center gap-1.5 text-sm text-gray-700">
+        <label className="flex items-center gap-1.5 text-sm text-gray-700"
+          title="Als Dublette markierte Rechnungen aus der Liste ausblenden">
           <input type="checkbox" name="dup" value="hide" defaultChecked={hideDuplicates} />
           Dubletten ausblenden
         </label>
-        <button className="btn-secondary" type="submit">Filtern</button>
-        <a className="btn-secondary" href={exportUrl}>CSV-Export</a>
-        {!showTrash && (
+        <button className="btn-secondary" type="submit" title="Suche und Filter anwenden">Filtern</button>
+        <a className="btn-secondary" href={exportUrl} title="Aktuelle Filterauswahl als CSV-Datei herunterladen">
+          CSV-Export
+        </a>
+        {/* Erfassen/Scannen macht nur im Eingangskorb Sinn — dort landet ohnehin
+            jede neue Rechnung zuerst (Stefan 2026-07-08). In anderen Körben
+            steht stattdessen die passende Aktion (z. B. Übergabe an die Fibu). */}
+        {!showTrash && activeBasket?.kind === 'INBOX' && (
           <>
-            <Link className="btn-primary" href="/invoices/new">Rechnung hinzufügen</Link>
-            <Link className="btn-secondary" href="/invoices/new/scan">Papierrechnung scannen</Link>
+            <Link className="btn-primary" href="/invoices/new" title="Elektronische Rechnung (PDF, XML, ZUGFeRD/XRechnung, Foto) hochladen">
+              Rechnung hinzufügen
+            </Link>
+            <Link className="btn-secondary" href="/invoices/new/scan" title="Papierbeleg per Handy-Kamera oder Scanner erfassen">
+              Papierrechnung scannen
+            </Link>
           </>
         )}
-        <Link className="btn-secondary ml-auto" href={trashHref}>
-          {showTrash ? '← Zur Rechnungsliste' : '🗑 Papierkorb'}
-        </Link>
+        {!showTrash && activeBasket?.kind === 'HANDOVER' && canFibu && (
+          <DatevExportButton
+            basketId={activeBasket.id}
+            count={datevExportCount}
+            fibuEmailConfigured={fibuEmailConfigured}
+            encryptionEnabled={tenantEncryptionEnabled}
+          />
+        )}
+        {!showTrash && activeBasket?.kind === 'HANDOVER' && !canFibu && (
+          <span className="text-xs text-gray-400" title="Kein Recht zur Übergabe an die Fibu — in der Körbe-Verwaltung einstellbar">
+            Übergabe an die Fibu — kein Zugriff
+          </span>
+        )}
       </form>
+      {!showTrash && activeBasket?.kind === 'HANDOVER' && (
+        <div className="-mt-2">
+          <InterfaceRequestForm />
+        </div>
+      )}
       {showTrash && (
         <p className="text-xs text-gray-500">
           Gelöschte Rechnungen — nur als gelöscht markiert, nicht endgültig entfernt. Beleg bleibt erhalten.
         </p>
       )}
+      {noBasketAccess && (
+        <p className="dp-card text-sm text-[var(--warn-strong)]">
+          Kein Zugriff auf einen Korb — bitte beim Mandanten-Admin die Korb-Rechte für Ihre Rolle einrichten lassen.
+        </p>
+      )}
+
+      {/* Korb-Name gut lesbar über der Liste statt einer eigenen Spalte
+          (Stefan 2026-07-09) — die Liste zeigt ohnehin immer nur die Belege
+          des oben gewählten Korbs, eine zusätzliche "Korb"-Spalte war daher
+          redundant. Der Verschieben-Button entfällt ebenfalls: Belege lassen
+          sich per Drag&Drop auf eine Korb-Kachel oben ziehen; nach der
+          Übergabe wandern sie ohnehin automatisch in die Ablage. */}
+      <h3 className="px-1 font-serif text-xl font-semibold text-gray-800">
+        {showTrash ? 'Papierkorb' : activeBasket?.name ?? 'Rechnungen'}
+      </h3>
 
       <div className="dp-card overflow-x-auto p-0">
         <table className="w-full min-w-[1120px]">
           <thead>
             <tr className="dp-tr">
-              <th className="dp-th">Dok-ID</th>
-              <th className="dp-th">Lieferant</th>
-              <th className="dp-th">Nummer</th>
-              <th className="dp-th">Datum</th>
-              <th className="dp-th">Fällig</th>
-              <th className="dp-th">Eingang</th>
-              <th className="dp-th">Netto</th>
-              <th className="dp-th">Brutto</th>
-              <th className="dp-th">Status</th>
-              <th className="dp-th">Inhalt</th>
-              {!showTrash && <th className="dp-th">Korb</th>}
-              {!showTrash && <th className="dp-th">Prüfung</th>}
+              <SortTh label="Dok-ID" href={sortHref('docId')} arrow={sortArrow('docId')} />
+              <SortTh label="Lieferant" href={sortHref('vendor')} arrow={sortArrow('vendor')} />
+              <SortTh label="Nummer" href={sortHref('invoiceNumber')} arrow={sortArrow('invoiceNumber')} />
+              <SortTh label="Datum" href={sortHref('invoiceDate')} arrow={sortArrow('invoiceDate')} />
+              <SortTh label="Fällig" href={sortHref('dueDate')} arrow={sortArrow('dueDate')} />
+              <SortTh label="Eingang" href={sortHref('createdAt')} arrow={sortArrow('createdAt')} />
+              <SortTh label="Netto" href={sortHref('amountNet')} arrow={sortArrow('amountNet')} />
+              <SortTh label="Brutto" href={sortHref('amountGross')} arrow={sortArrow('amountGross')} />
+              <SortTh label="Status" href={sortHref('status')} arrow={sortArrow('status')} />
+              <th className="dp-th" title="Beleg-Format und Erfassungsart (elektronisch/Scan, KI/manuell)">Inhalt</th>
+              {!showTrash && <th className="dp-th" title="Elektronische Vorprüfung und Formal richtig — Sachlich richtig/An Buchhaltung übergeben direkt anklickbar">Prüfung</th>}
               <th className="dp-th">Beleg</th>
-              {showTrash && <th className="dp-th">Aktion</th>}
+              <th className="dp-th">Aktion</th>
             </tr>
           </thead>
           <tbody>
             {invoices.map((i) => (
-              <tr key={i.id} className="dp-tr">
+              <DraggableInvoiceRow key={i.id} invoiceId={i.id} className="dp-tr" disabled={showTrash || !canMove}>
                 <td className="dp-td font-mono text-[11px] text-gray-500">{i.docId ?? '—'}</td>
                 <td className="dp-td">
                   <Link className="font-medium text-[var(--accent)] hover:underline" href={`/invoices/${i.id}`}>
                     {i.vendor}
                   </Link>
+                  {unreadNoteInvoiceIds.has(i.id) && (
+                    <span className="ml-1.5" title="Ungelesene Nachricht an Sie — Rechnung öffnen zum Lesen">💬</span>
+                  )}
+                  {pendingByInvoice.has(i.id) && (
+                    <span
+                      className="ml-1.5 rounded-full bg-[var(--warn-bg)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--warn-strong)]"
+                      title={`Vier-Augen-Freigabe nach „${basketById.get(pendingByInvoice.get(i.id)!.targetBasketId)?.name ?? '?'}“ ausstehend (${pendingByInvoice.get(i.id)!.count}/2) — bisher: ${(approverEmailsByInvoice.get(i.id) ?? []).join(', ')}`}
+                    >
+                      ⏳ Freigabe ausstehend
+                    </span>
+                  )}
                   {i.duplicateOfId && (
                     <span className="ml-1.5 rounded-full bg-[var(--warn-bg)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--warn-strong)]">
                       Dublette
@@ -232,27 +409,6 @@ export default async function InvoicesPage({
                 </td>
                 {!showTrash && (
                   <td className="dp-td">
-                    <div className="mb-1 text-[11px] text-gray-500">
-                      {i.basketId ? basketById.get(i.basketId)?.name ?? '—' : '—'}
-                    </div>
-                    <BasketMoveSelect
-                      invoiceId={i.id}
-                      currentBasketId={i.basketId}
-                      baskets={baskets.map((b) => ({ id: b.id, name: b.name }))}
-                      pending={
-                        pendingByInvoice.has(i.id)
-                          ? {
-                              targetName: basketById.get(pendingByInvoice.get(i.id)!.targetBasketId)?.name ?? '?',
-                              approvedBy: approverEmailsByInvoice.get(i.id) ?? [],
-                              needed: 2 - (pendingByInvoice.get(i.id)?.count ?? 0),
-                            }
-                          : null
-                      }
-                    />
-                  </td>
-                )}
-                {!showTrash && (
-                  <td className="dp-td">
                     <CheckBadges
                       invoiceId={i.id}
                       electronicAt={i.checkElectronicAt ? i.checkElectronicAt.toISOString() : null}
@@ -263,6 +419,8 @@ export default async function InvoicesPage({
                       substantiveBy={i.checkSubstantiveBy}
                       accountingAt={i.checkAccountingAt ? i.checkAccountingAt.toISOString() : null}
                       accountingBy={i.checkAccountingBy}
+                      canApprove={canApprove}
+                      canAccounting={canHandover}
                     />
                   </td>
                 )}
@@ -271,16 +429,24 @@ export default async function InvoicesPage({
                     <FileLink invoiceId={i.id} encrypted={i.encrypted} origMime={i.encOrigMime} />
                   ) : '—'}
                 </td>
-                {showTrash && (
+                {showTrash ? (
                   <td className="dp-td">
                     <RestoreButton invoiceId={i.id} />
                   </td>
+                ) : (
+                  <td className="dp-td">
+                    {canApprove ? (
+                      <DeleteInvoiceButton invoiceId={i.id} />
+                    ) : (
+                      <span className="text-[10px] text-gray-400" title="Kein Recht zum Löschen in diesem Korb">kein Zugriff</span>
+                    )}
+                  </td>
                 )}
-              </tr>
+              </DraggableInvoiceRow>
             ))}
             {invoices.length === 0 && (
               <tr>
-                <td className="dp-td py-8 text-center text-gray-400" colSpan={13}>
+                <td className="dp-td py-8 text-center text-gray-400" colSpan={showTrash ? 12 : 13}>
                   {showTrash ? 'Papierkorb ist leer.' : 'Keine Rechnungen gefunden.'}
                 </td>
               </tr>
@@ -289,5 +455,15 @@ export default async function InvoicesPage({
         </table>
       </div>
     </div>
+  )
+}
+
+function SortTh({ label, href, arrow }: { label: string; href: string; arrow: string }) {
+  return (
+    <th className="dp-th">
+      <Link href={href} className="hover:text-[var(--accent)]" title={`Nach ${label} sortieren`}>
+        {label}{arrow}
+      </Link>
+    </th>
   )
 }

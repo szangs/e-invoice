@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { InvoiceStatus, Prisma } from '@prisma/client'
 import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
+import { getBasketRightMap, RIGHT_RANK } from '@/lib/basketRights'
 import { getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { STATUS_LABELS } from '@/lib/invoices'
@@ -25,17 +26,32 @@ export async function GET(req: NextRequest) {
     const q = searchParams.get('q') ?? ''
     const status = searchParams.get('status') as InvoiceStatus | null
 
+    // Korb-Rechte (Stefan 2026-07-09): der CSV-Export lief bisher komplett
+    // mandantenweit, unabhängig von Korb-Rechten — jeder angemeldete
+    // Mitarbeiter konnte alle Rechnungen aller Körbe exportieren. Jetzt nur
+    // Rechnungen aus Körben mit mindestens CONTENT-Recht (plus Rechnungen
+    // ganz ohne Korb, z. B. sehr alter Bestand).
+    const rightMap = await getBasketRightMap(tenantId, ctx.userId, ctx.role)
+    const accessibleBasketIds = Object.entries(rightMap)
+      .filter(([, rank]) => rank >= RIGHT_RANK.CONTENT)
+      .map(([id]) => id)
+
     const invoices = await prisma.invoice.findMany({
       where: {
         tenantId,
         deletedAt: null, // Papierkorb nicht im CSV-Export
+        OR: [{ basketId: { in: accessibleBasketIds } }, { basketId: null }],
         ...(status ? { status } : {}),
         ...(q
           ? {
-              OR: [
-                { vendor: { contains: q, mode: 'insensitive' } },
-                { invoiceNumber: { contains: q, mode: 'insensitive' } },
-                { tags: { contains: q, mode: 'insensitive' } },
+              AND: [
+                {
+                  OR: [
+                    { vendor: { contains: q, mode: 'insensitive' } },
+                    { invoiceNumber: { contains: q, mode: 'insensitive' } },
+                    { tags: { contains: q, mode: 'insensitive' } },
+                  ],
+                },
               ],
             }
           : {}),

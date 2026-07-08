@@ -13,7 +13,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     const ctx = await getContext()
     const tenantId = requireTenant(ctx)
     const { targetBasketId } = schema.parse(await req.json())
-    const result = await requestMove(tenantId, params.id, targetBasketId, ctx.userId, ctx.email)
+    const result = await requestMove(tenantId, params.id, targetBasketId, ctx.userId, ctx.email, ctx.role)
     return NextResponse.json(result)
   } catch (e) {
     return jsonError(e)

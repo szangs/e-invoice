@@ -1,6 +1,7 @@
 // Rechnungsdetail — E-Rechnungs-Ansicht (Rechnungsbild) + Bearbeitungsformular
 import { notFound, redirect } from 'next/navigation'
-import { ensureSystemBaskets } from '@/lib/baskets'
+import { hasBasketRight } from '@/lib/basketRights'
+import { ensureSystemBaskets, sortBaskets } from '@/lib/baskets'
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { parseInvoiceXml, validateData, type DocFormat } from '@/lib/erechnung'
@@ -20,12 +21,18 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
   })
   if (!invoice) notFound()
 
+  // Korb-Recht CONTENT nötig, um die Rechnung überhaupt zu öffnen (Stefan
+  // 2026-07-09) — sonst könnte jeder Mandanten-Mitarbeiter eine fremde
+  // Rechnungs-ID direkt aufrufen, unabhängig von seinen Korb-Rechten.
+  if (invoice.basketId && !(await hasBasketRight(ctx.userId, ctx.role, invoice.basketId, 'CONTENT'))) {
+    redirect('/invoices')
+  }
+
   await ensureSystemBaskets(tenantId)
-  const baskets = await prisma.basket.findMany({
-    where: { tenantId },
-    orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
-    select: { id: true, name: true },
-  })
+  const baskets = sortBaskets(await prisma.basket.findMany({
+    where: { tenantId, deletedAt: null },
+    select: { id: true, name: true, kind: true, position: true },
+  }))
   const approvals = await prisma.basketApproval.findMany({
     where: { invoiceId: invoice.id },
     select: { targetBasketId: true, user: { select: { email: true } } },
@@ -37,6 +44,19 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
         needed: Math.max(0, 2 - approvals.length),
       }
     : null
+
+  const [tenant, colleaguesRaw] = await Promise.all([
+    prisma.tenant.findUnique({ where: { id: tenantId }, select: { encryptionEnabled: true } }),
+    prisma.user.findMany({
+      where: { tenantId, active: true },
+      select: { id: true, email: true, firstName: true, lastName: true },
+      orderBy: { email: 'asc' },
+    }),
+  ])
+  const colleagues = colleaguesRaw.map((u) => ({
+    id: u.id,
+    name: [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email,
+  }))
 
   // Rechnungsbild: bei digitalen Formaten die XML-Daten visualisieren
   const parsed = invoice.xmlData ? parseInvoiceXml(invoice.xmlData) : null
@@ -59,7 +79,13 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
           validation={data ? validateData(data) : null}
         />
       )}
-      <InvoiceEditForm invoice={toDTO(invoice)} baskets={baskets} pendingApproval={pending} />
+      <InvoiceEditForm
+        invoice={toDTO(invoice)}
+        baskets={baskets}
+        pendingApproval={pending}
+        encryptionEnabled={tenant?.encryptionEnabled ?? false}
+        colleagues={colleagues}
+      />
     </div>
   )
 }

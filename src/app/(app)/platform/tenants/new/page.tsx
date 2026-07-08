@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 
 const EMPTY = {
-  slug: '', name: '', adminEmail: '', contactName: '', contactEmail: '',
+  slug: '', name: '', adminEmail: '', adminFirstName: '', adminLastName: '', contactName: '', contactEmail: '',
   street: '', zip: '', city: '', employeeCount: '0', maxUsers: '5',
   licensePlan: '', licenseSerial: '', licenseExpiresAt: '',
 }
@@ -69,6 +69,11 @@ export default function NewTenantPage() {
           required placeholder="z. b. mustermann" hint="klein, Ziffern, Bindestrich" />
         <Field label="Admin-E-Mail (erster Administrator) *" type="email" value={f.adminEmail}
           onChange={(v) => set('adminEmail', v)} required />
+        <Field label="Vorname des Administrators *" value={f.adminFirstName}
+          onChange={(v) => set('adminFirstName', v)} required />
+        <Field label="Nachname des Administrators *" value={f.adminLastName}
+          onChange={(v) => set('adminLastName', v)}
+          required hint="Für den Benutzernamen (vorname.nachname) — kein Mandanten-Kurzname als Präfix" />
         <Field label="Kontakt-E-Mail" type="email" value={f.contactEmail} onChange={(v) => set('contactEmail', v)} />
         <Field label="Ansprechpartner" value={f.contactName} onChange={(v) => set('contactName', v)} />
         <Field label="Straße" value={f.street} onChange={(v) => set('street', v)} />
