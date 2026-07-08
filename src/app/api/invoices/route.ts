@@ -10,11 +10,18 @@ import { prisma } from '@/lib/db'
 import { nextDocId } from '@/lib/docId'
 import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
 import { analyzeInvoiceFile, EINVOICE_FORMATS, type Analysis } from '@/lib/erechnung'
-import { toDTO } from '@/lib/invoices'
+import { CONTENT_ENC_VENDOR_PLACEHOLDER, toDTO } from '@/lib/invoices'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
 
+// Inhalts-Verschlüsselung (Stefan 2026-07-09): ist contentEnc gesetzt, hat der
+// Browser Lieferant/Nummer/Beträge/Währung/Tags/Notizen bereits zu einem
+// einzigen Chiffrat zusammengefasst (siehe /invoices/new) — die einzelnen
+// Klartext-Felder unten werden dann NICHT verwendet (vendor bleibt daher hier
+// optional, ein fester Platzhalter füllt die NOT-NULL-Spalte).
+const VENDOR_PLACEHOLDER = CONTENT_ENC_VENDOR_PLACEHOLDER
+
 const fieldsSchema = z.object({
-  vendor: z.string().min(1, 'Lieferant fehlt'),
+  vendor: z.string().optional(),
   invoiceNumber: z.string().optional(),
   invoiceDate: z.string().optional(),
   dueDate: z.string().optional(),
@@ -24,6 +31,9 @@ const fieldsSchema = z.object({
   currency: z.string().default('EUR'),
   tags: z.string().optional(),
   notes: z.string().optional(),
+  // Inhalts-Verschlüsselung: Base64-Chiffrat (IV+Ciphertext) eines JSON-Blobs
+  // mit den Inhaltsfeldern — siehe clientCrypto.ts encryptJson.
+  contentEnc: z.string().optional(),
   // Zero-Knowledge: "1" = Datei wurde bereits im Browser verschlüsselt
   encrypted: z.string().optional(),
   encOrigMime: z.string().optional(),
@@ -37,6 +47,8 @@ const fieldsSchema = z.object({
   source: z.enum(['UPLOAD', 'SCAN']).default('UPLOAD'),
   aiAssisted: z.string().optional(),
   directDebitByVendor: z.string().optional(),
+}).refine((f) => Boolean(f.contentEnc) || Boolean(f.vendor?.trim()), {
+  message: 'Lieferant fehlt', path: ['vendor'],
 })
 
 function parseAmount(v?: string): number | null {
@@ -93,10 +105,16 @@ export async function POST(req: NextRequest) {
     // GoBD-Sperre wie beim späteren Bearbeiten in InvoiceEditForm/PATCH
     // muss schon beim ersten Einlesen gelten, nicht erst danach).
     const isEInvoiceUpload = Boolean(analysis && (EINVOICE_FORMATS as string[]).includes(analysis.format))
+    const hasEncryptedContent = Boolean(fields.contentEnc)
+    // Bei verschlüsseltem Inhalt trägt jede Rechnung denselben Platzhalter als
+    // vendor-Spalte (Server kennt den echten Lieferanten nicht) — ein Abgleich
+    // "gleicher Lieferant + gleiche Nummer" würde sonst ständig fälschlich
+    // anschlagen. Die Dubletten-Prüfung stützt sich dann nur noch auf den
+    // Datei-Hash (fileHash, s. o. — wird vor dem Verschlüsseln gebildet).
     const duplicateOfId = await detectDuplicate(tenantId, {
       fileHash,
-      invoiceNumber: fields.invoiceNumber || d?.number || null,
-      vendor: fields.vendor || d?.sellerName || null,
+      invoiceNumber: hasEncryptedContent ? null : (fields.invoiceNumber || d?.number || null),
+      vendor: hasEncryptedContent ? null : (fields.vendor || d?.sellerName || null),
     })
 
     const docId = await nextDocId(tenantId)
@@ -115,8 +133,14 @@ export async function POST(req: NextRequest) {
         basketId,
         checkElectronicAt: autoElectronicOk ? new Date() : null,
         checkElectronicBy: autoElectronicOk ? 'System (automatische Prüfung)' : null,
-        vendor: isEInvoiceUpload ? (d?.sellerName || 'Unbekannt') : (fields.vendor || d?.sellerName || 'Unbekannt'),
-        invoiceNumber: isEInvoiceUpload ? (d?.number || null) : (fields.invoiceNumber || d?.number || null),
+        vendor: hasEncryptedContent
+          ? VENDOR_PLACEHOLDER
+          : isEInvoiceUpload ? (d?.sellerName || 'Unbekannt') : (fields.vendor || d?.sellerName || 'Unbekannt'),
+        invoiceNumber: hasEncryptedContent
+          ? null
+          : isEInvoiceUpload ? (d?.number || null) : (fields.invoiceNumber || d?.number || null),
+        // Rechnungs-/Fälligkeitsdatum bleiben bewusst im Klartext (Workflow-
+        // Felder — Sortierung, Fälligkeits-Erinnerungen, Körbe-Zähler).
         invoiceDate: isEInvoiceUpload
           ? (d?.issueDate ? new Date(d.issueDate) : null)
           : fields.invoiceDate
@@ -127,13 +151,14 @@ export async function POST(req: NextRequest) {
         dueDate: isEInvoiceUpload
           ? (d?.dueDate ? new Date(d.dueDate) : null)
           : fields.dueDate ? new Date(fields.dueDate) : d?.dueDate ? new Date(d.dueDate) : null,
-        amountNet: isEInvoiceUpload ? (d?.net ?? null) : (parseAmount(fields.amountNet) ?? d?.net ?? null),
-        amountTax: isEInvoiceUpload ? (d?.tax ?? null) : (parseAmount(fields.amountTax) ?? d?.tax ?? null),
-        amountGross: isEInvoiceUpload ? (d?.gross ?? null) : (parseAmount(fields.amountGross) ?? d?.gross ?? null),
-        currency: isEInvoiceUpload ? (d?.currency || 'EUR') : (fields.currency || 'EUR'),
+        amountNet: hasEncryptedContent ? null : isEInvoiceUpload ? (d?.net ?? null) : (parseAmount(fields.amountNet) ?? d?.net ?? null),
+        amountTax: hasEncryptedContent ? null : isEInvoiceUpload ? (d?.tax ?? null) : (parseAmount(fields.amountTax) ?? d?.tax ?? null),
+        amountGross: hasEncryptedContent ? null : isEInvoiceUpload ? (d?.gross ?? null) : (parseAmount(fields.amountGross) ?? d?.gross ?? null),
+        currency: hasEncryptedContent ? 'EUR' : isEInvoiceUpload ? (d?.currency || 'EUR') : (fields.currency || 'EUR'),
+        contentEnc: fields.contentEnc ?? null,
         status: InvoiceStatus.NEW,
-        tags: fields.tags || null,
-        notes: fields.notes || null,
+        tags: hasEncryptedContent ? null : (fields.tags || null),
+        notes: hasEncryptedContent ? null : (fields.notes || null),
         fileName,
         originalName,
         mimeType,

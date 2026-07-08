@@ -64,7 +64,7 @@ export function AttachmentsPanel({ invoiceId, encryptionEnabled }: { invoiceId: 
   }
 
   return (
-    <div className="border-t border-[var(--line)] pt-3">
+    <div className="dp-card">
       <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500"
         title="Weitere Dateien zu diesem Beleg — unabhängig vom Hauptbeleg, jederzeit ergänzbar (auch bei gesperrten E-Rechnungen)">
         📎 Anhänge

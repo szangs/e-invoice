@@ -17,13 +17,94 @@ import { prisma } from '@/lib/db'
 import { sendSystemMail } from '@/lib/mail'
 import { readInvoiceFile } from '@/lib/storage'
 
-const schema = z.object({ basketId: z.string().min(1), sendIndividualMails: z.boolean().optional() })
+const schema = z.object({
+  basketId: z.string().min(1),
+  sendIndividualMails: z.boolean().optional(),
+  // Inhalts-Verschlüsselung (Stefan 2026-07-09): bei verschlüsselten
+  // Mandanten baut der CLIENT die CSV selbst (er hat als Einziger die
+  // entschlüsselten Beträge/Lieferanten) — hier wird dann nur noch anhand
+  // dieser IDs markiert/verschoben, ohne den Export-Teil unten erneut zu tun.
+  invoiceIds: z.array(z.string()).optional(),
+})
+
+const READY_FOR_EXPORT_WHERE = {
+  deletedAt: null,
+  checkAccountingAt: null,
+  checkElectronicAt: { not: null },
+  checkFormalAt: { not: null },
+  checkSubstantiveAt: { not: null },
+} as const
+
+/**
+ * Kandidaten für den DATEV-Export eines Korbs (Stefan 2026-07-09) — für
+ * verschlüsselte Mandanten liest der Client hierüber die contentEnc-Blobs,
+ * entschlüsselt sie im Browser und baut die CSV selbst (buildDatevExport ist
+ * eine reine Funktion ohne Server-Abhängigkeiten, siehe lib/datev.ts).
+ */
+export async function GET(req: NextRequest) {
+  try {
+    const ctx = await getContext()
+    const tenantId = requireTenant(ctx)
+    const basketId = req.nextUrl.searchParams.get('basketId')
+    if (!basketId) throw new ApiError(400, 'basketId fehlt.')
+    const [basket, tenant] = await Promise.all([
+      prisma.basket.findFirst({ where: { id: basketId, tenantId } }),
+      prisma.tenant.findUnique({ where: { id: tenantId } }),
+    ])
+    if (!basket) throw new ApiError(404, 'Korb nicht gefunden.')
+    if (basket.kind !== BasketKind.HANDOVER) {
+      throw new ApiError(400, 'DATEV-Export ist nur im Übergabekorb möglich.')
+    }
+    if (!tenant) throw new ApiError(404, 'Mandant nicht gefunden.')
+    if (!(await hasBasketRight(ctx.userId, ctx.role, basket.id, 'FIBU'))) {
+      throw new ApiError(403, 'Kein Recht zur Übergabe an die Fibu.')
+    }
+    const invoices = await prisma.invoice.findMany({
+      where: { tenantId, basketId, ...READY_FOR_EXPORT_WHERE },
+      orderBy: [{ invoiceDate: 'asc' }, { createdAt: 'asc' }],
+    })
+    const vendorAccountRows = await prisma.vendorAccount.findMany({ where: { tenantId } })
+    const vendorAccounts = Object.fromEntries(
+      vendorAccountRows.map((v) => [v.vendorName.trim().toLowerCase(), v.konto]),
+    )
+    return NextResponse.json({
+      invoices: invoices.map((i) => ({
+        id: i.id,
+        docId: i.docId,
+        invoiceDate: i.invoiceDate ? i.invoiceDate.toISOString() : null,
+        createdAt: i.createdAt.toISOString(),
+        contentEnc: i.contentEnc,
+        // Klartext-Fallback nur, wenn diese Rechnung KEIN contentEnc hat (z. B.
+        // vor Aktivierung der Verschlüsselung angelegt) — sonst null, der
+        // Client entschlüsselt in dem Fall contentEnc selbst.
+        vendor: i.contentEnc ? null : i.vendor,
+        invoiceNumber: i.contentEnc ? null : i.invoiceNumber,
+        amountNet: i.contentEnc ? null : i.amountNet !== null ? Number(i.amountNet) : null,
+        amountTax: i.contentEnc ? null : i.amountTax !== null ? Number(i.amountTax) : null,
+        amountGross: i.contentEnc ? null : i.amountGross !== null ? Number(i.amountGross) : null,
+        currency: i.currency,
+      })),
+      settings: {
+        datevBeraternr: tenant.datevBeraternr,
+        datevMandantnr: tenant.datevMandantnr,
+        datevSachkontenlaenge: tenant.datevSachkontenlaenge,
+        datevKreditorenkonto: tenant.datevKreditorenkonto,
+        datevGegenkonto: tenant.datevGegenkonto,
+        datevWjBeginn: tenant.datevWjBeginn,
+      },
+      vendorAccounts,
+      exportedBy: ctx.email,
+    })
+  } catch (e) {
+    return jsonError(e)
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {
     const ctx = await getContext()
     const tenantId = requireTenant(ctx)
-    const { basketId, sendIndividualMails } = schema.parse(await req.json())
+    const { basketId, sendIndividualMails, invoiceIds } = schema.parse(await req.json())
 
     const [basket, tenant] = await Promise.all([
       prisma.basket.findFirst({ where: { id: basketId, tenantId } }),
@@ -38,6 +119,35 @@ export async function POST(req: NextRequest) {
       throw new ApiError(403, 'Kein Recht zur Übergabe an die Fibu.')
     }
 
+    // Client-seitiger Export bei Verschlüsselung (Stefan 2026-07-09): die CSV
+    // wurde im Browser aus den entschlüsselten Daten gebaut (siehe GET oben +
+    // DatevExportButton.tsx) — hier nur noch die übergebenen IDs als
+    // exportiert markieren/in die Ablage verschieben, dieselben Nebeneffekte
+    // wie beim serverseitigen Pfad unten, nur ohne die CSV erneut zu bauen.
+    if (invoiceIds && invoiceIds.length > 0) {
+      const marked = await prisma.invoice.findMany({
+        where: { id: { in: invoiceIds }, tenantId, basketId, ...READY_FOR_EXPORT_WHERE },
+        select: { id: true },
+      })
+      if (marked.length === 0) {
+        throw new ApiError(400, 'Keine gültigen Rechnungen zum Markieren gefunden.')
+      }
+      const { archiveId } = await ensureSystemBaskets(tenantId)
+      const now = new Date()
+      await prisma.invoice.updateMany({
+        where: { id: { in: marked.map((i) => i.id) } },
+        data: { checkAccountingAt: now, checkAccountingBy: ctx.email, status: InvoiceStatus.EXPORTED, basketId: archiveId },
+      })
+      await audit({
+        tenantId,
+        actorId: ctx.userId,
+        actorName: ctx.email,
+        action: 'INVOICE_EXPORT',
+        details: `DATEV-Export (Übergabekorb "${basket.name}", client-seitig/verschlüsselt): ${marked.length} Rechnung(en) an Fibu übergeben`,
+      })
+      return NextResponse.json({ ok: true, count: marked.length })
+    }
+
     // Stefan 2026-07-09: nur vollständig geprüfte Rechnungen dürfen in den
     // DATEV-Export — Elektronische Vorprüfung, Formal richtig und Sachlich
     // richtig müssen alle abgehakt sein. Unvollständige Rechnungen bleiben
@@ -47,12 +157,8 @@ export async function POST(req: NextRequest) {
       where: {
         tenantId,
         basketId,
-        deletedAt: null,
-        checkAccountingAt: null,
         amountGross: { not: null },
-        checkElectronicAt: { not: null },
-        checkFormalAt: { not: null },
-        checkSubstantiveAt: { not: null },
+        ...READY_FOR_EXPORT_WHERE,
       },
       orderBy: [{ invoiceDate: 'asc' }, { createdAt: 'asc' }],
     })

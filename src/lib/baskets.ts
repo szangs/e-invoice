@@ -72,6 +72,10 @@ export type BasketCounts = {
   overdue: number
   /** Ungelesene, an DIESEN Nutzer adressierte Nachrichten in diesem Korb (Stefan 2026-07-08). */
   unreadNotes: number
+  /** Vollständig geprüft (Elektronisch+Formal+Sachlich) und noch nicht an die
+   * Fibu übergeben (Stefan 2026-07-09) — im Übergabekorb aussagekräftiger als
+   * "offen/bearbeitet", das dort nach den Vorprüf-Häkchen zählt. */
+  readyForHandover: number
 }
 
 // Zahlungsziel-Vorwarnung (Stefan 2026-07-08): "bald fällig" = Zahlungsbedingungs-
@@ -102,7 +106,7 @@ const DUE_SOON_DAYS = 7
 export async function getBasketCounts(tenantId: string, userId?: string): Promise<Record<string, BasketCounts>> {
   const now = new Date()
   const soonThreshold = new Date(now.getTime() + DUE_SOON_DAYS * 24 * 60 * 60 * 1000)
-  const [unprocessed, processed, overdue, dueSoon, unreadNoteRows] = await Promise.all([
+  const [unprocessed, processed, readyForHandover, overdue, dueSoon, unreadNoteRows] = await Promise.all([
     prisma.invoice.groupBy({
       by: ['basketId'],
       where: { tenantId, deletedAt: null, checkElectronicAt: null, checkFormalAt: null },
@@ -113,6 +117,14 @@ export async function getBasketCounts(tenantId: string, userId?: string): Promis
       where: {
         tenantId, deletedAt: null,
         OR: [{ checkElectronicAt: { not: null } }, { checkFormalAt: { not: null } }],
+      },
+      _count: { _all: true },
+    }),
+    prisma.invoice.groupBy({
+      by: ['basketId'],
+      where: {
+        tenantId, deletedAt: null, checkAccountingAt: null,
+        checkElectronicAt: { not: null }, checkFormalAt: { not: null }, checkSubstantiveAt: { not: null },
       },
       _count: { _all: true },
     }),
@@ -141,7 +153,7 @@ export async function getBasketCounts(tenantId: string, userId?: string): Promis
   ])
   const result: Record<string, BasketCounts> = {}
   function ensure(basketId: string): BasketCounts {
-    if (!result[basketId]) result[basketId] = { unprocessed: 0, processed: 0, total: 0, dueSoon: 0, overdue: 0, unreadNotes: 0 }
+    if (!result[basketId]) result[basketId] = { unprocessed: 0, processed: 0, total: 0, dueSoon: 0, overdue: 0, unreadNotes: 0, readyForHandover: 0 }
     return result[basketId]
   }
   for (const row of unprocessed) {
@@ -153,6 +165,10 @@ export async function getBasketCounts(tenantId: string, userId?: string): Promis
     if (!row.basketId) continue
     ensure(row.basketId).processed = row._count._all
     ensure(row.basketId).total += row._count._all
+  }
+  for (const row of readyForHandover) {
+    if (!row.basketId) continue
+    ensure(row.basketId).readyForHandover = row._count._all
   }
   for (const row of overdue) {
     if (!row.basketId) continue
@@ -189,12 +205,27 @@ export async function requestMove(
 ): Promise<MoveResult> {
   const invoice = await prisma.invoice.findFirst({
     where: { id: invoiceId, tenantId },
-    select: { id: true, vendor: true, invoiceNumber: true, basketId: true },
+    select: {
+      id: true, vendor: true, invoiceNumber: true, basketId: true,
+      checkElectronicAt: true, checkFormalAt: true, checkSubstantiveAt: true,
+    },
   })
   if (!invoice) throw new Error('Rechnung nicht gefunden')
 
   const target = await prisma.basket.findFirst({ where: { id: targetBasketId, tenantId, deletedAt: null } })
   if (!target) throw new Error('Zielkorb nicht gefunden')
+
+  // Übergabekorb nur bei vollständiger Prüfung erreichbar (Stefan 2026-07-09):
+  // der einzige vorgesehene Weg ist der automatische Wechsel, sobald alle
+  // drei Häkchen stehen (siehe api/invoices/[id]/route.ts) — ein manuelles
+  // Verschieben (Drag&Drop) darf diese Prüfung nicht umgehen können, selbst
+  // mit dem HANDOVER-Recht auf dem Ausgangskorb.
+  if (target.kind === BasketKind.HANDOVER) {
+    const fullyChecked = invoice.checkElectronicAt && invoice.checkFormalAt && invoice.checkSubstantiveAt
+    if (!fullyChecked) {
+      throw new ApiError(400, 'Diese Rechnung ist noch nicht vollständig geprüft — der Übergabekorb wird erst nach allen drei Häkchen automatisch erreicht.')
+    }
+  }
 
   const fromBasket = invoice.basketId
     ? await prisma.basket.findFirst({ where: { id: invoice.basketId, tenantId } })
@@ -292,7 +323,10 @@ function dueForHours(last: Date | null, hours: number | null): boolean {
 export async function runDueBasketNotifications(force = false): Promise<string[]> {
   const log: string[] = []
   const baskets = await prisma.basket.findMany({
-    where: { notificationEnabled: true, deletedAt: null },
+    // ARCHIVE ausgeschlossen (Stefan 2026-07-09): fester Endlager-Korb ohne
+    // Bearbeitung — eine Erinnerungsmail ergibt dort keinen Sinn. Bereits vor
+    // dieser Änderung aktivierte Flags werden hier defensiv mit ausgefiltert.
+    where: { notificationEnabled: true, deletedAt: null, kind: { not: BasketKind.ARCHIVE } },
     include: {
       members: { include: { user: { select: { email: true, active: true } } } },
       tenant: { select: { name: true, active: true } },

@@ -3,7 +3,10 @@
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { FileLink } from '@/components/crypto/FileLink'
+import { DEK_UNLOCKED_EVENT, notifyDekUnlocked, useDecryptedContent } from '@/components/crypto/useDecryptedContent'
+import { decryptBytes, encryptJson } from '@/lib/clientCrypto'
 import { EINVOICE_FORMATS } from '@/lib/docFormat'
+import { getCachedDek, unlockWithPassphrase } from '@/lib/keyStore'
 import type { InvoiceDTO } from '@/lib/invoices'
 import { BasketMoveSelect } from '../BasketMoveSelect'
 import { AttachmentsPanel } from './AttachmentsPanel'
@@ -69,14 +72,77 @@ export function InvoiceEditForm({
   })
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+
+  // Inhalts-Verschlüsselung (Stefan 2026-07-09): vendor/invoiceNumber/
+  // amount*/tags/notes oben sind bei contentEnc nur Platzhalter/leer — hier
+  // client-seitig entschlüsseln und ins Formular übernehmen, sobald der
+  // Schlüssel verfügbar ist (Passphrase-Prompt unten, falls noch gesperrt).
+  const { data: decryptedContent } = useDecryptedContent(invoice.contentEnc)
+  useEffect(() => {
+    if (!decryptedContent) return
+    setF((p) => ({
+      ...p,
+      vendor: decryptedContent.vendor ?? p.vendor,
+      invoiceNumber: decryptedContent.invoiceNumber ?? '',
+      amountNet: decryptedContent.amountNet ?? '',
+      amountTax: decryptedContent.amountTax ?? '',
+      amountGross: decryptedContent.amountGross ?? '',
+      currency: decryptedContent.currency ?? p.currency,
+      tags: decryptedContent.tags ?? '',
+      notes: decryptedContent.notes ?? '',
+    }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [decryptedContent])
+  // Auch relevant, wenn DIESE Rechnung noch gar kein contentEnc hat (z. B.
+  // alte, vor der Verschlüsselung angelegte Rechnung) — beim Speichern wird
+  // sie dann automatisch mitverschlüsselt und braucht dafür ebenfalls den
+  // Schlüssel, auch ohne dass hier etwas zu entschlüsseln war.
+  const [dekAvailable, setDekAvailable] = useState(false)
+  useEffect(() => {
+    let stop = false
+    function check() {
+      getCachedDek().then((dek) => { if (!stop) setDekAvailable(Boolean(dek)) })
+    }
+    check()
+    window.addEventListener(DEK_UNLOCKED_EVENT, check)
+    return () => {
+      stop = true
+      window.removeEventListener(DEK_UNLOCKED_EVENT, check)
+    }
+  }, [])
+  const [unlockPass, setUnlockPass] = useState('')
+  const [unlockError, setUnlockError] = useState('')
+  const [unlockBusy, setUnlockBusy] = useState(false)
+  async function unlockContent(e: React.SyntheticEvent) {
+    e.preventDefault()
+    setUnlockBusy(true)
+    setUnlockError('')
+    try {
+      await unlockWithPassphrase(unlockPass)
+      setUnlockPass('')
+      notifyDekUnlocked()
+    } catch (err) {
+      setUnlockError(err instanceof Error ? err.message : 'Passphrase falsch.')
+    } finally {
+      setUnlockBusy(false)
+    }
+  }
   // KI-Erkennung anbieten bei: Fotos/Scans (Bild) ODER "nackter" PDF (kein
   // eingebettetes E-Rechnungs-XML) — NICHT bei ZUGFeRD/XRechnung, die haben
   // die Daten schon strukturiert. Nackte PDFs werden serverseitig vor der
   // KI-Anfrage gerastert (lib/pdfRaster.ts).
   const isEInvoice = (EINVOICE_FORMATS as string[]).includes(invoice.docFormat ?? '')
+  // Inhalts-Verschlüsselung nur bei Nicht-E-Rechnungen (Stefan 2026-07-09) —
+  // ZUGFeRD/XRechnung lassen sich strukturell gar nicht verschlüsselt hochladen
+  // (der Server kann das XML sonst nie erkennen), die GoBD-gesperrten Felder
+  // bleiben also immer im Klartext, wie bisher.
+  const shouldEncryptContent = encryptionEnabled && !isEInvoice
   const isImage = AI_IMAGE_MIMES.includes(invoice.mimeType ?? '')
   const isPlainPdf = invoice.mimeType === 'application/pdf' && !isEInvoice
-  const canUseAi = invoice.hasFile && !invoice.encrypted && (isImage || isPlainPdf)
+  // Verschlüsselte Belege sind jetzt eingeschlossen (Stefan 2026-07-09) — der
+  // Beleg wird dafür client-seitig entschlüsselt und nur transient an den
+  // KI-Anbieter weitergereicht (siehe fillWithAi unten).
+  const canUseAi = invoice.hasFile && (isImage || isPlainPdf)
   // Bild-Abgleich (Stefan 2026-07-08): nur bei ZUGFeRD/Factur-X sinnvoll — da
   // steckt ein sichtbares PDF-Bild UND ein XML im selben Beleg, beide sollten
   // übereinstimmen. Reine XRechnung (nur XML, kein eigenes Bild) hat nichts
@@ -132,7 +198,28 @@ export function InvoiceEditForm({
     setAiWarnings([])
     setAiFlags([])
     try {
-      const res = await fetch(`/api/invoices/${invoice.id}/ai-extract`, { method: 'POST' })
+      let res: Response
+      if (invoice.encrypted) {
+        // Beleg ist nur als Chiffrat gespeichert — der Server kann ihn nicht
+        // lesen. Hier selbst entschlüsseln (wie FileLink.tsx) und die
+        // Klartext-Bytes NUR für diesen einen KI-Aufruf mitschicken.
+        const dek = await getCachedDek()
+        if (!dek) {
+          setAiError('Bitte zuerst oben die Passphrase eingeben, um den Beleg zu entschlüsseln.')
+          return
+        }
+        const fileRes = await fetch(`/api/invoices/${invoice.id}/file`)
+        if (!fileRes.ok) {
+          setAiError('Beleg konnte nicht geladen werden.')
+          return
+        }
+        const plain = await decryptBytes(dek, await fileRes.arrayBuffer())
+        const fd = new FormData()
+        fd.append('file', new Blob([plain]), invoice.originalName ?? 'beleg')
+        res = await fetch(`/api/invoices/${invoice.id}/ai-extract`, { method: 'POST', body: fd })
+      } else {
+        res = await fetch(`/api/invoices/${invoice.id}/ai-extract`, { method: 'POST' })
+      }
       const data = await res.json()
       if (!res.ok) {
         setAiError(data.error ?? 'KI-Erkennung fehlgeschlagen.')
@@ -173,24 +260,51 @@ export function InvoiceEditForm({
     e.preventDefault()
     setBusy(true)
     setMsg('')
-    const res = await fetch(`/api/invoices/${invoice.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const base = {
+      invoiceDate: f.invoiceDate || null,
+      dueDate: f.dueDate || null,
+      status: f.status,
+      directDebitByVendor: f.directDebitByVendor,
+      ...(usedAi ? { aiAssisted: true } : {}),
+    }
+    let body: Record<string, unknown>
+    if (shouldEncryptContent) {
+      // Inhaltsfelder neu verschlüsseln statt im Klartext zu senden — gilt
+      // auch für Rechnungen, die vorher noch unverschlüsselt waren (wandern
+      // beim nächsten Speichern automatisch in die Verschlüsselung).
+      let dek = await getCachedDek()
+      if (!dek) {
+        try {
+          dek = await unlockWithPassphrase(unlockPass)
+        } catch (err) {
+          setBusy(false)
+          setMsg(err instanceof Error ? err.message : 'Passphrase falsch — bitte oben entsperren.')
+          return
+        }
+      }
+      const contentEnc = await encryptJson(dek, {
+        vendor: f.vendor, invoiceNumber: f.invoiceNumber, amountNet: f.amountNet,
+        amountTax: f.amountTax, amountGross: f.amountGross, currency: f.currency,
+        tags: f.tags, notes: f.notes,
+      })
+      body = { ...base, contentEnc }
+    } else {
+      body = {
+        ...base,
         vendor: f.vendor,
         invoiceNumber: f.invoiceNumber || null,
-        invoiceDate: f.invoiceDate || null,
-        dueDate: f.dueDate || null,
         amountNet: toNumber(f.amountNet),
         amountTax: toNumber(f.amountTax),
         amountGross: toNumber(f.amountGross),
         currency: f.currency,
-        status: f.status,
         tags: f.tags || null,
         notes: f.notes || null,
-        directDebitByVendor: f.directDebitByVendor,
-        ...(usedAi ? { aiAssisted: true } : {}),
-      }),
+      }
+    }
+    const res = await fetch(`/api/invoices/${invoice.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
     })
     setBusy(false)
     if (!res.ok) {
@@ -269,170 +383,201 @@ export function InvoiceEditForm({
     )
   }
 
+  // Layout (Stefan 2026-07-09, #113): statt eines einzigen, langen Formulars
+  // jetzt klar abgegrenzte Karten je Themenblock (Meta/Korb, Rechnungsdaten,
+  // Notizen, Prüfung, Anhänge, Nachrichten) — bessere Übersicht, gleiche Logik.
   return (
-    <form onSubmit={save} className="dp-card max-w-2xl space-y-4">
-      {invoice.docId && (
-        <p className="font-mono text-[11px] text-gray-400" title="Eindeutige Dokumenten-ID (GoBD-Referenzierung)">
-          {invoice.docId}
-        </p>
-      )}
-      {baskets.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2">
-          <span className="dp-label">Korb:</span>
-          <span className="text-sm">{baskets.find((b) => b.id === invoice.basketId)?.name ?? '—'}</span>
-          <BasketMoveSelect
-            invoiceId={invoice.id}
-            currentBasketId={invoice.basketId}
-            baskets={baskets}
-            pending={pendingApproval}
-          />
-        </div>
-      )}
-      {invoice.duplicateOfId && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2">
-          <p className="text-xs font-semibold text-[var(--warn-strong)]">
-            Als Dublette erkannt —{' '}
-            <a className="underline" href={`/invoices/${invoice.duplicateOfId}`}>Original öffnen</a>
+    <form onSubmit={save} className="space-y-4">
+      <div className="dp-card space-y-2.5">
+        {invoice.docId && (
+          <p className="font-mono text-[11px] text-gray-400" title="Eindeutige Dokumenten-ID (GoBD-Referenzierung)">
+            {invoice.docId}
           </p>
-          <button type="button" className="btn-secondary !px-2 !py-1 text-xs" onClick={unmarkDuplicate} disabled={busy}
-            title="Dubletten-Markierung aufheben — diese Rechnung wird als eigenständig behandelt">
-            Keine Dublette
-          </button>
-        </div>
-      )}
-      {invoice.hasFile && (
-        <p className="text-sm">
-          Beleg:{' '}
-          <FileLink
-            invoiceId={invoice.id}
-            encrypted={invoice.encrypted}
-            origMime={invoice.origMime}
-            label={invoice.originalName ?? 'öffnen'}
-          />
-        </p>
-      )}
-      {canUseAi && aiAvailable && (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] px-3 py-2">
-          <button type="button" className="btn-secondary" onClick={fillWithAi} disabled={aiBusy}
-            title="Beleg per KI auslesen und Felder unten vorschlagen — Ergebnis bitte immer gegenprüfen">
-            {aiBusy ? 'KI liest die Rechnung …' : '✨ Mit KI erkennen'}
-          </button>
-          <p className="text-[11px] text-gray-500">
-            Liest den Beleg nachträglich per KI aus und befüllt die Felder unten (auch
-            Verschlagwortung) — bitte prüfen und speichern.
-          </p>
-        </div>
-      )}
-      {canUseAi && !aiAvailable && aiReason && (
-        <p className="text-[11px] text-gray-400">KI-Erkennung nicht verfügbar: {aiReason}</p>
-      )}
-      {aiError && <p className="text-sm text-[var(--danger)]">{aiError}</p>}
-      {aiWarnings.length > 0 && (
-        <p className="rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-strong)]">
-          ⚠ Bitte besonders prüfen — {aiWarnings.join(' ')}
-        </p>
-      )}
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Lieferant *" value={f.vendor} onChange={(v) => set('vendor', v)} required
-          warn={aiFlags.includes('vendor')} locked={isEInvoice} lockReason={LOCK_REASON} />
-        <Field label="Rechnungsnummer" value={f.invoiceNumber} onChange={(v) => set('invoiceNumber', v)}
-          warn={aiFlags.includes('invoiceNumber')} locked={isEInvoice} lockReason={LOCK_REASON} />
-        <Field label="Rechnungsdatum" type="date" value={f.invoiceDate} onChange={(v) => set('invoiceDate', v)}
-          warn={aiFlags.includes('invoiceDate')} locked={isEInvoice} lockReason={LOCK_REASON} />
-        {f.directDebitByVendor ? (
-          <div>
-            <label className="dp-label">Fälligkeit</label>
-            <p className="dp-input mt-1 flex items-center text-gray-500" title="Lieferant bucht per Lastschrift/Abbuchung selbst ab">
-              wird abgebucht
-            </p>
-          </div>
-        ) : (
-          <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)}
-            warn={aiFlags.includes('dueDate')} locked={isEInvoice} lockReason={LOCK_REASON} />
         )}
-        <Field label="Netto" value={f.amountNet} onChange={(v) => set('amountNet', v)}
-          warn={aiFlags.includes('amountNet')} locked={isEInvoice} lockReason={LOCK_REASON} />
-        <Field label="Steuer" value={f.amountTax} onChange={(v) => set('amountTax', v)}
-          warn={aiFlags.includes('amountTax')} locked={isEInvoice} lockReason={LOCK_REASON} />
-        <Field label="Brutto" value={f.amountGross} onChange={(v) => set('amountGross', v)}
-          warn={aiFlags.includes('amountGross')} locked={isEInvoice} lockReason={LOCK_REASON} />
-        <div>
-          <label className="dp-label">
-            Währung
-            {isEInvoice && <span className="ml-1 text-gray-400" title={LOCK_REASON}>🔒</span>}
-          </label>
-          {isEInvoice ? (
-            <p className="dp-input mt-1 flex items-center bg-[var(--surface-muted)] text-gray-500" title={LOCK_REASON}>
-              {f.currency}
+        {(shouldEncryptContent || invoice.contentEnc) && !dekAvailable && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--accent-soft)] bg-[var(--accent-bg)] px-3 py-2">
+            <span className="text-[11px] font-medium text-[var(--accent)]">
+              🔒 Verschlüsselte Inhalte — Passphrase eingeben, um Lieferant, Beträge etc. zu sehen und zu bearbeiten.
+            </span>
+            <input type="password" className="dp-input !w-auto flex-1" value={unlockPass} autoFocus
+              onChange={(e) => setUnlockPass(e.target.value)} placeholder="Passphrase" />
+            <button type="button" className="btn-secondary" onClick={unlockContent} disabled={unlockBusy || !unlockPass}>
+              {unlockBusy ? 'Entsperre …' : 'Entsperren'}
+            </button>
+            {unlockError && <span className="w-full text-xs text-[var(--danger)]">{unlockError}</span>}
+          </div>
+        )}
+        {baskets.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2">
+            <span className="dp-label">Korb:</span>
+            <span className="text-sm">{baskets.find((b) => b.id === invoice.basketId)?.name ?? '—'}</span>
+            <BasketMoveSelect
+              invoiceId={invoice.id}
+              currentBasketId={invoice.basketId}
+              baskets={baskets}
+              pending={pendingApproval}
+            />
+          </div>
+        )}
+        {invoice.duplicateOfId && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2">
+            <p className="text-xs font-semibold text-[var(--warn-strong)]">
+              Als Dublette erkannt —{' '}
+              <a className="underline" href={`/invoices/${invoice.duplicateOfId}`}>Original öffnen</a>
             </p>
-          ) : (
-            <select className="dp-input mt-1" value={f.currency} onChange={(e) => set('currency', e.target.value)}
-              title="Rechnungswährung">
-              <option>EUR</option><option>USD</option><option>CHF</option><option>GBP</option>
-            </select>
-          )}
-        </div>
-        <div>
-          <label className="dp-label">Status</label>
-          <select className="dp-input mt-1" value={f.status} onChange={(e) => set('status', e.target.value)}
-            title="Bearbeitungsstatus für den internen Workflow — jederzeit frei änderbar">
-            {STATUS_OPTIONS.map((s) => (
-              <option key={s.value} value={s.value}>{s.label}</option>
-            ))}
-          </select>
-        </div>
-        <Field label="Tags" value={f.tags} onChange={(v) => set('tags', v)} />
+            <button type="button" className="btn-secondary !px-2 !py-1 text-xs" onClick={unmarkDuplicate} disabled={busy}
+              title="Dubletten-Markierung aufheben — diese Rechnung wird als eigenständig behandelt">
+              Keine Dublette
+            </button>
+          </div>
+        )}
+        {invoice.hasFile && (
+          <p className="text-sm">
+            Beleg:{' '}
+            <FileLink
+              invoiceId={invoice.id}
+              encrypted={invoice.encrypted}
+              origMime={invoice.origMime}
+              label={invoice.originalName ?? 'öffnen'}
+            />
+            <span className="ml-1 text-[11px] text-gray-400">(Vorschau rechts)</span>
+          </p>
+        )}
       </div>
-      {isEInvoice && (
-        <p className="text-[11px] text-gray-400">
-          🔒 Gesperrte Felder stammen aus der elektronischen Rechnung und sind laut GoBD nicht änderbar.
-          Notizen, Tags, Status, Zahlungsart und Korb sind davon nicht betroffen und bleiben frei editierbar.
-        </p>
-      )}
-      {canCompareXml && aiAvailable && (
-        <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] px-3 py-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <button type="button" className="btn-secondary" onClick={compareXml} disabled={compareBusy}
-              title="Liest das PDF-Bild per KI und vergleicht es mit den aus dem XML übernommenen Feldern oben — reine Plausibilitätsprüfung, ändert nichts an den gespeicherten Daten">
-              {compareBusy ? 'Vergleiche Bild mit XML …' : '🔍 Bild mit XML abgleichen'}
+
+      <div className="dp-card space-y-3">
+        <h3 className="text-xs font-bold uppercase tracking-wide text-gray-500">Rechnungsdaten</h3>
+        {canUseAi && aiAvailable && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] px-3 py-2">
+            <button type="button" className="btn-secondary" onClick={fillWithAi} disabled={aiBusy}
+              title="Beleg per KI auslesen und Felder unten vorschlagen — Ergebnis bitte immer gegenprüfen">
+              {aiBusy ? 'KI liest die Rechnung …' : '✨ Mit KI erkennen'}
             </button>
             <p className="text-[11px] text-gray-500">
-              Prüft per KI-Bilderkennung, ob das sichtbare PDF-Bild von den oben gesperrten XML-Werten abweicht.
+              Liest den Beleg nachträglich per KI aus und befüllt die Felder unten (auch
+              Verschlagwortung) — bitte prüfen und speichern.
+              {invoice.encrypted && (
+                <span className="block text-[var(--warn-strong)]">
+                  ⚠ Der Beleg wird für diese Erkennung entschlüsselt und an den externen KI-Anbieter
+                  gesendet — dieser Schritt ist eine bewusste Ausnahme vom Zero-Knowledge-Grundsatz,
+                  unser Server speichert den Klartext dabei nicht.
+                </span>
+              )}
             </p>
           </div>
-          {compareError && <p className="mt-1.5 text-sm text-[var(--danger)]">{compareError}</p>}
-          {compareResult && compareResult.length === 0 && (
-            <p className="mt-1.5 text-xs font-medium text-[var(--accent)]">✓ Keine Abweichungen gefunden — Bild und XML stimmen überein.</p>
-          )}
-          {compareResult && compareResult.length > 0 && (
-            <div className="mt-1.5 rounded-lg bg-[var(--warn-bg)] px-2.5 py-2">
-              <p className="text-xs font-semibold text-[var(--warn-strong)]">
-                ⚠ {compareResult.length} Abweichung{compareResult.length === 1 ? '' : 'en'} zwischen Bild und XML — bitte prüfen:
-              </p>
-              <ul className="mt-1 space-y-0.5 text-xs text-[var(--warn-strong)]">
-                {compareResult.map((d) => (
-                  <li key={d.field}>
-                    <span className="font-medium">{d.label}:</span> XML „{d.xmlValue}" vs. Bild „{d.aiValue}"
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
-      {canCompareXml && !aiAvailable && aiReason && (
-        <p className="text-[11px] text-gray-400">Bild-Abgleich nicht verfügbar: {aiReason}</p>
-      )}
-      <label className="flex items-center gap-2 text-sm text-gray-700"
-        title="Zahlungsart ist keine steuerlich relevante Angabe der Rechnung — immer frei änderbar">
-        <input type="checkbox" checked={f.directDebitByVendor}
-          onChange={(e) => setF((p) => ({ ...p, directDebitByVendor: e.target.checked }))} />
-        Lieferant bucht per Lastschrift/Abbuchung selbst ab (statt Überweisung)
-        {aiFlags.includes('directDebitByVendor') && (
-          <span className="text-[var(--warn-strong)]" title="KI ist sich hier unsicher — bitte prüfen">⚠</span>
         )}
-      </label>
-      <div>
+        {canUseAi && !aiAvailable && aiReason && (
+          <p className="text-[11px] text-gray-400">KI-Erkennung nicht verfügbar: {aiReason}</p>
+        )}
+        {aiError && <p className="text-sm text-[var(--danger)]">{aiError}</p>}
+        {aiWarnings.length > 0 && (
+          <p className="rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-strong)]">
+            ⚠ Bitte besonders prüfen — {aiWarnings.join(' ')}
+          </p>
+        )}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Lieferant *" value={f.vendor} onChange={(v) => set('vendor', v)} required
+            warn={aiFlags.includes('vendor')} locked={isEInvoice} lockReason={LOCK_REASON} />
+          <Field label="Rechnungsnummer" value={f.invoiceNumber} onChange={(v) => set('invoiceNumber', v)}
+            warn={aiFlags.includes('invoiceNumber')} locked={isEInvoice} lockReason={LOCK_REASON} />
+          <Field label="Rechnungsdatum" type="date" value={f.invoiceDate} onChange={(v) => set('invoiceDate', v)}
+            warn={aiFlags.includes('invoiceDate')} locked={isEInvoice} lockReason={LOCK_REASON} />
+          {f.directDebitByVendor ? (
+            <div>
+              <label className="dp-label">Fälligkeit</label>
+              <p className="dp-input mt-1 flex items-center text-gray-500" title="Lieferant bucht per Lastschrift/Abbuchung selbst ab">
+                wird abgebucht
+              </p>
+            </div>
+          ) : (
+            <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)}
+              warn={aiFlags.includes('dueDate')} locked={isEInvoice} lockReason={LOCK_REASON} />
+          )}
+          <Field label="Netto" value={f.amountNet} onChange={(v) => set('amountNet', v)}
+            warn={aiFlags.includes('amountNet')} locked={isEInvoice} lockReason={LOCK_REASON} />
+          <Field label="Steuer" value={f.amountTax} onChange={(v) => set('amountTax', v)}
+            warn={aiFlags.includes('amountTax')} locked={isEInvoice} lockReason={LOCK_REASON} />
+          <Field label="Brutto" value={f.amountGross} onChange={(v) => set('amountGross', v)}
+            warn={aiFlags.includes('amountGross')} locked={isEInvoice} lockReason={LOCK_REASON} />
+          <div>
+            <label className="dp-label">
+              Währung
+              {isEInvoice && <span className="ml-1 text-gray-400" title={LOCK_REASON}>🔒</span>}
+            </label>
+            {isEInvoice ? (
+              <p className="dp-input mt-1 flex items-center bg-[var(--surface-muted)] text-gray-500" title={LOCK_REASON}>
+                {f.currency}
+              </p>
+            ) : (
+              <select className="dp-input mt-1" value={f.currency} onChange={(e) => set('currency', e.target.value)}
+                title="Rechnungswährung">
+                <option>EUR</option><option>USD</option><option>CHF</option><option>GBP</option>
+              </select>
+            )}
+          </div>
+          <div>
+            <label className="dp-label">Status</label>
+            <select className="dp-input mt-1" value={f.status} onChange={(e) => set('status', e.target.value)}
+              title="Bearbeitungsstatus für den internen Workflow — jederzeit frei änderbar">
+              {STATUS_OPTIONS.map((s) => (
+                <option key={s.value} value={s.value}>{s.label}</option>
+              ))}
+            </select>
+          </div>
+          <Field label="Tags" value={f.tags} onChange={(v) => set('tags', v)} />
+        </div>
+        {isEInvoice && (
+          <p className="text-[11px] text-gray-400">
+            🔒 Gesperrte Felder stammen aus der elektronischen Rechnung und sind laut GoBD nicht änderbar.
+            Notizen, Tags, Status, Zahlungsart und Korb sind davon nicht betroffen und bleiben frei editierbar.
+          </p>
+        )}
+        {canCompareXml && aiAvailable && (
+          <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" className="btn-secondary" onClick={compareXml} disabled={compareBusy}
+                title="Liest das PDF-Bild per KI und vergleicht es mit den aus dem XML übernommenen Feldern oben — reine Plausibilitätsprüfung, ändert nichts an den gespeicherten Daten">
+                {compareBusy ? 'Vergleiche Bild mit XML …' : '🔍 Bild mit XML abgleichen'}
+              </button>
+              <p className="text-[11px] text-gray-500">
+                Prüft per KI-Bilderkennung, ob das sichtbare PDF-Bild von den oben gesperrten XML-Werten abweicht.
+              </p>
+            </div>
+            {compareError && <p className="mt-1.5 text-sm text-[var(--danger)]">{compareError}</p>}
+            {compareResult && compareResult.length === 0 && (
+              <p className="mt-1.5 text-xs font-medium text-[var(--accent)]">✓ Keine Abweichungen gefunden — Bild und XML stimmen überein.</p>
+            )}
+            {compareResult && compareResult.length > 0 && (
+              <div className="mt-1.5 rounded-lg bg-[var(--warn-bg)] px-2.5 py-2">
+                <p className="text-xs font-semibold text-[var(--warn-strong)]">
+                  ⚠ {compareResult.length} Abweichung{compareResult.length === 1 ? '' : 'en'} zwischen Bild und XML — bitte prüfen:
+                </p>
+                <ul className="mt-1 space-y-0.5 text-xs text-[var(--warn-strong)]">
+                  {compareResult.map((d) => (
+                    <li key={d.field}>
+                      <span className="font-medium">{d.label}:</span> XML „{d.xmlValue}" vs. Bild „{d.aiValue}"
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+        {canCompareXml && !aiAvailable && aiReason && (
+          <p className="text-[11px] text-gray-400">Bild-Abgleich nicht verfügbar: {aiReason}</p>
+        )}
+        <label className="flex items-center gap-2 text-sm text-gray-700"
+          title="Zahlungsart ist keine steuerlich relevante Angabe der Rechnung — immer frei änderbar">
+          <input type="checkbox" checked={f.directDebitByVendor}
+            onChange={(e) => setF((p) => ({ ...p, directDebitByVendor: e.target.checked }))} />
+          Lieferant bucht per Lastschrift/Abbuchung selbst ab (statt Überweisung)
+          {aiFlags.includes('directDebitByVendor') && (
+            <span className="text-[var(--warn-strong)]" title="KI ist sich hier unsicher — bitte prüfen">⚠</span>
+          )}
+        </label>
+      </div>
+
+      <div className="dp-card">
         <label className="dp-label" title="Interne Notiz, Kontierung oder ergänzende Information — nicht Teil der Rechnung selbst, immer frei editierbar">
           Notizen (z. B. Kontierung, interne Vermerke)
         </label>
@@ -441,7 +586,7 @@ export function InvoiceEditForm({
           onChange={(e) => set('notes', e.target.value)} />
       </div>
 
-      <div className="border-t border-[var(--line)] pt-3">
+      <div className="dp-card">
         <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">Rechnungsprüfung</h3>
         <div className="space-y-1.5">
           <CheckRow
@@ -462,12 +607,11 @@ export function InvoiceEditForm({
           (Buchhaltungs-Schritte, nicht Teil der Erfassung).
         </p>
       </div>
+
       <AttachmentsPanel invoiceId={invoice.id} encryptionEnabled={encryptionEnabled} />
       <InvoiceNotesPanel invoiceId={invoice.id} colleagues={colleagues} />
-      {msg && (
-        <p className={`text-sm ${msg === 'Gespeichert.' ? 'text-[var(--accent)]' : 'text-[var(--danger)]'}`}>{msg}</p>
-      )}
-      <div className="flex gap-2">
+
+      <div className="dp-card flex flex-wrap items-center gap-2">
         <button type="submit" className="btn-primary" disabled={busy} title="Änderungen speichern">
           {busy ? 'Speichere …' : 'Speichern'}
         </button>
@@ -478,6 +622,9 @@ export function InvoiceEditForm({
           title="Rechnung als gelöscht markieren — Beleg bleibt erhalten, im Papierkorb wiederherstellbar">
           Löschen
         </button>
+        {msg && (
+          <p className={`w-full text-sm ${msg === 'Gespeichert.' ? 'text-[var(--accent)]' : 'text-[var(--danger)]'}`}>{msg}</p>
+        )}
       </div>
     </form>
   )

@@ -66,6 +66,7 @@ export default async function DashboardPage() {
             dueSoon: basketCounts[b.id]?.dueSoon ?? 0,
             overdue: basketCounts[b.id]?.overdue ?? 0,
             unreadNotes: basketCounts[b.id]?.unreadNotes ?? 0,
+            readyForHandover: basketCounts[b.id]?.readyForHandover ?? 0,
           }))}
           activeBasketId={null}
           basePath="/invoices"

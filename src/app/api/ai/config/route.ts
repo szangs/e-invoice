@@ -5,6 +5,16 @@
 // Verschlüsselungs-Status DIESES Belegs geprüft (nachträgliche Erkennung auf
 // der Rechnungsdetailseite — auch bei Mandanten, die Verschlüsselung erst
 // NACH dem Hochladen dieses Belegs aktiviert haben).
+//
+// Stefan 2026-07-09: KI-Erkennung ist jetzt auch bei aktiver Verschlüsselung
+// verfügbar — der Client entschlüsselt den Beleg selbst und schickt NUR für
+// diesen einen, bewusst ausgelösten Aufruf die Klartext-Bytes an unseren
+// Server, der sie nur an den KI-Anbieter weiterreicht (nie speichert/loggt).
+// Wichtig: der externe KI-Anbieter selbst sieht den Klartext immer, unabhängig
+// davon, ob der Aufruf client- oder serverseitig läuft — das gilt bewusst als
+// Ausnahme vom Zero-Knowledge-Grundsatz für diesen einen, vom Nutzer selbst
+// ausgelösten Schritt (siehe Warnhinweis in der UI). `encrypted` im Ergebnis
+// sagt dem Client, ob er den Beleg vorher selbst entschlüsseln muss.
 import { NextRequest, NextResponse } from 'next/server'
 import { jsonError } from '@/lib/api'
 import { isAiConfigured } from '@/lib/aiExtract'
@@ -29,16 +39,10 @@ export async function GET(req: NextRequest) {
       })
       encrypted = invoice?.encrypted ?? true // nicht gefunden → sicherheitshalber sperren
     }
-    if (encrypted) {
-      return NextResponse.json({
-        available: false,
-        reason: 'Bei aktiver Beleg-Verschlüsselung nicht verfügbar (Zero-Knowledge).',
-      })
-    }
     if (!(await isAiConfigured())) {
       return NextResponse.json({ available: false, reason: 'Kein KI-Anbieter konfiguriert.' })
     }
-    return NextResponse.json({ available: true })
+    return NextResponse.json({ available: true, encrypted })
   } catch (e) {
     return jsonError(e)
   }

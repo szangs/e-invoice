@@ -1,13 +1,18 @@
 // KI-gestützte Datenerkennung NACHTRÄGLICH auf einem bereits gespeicherten
 // Beleg (z. B. ein früher gescanntes Foto oder eine "nackte" PDF ohne
 // KI-Erfassung). Nutzt denselben KI-Anbieter/dieselben Regeln wie beim Scan
-// selbst (/api/invoices/ai-extract): nur wenn der Mandant KI erlaubt UND
-// dieser konkrete Beleg unverschlüsselt ist (Zero-Knowledge). Bei ZUGFeRD/
-// XRechnung wird KI bewusst NICHT angeboten — die Daten sind dort schon
-// strukturiert aus dem eingebetteten XML gelesen. Bei "nackter" PDF wird die
-// erste Seite serverseitig gerastert (lib/pdfRaster.ts), bevor sie an die
-// Vision-KI geht.
-import { NextResponse } from 'next/server'
+// selbst (/api/invoices/ai-extract): nur wenn der Mandant KI erlaubt. Bei
+// ZUGFeRD/XRechnung wird KI bewusst NICHT angeboten — die Daten sind dort
+// schon strukturiert aus dem eingebetteten XML gelesen. Bei "nackter" PDF
+// wird die erste Seite serverseitig gerastert (lib/pdfRaster.ts), bevor sie
+// an die Vision-KI geht.
+//
+// Verschlüsselte Belege (Stefan 2026-07-09): der Server kann das gespeicherte
+// Chiffrat nicht selbst lesen — hier MUSS der Client den Beleg vorher selbst
+// entschlüsselt haben (InvoiceEditForm.tsx) und als Datei mitschicken. Diese
+// Klartext-Bytes werden nur transient an den KI-Anbieter weitergereicht, nie
+// in storage/DB geschrieben oder geloggt.
+import { NextRequest, NextResponse } from 'next/server'
 import { jsonError } from '@/lib/api'
 import { extractInvoiceFromImage } from '@/lib/aiExtract'
 import { audit } from '@/lib/audit'
@@ -20,7 +25,7 @@ import { readInvoiceFile } from '@/lib/storage'
 
 const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp']
 
-export async function POST(_req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   try {
     const ctx = await getContext()
     const tenantId = requireTenant(ctx)
@@ -31,9 +36,6 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
     if (!invoice) throw new ApiError(404, 'Rechnung nicht gefunden.')
     await requireInvoiceContentAccess(ctx, invoice.basketId)
     if (!invoice.fileName) throw new ApiError(404, 'Kein Beleg vorhanden.')
-    if (invoice.encrypted) {
-      throw new ApiError(403, 'Bei verschlüsselten Belegen nicht verfügbar (Zero-Knowledge).')
-    }
     if (invoice.docFormat && EINVOICE_FORMATS.includes(invoice.docFormat as (typeof EINVOICE_FORMATS)[number])) {
       throw new ApiError(400, 'ZUGFeRD/XRechnung wurden bereits strukturiert erkannt — KI-Erkennung nicht nötig.')
     }
@@ -43,7 +45,17 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
       throw new ApiError(400, 'KI-Erkennung funktioniert nur bei Foto-Belegen (PNG/JPG/WebP) oder PDF.')
     }
 
-    const buffer = await readInvoiceFile(tenantId, invoice.fileName)
+    let buffer: Buffer
+    if (invoice.encrypted) {
+      const form = await req.formData().catch(() => null)
+      const file = form?.get('file')
+      if (!(file instanceof File) || file.size === 0) {
+        throw new ApiError(400, 'Verschlüsselter Beleg — bitte im Browser entschlüsseln lassen (Passphrase oben eingeben) und erneut versuchen.')
+      }
+      buffer = Buffer.from(await file.arrayBuffer())
+    } else {
+      buffer = await readInvoiceFile(tenantId, invoice.fileName)
+    }
     let base64: string
     let mimeType: string
     if (isPdf) {

@@ -305,62 +305,68 @@ export function BasketAdmin({
               )}
             </div>
 
-            <div>
-              <label className="dp-label mb-1 flex items-center gap-2">
-                <input type="checkbox" className="accent-[var(--accent)]" checked={active.notificationEnabled}
-                  disabled={busy}
-                  onChange={(e) => call(`/api/admin/baskets/${active.id}`, 'PATCH', {
-                    notificationEnabled: e.target.checked,
-                    notificationIntervalHours: active.notificationIntervalHours ?? 24,
-                  })} />
-                Benachrichtigung einschalten für Mitarbeiter
-              </label>
-              {active.notificationEnabled && (
-                <p className="mb-2 flex items-center gap-2 text-xs text-gray-600">
-                  Sammel-E-Mail alle
-                  <input type="number" min={1} max={720} className="dp-input !w-20 !py-1 text-xs"
-                    defaultValue={active.notificationIntervalHours ?? 24} disabled={busy}
-                    onBlur={(e) => {
-                      const hours = Math.max(1, Number(e.target.value) || 24)
-                      call(`/api/admin/baskets/${active.id}`, 'PATCH', { notificationIntervalHours: hours })
-                    }} />
-                  Stunde(n)
-                </p>
-              )}
-              <div className="flex flex-wrap gap-1.5">
-                {active.members.length === 0 && <span className="text-xs text-gray-400">Noch niemand ausgewählt</span>}
-                {active.members.map((m) => (
-                  <span key={m.id} className="flex items-center gap-1 rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs text-[var(--accent)]">
-                    {m.email}
-                    <button className="ml-1 text-[var(--danger)]" disabled={busy}
-                      onClick={() => call(`/api/admin/baskets/${active.id}/members`, 'DELETE', { userId: m.id })}>
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-              {allUsers.filter((u) => !active.members.some((m) => m.id === u.id)).length > 0 && (
-                <div className="mt-2 flex items-center gap-2">
-                  <select className="dp-input !w-auto !py-1 text-xs"
-                    value={addUserFor[active.id] ?? ''}
-                    onChange={(e) => setAddUserFor((s) => ({ ...s, [active.id]: e.target.value }))}>
-                    <option value="">Mitarbeiter auswählen…</option>
-                    {allUsers.filter((u) => !active.members.some((m) => m.id === u.id)).map((u) => (
-                      <option key={u.id} value={u.id}>{u.email}</option>
-                    ))}
-                  </select>
-                  <button className="btn-secondary !px-2 !py-1 text-xs" disabled={busy || !addUserFor[active.id]}
-                    onClick={async () => {
-                      const userId = addUserFor[active.id]
-                      if (!userId) return
-                      await call(`/api/admin/baskets/${active.id}/members`, 'POST', { userId })
-                      setAddUserFor((s) => ({ ...s, [active.id]: '' }))
-                    }}>
-                    Zuordnen
-                  </button>
+            {/* Ablage (ARCHIVE) ist ein fester Endlager-Korb ohne eigene
+                Bearbeitung — eine Erinnerungsmail "X Belege liegen hier"
+                ergibt dort keinen Sinn, die Mitarbeiter-Zuordnung unten dient
+                nur als Empfängerliste für genau diese Mail (Stefan 2026-07-09). */}
+            {active.kind !== 'ARCHIVE' && (
+              <div>
+                <label className="dp-label mb-1 flex items-center gap-2">
+                  <input type="checkbox" className="accent-[var(--accent)]" checked={active.notificationEnabled}
+                    disabled={busy}
+                    onChange={(e) => call(`/api/admin/baskets/${active.id}`, 'PATCH', {
+                      notificationEnabled: e.target.checked,
+                      notificationIntervalHours: active.notificationIntervalHours ?? 24,
+                    })} />
+                  Benachrichtigung einschalten für Mitarbeiter
+                </label>
+                {active.notificationEnabled && (
+                  <p className="mb-2 flex items-center gap-2 text-xs text-gray-600">
+                    Sammel-E-Mail alle
+                    <input type="number" min={1} max={720} className="dp-input !w-20 !py-1 text-xs"
+                      defaultValue={active.notificationIntervalHours ?? 24} disabled={busy}
+                      onBlur={(e) => {
+                        const hours = Math.max(1, Number(e.target.value) || 24)
+                        call(`/api/admin/baskets/${active.id}`, 'PATCH', { notificationIntervalHours: hours })
+                      }} />
+                    Stunde(n)
+                  </p>
+                )}
+                <div className="flex flex-wrap gap-1.5">
+                  {active.members.length === 0 && <span className="text-xs text-gray-400">Noch niemand ausgewählt</span>}
+                  {active.members.map((m) => (
+                    <span key={m.id} className="flex items-center gap-1 rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs text-[var(--accent)]">
+                      {m.email}
+                      <button className="ml-1 text-[var(--danger)]" disabled={busy}
+                        onClick={() => call(`/api/admin/baskets/${active.id}/members`, 'DELETE', { userId: m.id })}>
+                        ×
+                      </button>
+                    </span>
+                  ))}
                 </div>
-              )}
-            </div>
+                {allUsers.filter((u) => !active.members.some((m) => m.id === u.id)).length > 0 && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <select className="dp-input !w-auto !py-1 text-xs"
+                      value={addUserFor[active.id] ?? ''}
+                      onChange={(e) => setAddUserFor((s) => ({ ...s, [active.id]: e.target.value }))}>
+                      <option value="">Mitarbeiter auswählen…</option>
+                      {allUsers.filter((u) => !active.members.some((m) => m.id === u.id)).map((u) => (
+                        <option key={u.id} value={u.id}>{u.email}</option>
+                      ))}
+                    </select>
+                    <button className="btn-secondary !px-2 !py-1 text-xs" disabled={busy || !addUserFor[active.id]}
+                      onClick={async () => {
+                        const userId = addUserFor[active.id]
+                        if (!userId) return
+                        await call(`/api/admin/baskets/${active.id}/members`, 'POST', { userId })
+                        setAddUserFor((s) => ({ ...s, [active.id]: '' }))
+                      }}>
+                      Zuordnen
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

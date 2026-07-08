@@ -67,6 +67,14 @@ export default function MailinPage() {
               diese Adresse ein — alles Weitere passiert automatisch. Rechnungen als PDF- oder
               Bild-Anhang werden als Beleg angelegt.
             </p>
+            <p className="mt-2 rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-strong)]"
+              title="Empfehlung: Weiterleitung statt direkter Weitergabe">
+              Bitte geben Sie diese Adresse nicht direkt an Lieferanten oder sonstige Dritte weiter
+              — richten Sie stattdessen eine einfache Weiterleitung in Ihrem E-Mail-Programm bzw.
+              bei Ihrem E-Mail-Provider dorthin ein. So behalten Sie die alleinige Kontrolle über
+              Ihr Rechnungspostfach. Geben Sie die Adresse dennoch direkt weiter (was technisch
+              funktioniert), übernehmen wir keine Gewähr für deren dauerhafte Verfügbarkeit.
+            </p>
             {!enabled && (
               <p className="mt-2 rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-strong)]">
                 Der automatische Abruf ist derzeit deaktiviert — eingehende Mails werden gesammelt

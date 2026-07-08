@@ -117,4 +117,24 @@ export async function sha256Hex(data: ArrayBuffer): Promise<string> {
     .join('')
 }
 
+/**
+ * Inhalts-Verschlüsselung (Stefan 2026-07-09): dieselbe DEK wie für die
+ * Beleg-Datei, aber für die strukturierten Rechnungsfelder (Lieferant,
+ * Beträge, Notizen, XML …) statt für die Datei-Bytes — ein JSON-Objekt wird
+ * client-seitig zu einem einzigen AES-GCM-Chiffrat (Base64, IV+Ciphertext,
+ * gleiches Format wie encryptBytes/decryptBytes). Server sieht auch hier nie
+ * den Klartext, nur diesen einen Blob (Invoice.contentEnc).
+ */
+export async function encryptJson(dek: CryptoKey, value: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(value))
+  const enc = await encryptBytes(dek, bytes.buffer as ArrayBuffer)
+  return b64encode(enc)
+}
+
+export async function decryptJson<T = Record<string, unknown>>(dek: CryptoKey, blobB64: string): Promise<T> {
+  const bytes = b64decode(blobB64)
+  const plain = await decryptBytes(dek, bytes.buffer as ArrayBuffer)
+  return JSON.parse(new TextDecoder().decode(plain)) as T
+}
+
 export { b64encode, b64decode }

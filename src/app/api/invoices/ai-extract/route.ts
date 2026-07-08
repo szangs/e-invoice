@@ -2,10 +2,12 @@
 // scannen" (Foto) als auch beim elektronischen Hochladen einer "nackten" PDF
 // (kein ZUGFeRD/XRechnung, siehe RE02a-Formular: Format wird dort sofort nach
 // Dateiauswahl per /api/invoices/detect-format erkannt). Serverseitig
-// erzwungen: nur wenn der Mandant KI-Funktionen erlaubt UND keine
-// Beleg-Verschlüsselung aktiv ist — sonst dürfte der Klartext nie an einen
-// externen KI-Anbieter gehen (Zero-Knowledge). PDFs werden vor dem Versand an
-// die Vision-KI serverseitig zu einem Bild gerastert (lib/pdfRaster.ts).
+// erzwungen: nur wenn der Mandant KI-Funktionen erlaubt. Die Datei kommt hier
+// ohnehin direkt vom Client (noch vor jeder Verschlüsselung/Speicherung) —
+// wird nur transient an den KI-Anbieter weitergereicht, nie persistiert oder
+// geloggt (Stefan 2026-07-09: auch bei aktiver Beleg-Verschlüsselung nutzbar,
+// siehe /api/ai/config). PDFs werden vor dem Versand an die Vision-KI
+// serverseitig zu einem Bild gerastert (lib/pdfRaster.ts).
 import { NextRequest, NextResponse } from 'next/server'
 import { jsonError } from '@/lib/api'
 import { extractInvoiceFromImage } from '@/lib/aiExtract'
@@ -22,9 +24,6 @@ export async function POST(req: NextRequest) {
     const tenantId = requireTenant(ctx)
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } })
     if (!tenant?.aiAllowed) throw new ApiError(403, 'KI-Funktionen sind für Ihren Mandanten deaktiviert.')
-    if (tenant.encryptionEnabled) {
-      throw new ApiError(403, 'Bei aktiver Beleg-Verschlüsselung nicht verfügbar (Zero-Knowledge).')
-    }
     const form = await req.formData()
     const file = form.get('file')
     if (!(file instanceof File) || file.size === 0) throw new ApiError(400, 'Keine Datei erhalten.')

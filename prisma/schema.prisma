@@ -439,6 +439,22 @@ model Invoice {
   mimeType      String?
   encrypted     Boolean @default(false) // Datei liegt als Chiffrat (IV + AES-GCM)
   encOrigMime   String? // ursprünglicher MIME-Typ (für Anzeige nach Entschlüsselung)
+  // Inhalts-Verschlüsselung (Stefan 2026-07-09): bei aktiver Mandanten-
+  // Verschlüsselung wird NICHT mehr nur die Beleg-Datei, sondern auch der
+  // inhaltliche Teil der Rechnungsdaten client-seitig verschlüsselt — Server
+  // sieht auch hier nur Chiffrat. contentEnc enthält ein einziges AES-GCM-
+  // Chiffrat (Base64, IV+Ciphertext, wie bei der Datei) eines JSON-Objekts
+  // mit { vendor, invoiceNumber, amountNet, amountTax, amountGross, currency,
+  // tags, notes, xmlData }. Die gleichnamigen Einzelspalten bleiben bei
+  // verschlüsselten Rechnungen leer/Platzhalter (vendor bekommt einen festen
+  // Platzhalter-Text statt NULL, da NOT NULL) — NICHT der wahre Inhalt.
+  // Workflow-Felder (dueDate, status, checkXxxAt/By, directDebitByVendor)
+  // bleiben bewusst im Klartext, damit Fälligkeits-Erinnerungen, Körbe-Zähler
+  // und die Rechnungsprüfung serverseitig weiter funktionieren. Suche/
+  // Sortierung nach Lieferant/Beträgen sowie der DATEV-Export müssen für
+  // verschlüsselte Mandanten client-seitig laufen (Folgearbeit, siehe Task
+  // #101/#102) — hier wird zunächst nur das Datenmodell dafür vorbereitet.
+  contentEnc    String?
   // Dubletten-Prüfung: Datei-Hash + Verweis auf das erkannte Original
   fileHash      String? // SHA-256 der Beleg-Datei
   duplicateOfId String? // gesetzt = als Dublette erkannt

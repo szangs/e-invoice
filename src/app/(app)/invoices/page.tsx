@@ -1,22 +1,17 @@
 // Rechnungsliste mit Suche, Statusfilter und CSV-Export
 import { InvoiceStatus, Prisma } from '@prisma/client'
-import { format } from 'date-fns'
-import { de } from 'date-fns/locale'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
-import { FileLink } from '@/components/crypto/FileLink'
+import { EncryptionUnlockBanner } from '@/components/crypto/EncryptionUnlockBanner'
 import { BasketStrip } from '@/components/baskets/BasketStrip'
 import { getBasketRightMap, RIGHT_RANK } from '@/lib/basketRights'
 import { ensureSystemBaskets, getBasketCounts, sortBaskets } from '@/lib/baskets'
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
-import { formatAmount, STATUS_LABELS } from '@/lib/invoices'
-import { CheckBadges } from './CheckBadges'
+import { STATUS_LABELS, toDTO } from '@/lib/invoices'
 import { DatevExportButton } from './DatevExportButton'
-import { DeleteInvoiceButton } from './DeleteInvoiceButton'
-import { DraggableInvoiceRow } from './DraggableInvoiceRow'
 import { InterfaceRequestForm } from './InterfaceRequestForm'
-import { RestoreButton } from './RestoreButton'
+import { CONTENT_SORT_FIELDS, InvoiceRows, type InvoiceRowData } from './InvoiceRows'
 
 export const dynamic = 'force-dynamic'
 
@@ -59,17 +54,28 @@ export default async function InvoicesPage({
   const sortDir: 'asc' | 'desc' = searchParams.dir === 'asc' ? 'asc' : 'desc'
   const sortOrderBy = searchParams.sort ? orderByFor(searchParams.sort, sortDir) : null
   const sortField = sortOrderBy ? searchParams.sort ?? null : null
-  const orderBy: Prisma.InvoiceOrderByWithRelationInput[] = sortOrderBy
-    ? [sortOrderBy]
-    : [{ invoiceDate: 'desc' }, { createdAt: 'desc' }]
   // Körbe zuerst laden — "Alle Körbe" gibt es nicht mehr (Stefan 2026-07-08):
   // die Liste zeigt immer genau einen Korb, ohne Auswahl fällt sie auf den
   // Eingangskorb zurück (dort landet jede neue Rechnung ohnehin zuerst).
-  const [basketsRaw, basketCounts, rightMap] = await Promise.all([
+  const [basketsRaw, basketCounts, rightMap, tenantRow] = await Promise.all([
     prisma.basket.findMany({ where: { tenantId, deletedAt: null } }),
     getBasketCounts(tenantId, ctx.userId),
     getBasketRightMap(tenantId, ctx.userId, ctx.role),
+    prisma.tenant.findUnique({ where: { id: tenantId }, select: { datevFibuEmail: true, encryptionEnabled: true } }),
   ])
+  const tenantEncryptionEnabled = Boolean(tenantRow?.encryptionEnabled)
+  // Suche/Sortierung bei Inhalts-Verschlüsselung (Stefan 2026-07-09, #109):
+  // Lieferant/Nummer/Beträge stehen bei verschlüsselten Mandanten nur als
+  // Platzhalter/null in der DB — SQL-Suche/-Sortierung nach diesen Feldern
+  // würde falsche Ergebnisse liefern. Für solche Mandanten wird die
+  // SQL-seitige Suche/Sortierung nach diesen Feldern deshalb übersprungen;
+  // InvoiceRows.tsx übernimmt sie stattdessen client-seitig nach dem
+  // Entschlüsseln der (max. 200) geladenen Zeilen.
+  const sortIsContentField = sortField !== null && CONTENT_SORT_FIELDS.has(sortField)
+  const effectiveSortOrderBy = tenantEncryptionEnabled && sortIsContentField ? null : sortOrderBy
+  const orderBy: Prisma.InvoiceOrderByWithRelationInput[] = effectiveSortOrderBy
+    ? [effectiveSortOrderBy]
+    : [{ invoiceDate: 'desc' }, { createdAt: 'desc' }]
   const baskets = sortBaskets(basketsRaw)
   const basketById = new Map(baskets.map((b) => [b.id, b]))
   const inboxBasket = baskets.find((b) => b.kind === 'INBOX') ?? null
@@ -123,7 +129,10 @@ export default async function InvoicesPage({
     ...(hideDuplicates ? { duplicateOfId: null } : {}),
     ...(status ? { status } : {}),
     ...(basketFilter ? { basketId: basketFilter } : {}),
-    ...(q
+    // Bei verschlüsselten Mandanten stehen vendor/invoiceNumber/tags nur als
+    // Platzhalter/null in der DB — die SQL-Suche würde nie etwas finden.
+    // InvoiceRows.tsx übernimmt die Suche in dem Fall stattdessen client-seitig.
+    ...(q && !tenantEncryptionEnabled
       ? {
           OR: [
             { vendor: { contains: q, mode: 'insensitive' } },
@@ -139,27 +148,25 @@ export default async function InvoicesPage({
   ])
   // Zähler + Fibu-Mail-Konfiguration für den DATEV-Export-Button — nur relevant im Übergabekorb
   let datevExportCount = 0
-  let fibuEmailConfigured = false
-  let tenantEncryptionEnabled = false
+  const fibuEmailConfigured = Boolean(tenantRow?.datevFibuEmail)
   if (activeBasket?.kind === 'HANDOVER') {
-    const [count, tenantRow] = await Promise.all([
-      prisma.invoice.count({
-        where: {
-          tenantId,
-          basketId: activeBasket.id,
-          deletedAt: null,
-          checkAccountingAt: null,
-          amountGross: { not: null },
-          checkElectronicAt: { not: null },
-          checkFormalAt: { not: null },
-          checkSubstantiveAt: { not: null },
-        },
-      }),
-      prisma.tenant.findUnique({ where: { id: tenantId }, select: { datevFibuEmail: true, encryptionEnabled: true } }),
-    ])
-    datevExportCount = count
-    fibuEmailConfigured = Boolean(tenantRow?.datevFibuEmail)
-    tenantEncryptionEnabled = Boolean(tenantRow?.encryptionEnabled)
+    // Bei verschlüsselten Mandanten ist amountGross serverseitig immer null
+    // (der Betrag steckt nur noch in contentEnc) — der Zähler ist hier daher
+    // nur eine Obergrenze (vollständig geprüft, noch nicht übergeben); die
+    // genaue Zahl entscheidet sich erst nach dem Entschlüsseln im Browser
+    // beim Klick auf den Export-Button (siehe DatevExportButton.tsx).
+    datevExportCount = await prisma.invoice.count({
+      where: {
+        tenantId,
+        basketId: activeBasket.id,
+        deletedAt: null,
+        checkAccountingAt: null,
+        ...(tenantEncryptionEnabled ? {} : { amountGross: { not: null } }),
+        checkElectronicAt: { not: null },
+        checkFormalAt: { not: null },
+        checkSubstantiveAt: { not: null },
+      },
+    })
   }
 
   // Ungelesene, an mich adressierte Nachrichten (Stefan 2026-07-08) — kleiner
@@ -195,6 +202,17 @@ export default async function InvoicesPage({
     }
   }
 
+  // Serialisierte Zeilen für die client-seitige Tabelle (InvoiceRows.tsx) —
+  // übernimmt Anzeige sowie (bei verschlüsselten Mandanten) Suche/Sortierung
+  // nach Lieferant/Nummer/Beträgen (Stefan 2026-07-09, #109).
+  const invoiceRows: InvoiceRowData[] = invoices.map((i) => ({
+    ...toDTO(i),
+    unreadNote: unreadNoteInvoiceIds.has(i.id),
+    pendingApprovalTitle: pendingByInvoice.has(i.id)
+      ? `Vier-Augen-Freigabe nach „${basketById.get(pendingByInvoice.get(i.id)!.targetBasketId)?.name ?? '?'}“ ausstehend (${pendingByInvoice.get(i.id)!.count}/2) — bisher: ${(approverEmailsByInvoice.get(i.id) ?? []).join(', ')}`
+      : null,
+  }))
+
   const exportUrl = `/api/invoices/export?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`
   const trashParams = new URLSearchParams({ ...baseParams, ...(showTrash ? {} : { trash: '1' }) })
   const trashHref = `/invoices?${trashParams.toString()}`
@@ -217,6 +235,7 @@ export default async function InvoicesPage({
             dueSoon: basketCounts[b.id]?.dueSoon ?? 0,
             overdue: basketCounts[b.id]?.overdue ?? 0,
             unreadNotes: basketCounts[b.id]?.unreadNotes ?? 0,
+            readyForHandover: basketCounts[b.id]?.readyForHandover ?? 0,
           }))}
           activeBasketId={basketFilter ?? null}
           basePath="/invoices"
@@ -233,6 +252,11 @@ export default async function InvoicesPage({
           </label>
           <input id="q" name="q" className="dp-input mt-1" defaultValue={q}
             title="Durchsucht Lieferant, Rechnungsnummer und Tags gleichzeitig" />
+          {tenantEncryptionEnabled && (
+            <p className="mt-1 text-[10px] text-gray-400">
+              Bei Verschlüsselung wirkt die Suche erst, sobald oben die Passphrase eingegeben wurde.
+            </p>
+          )}
         </div>
         <div>
           <label className="dp-label" htmlFor="status">Status</label>
@@ -295,6 +319,7 @@ export default async function InvoicesPage({
           Kein Zugriff auf einen Korb — bitte beim Mandanten-Admin die Korb-Rechte für Ihre Rolle einrichten lassen.
         </p>
       )}
+      {invoices.some((i) => i.contentEnc) && <EncryptionUnlockBanner />}
 
       {/* Korb-Name gut lesbar über der Liste statt einer eigenen Spalte
           (Stefan 2026-07-09) — die Liste zeigt ohnehin immer nur die Belege
@@ -326,131 +351,17 @@ export default async function InvoicesPage({
             </tr>
           </thead>
           <tbody>
-            {invoices.map((i) => (
-              <DraggableInvoiceRow key={i.id} invoiceId={i.id} className="dp-tr" disabled={showTrash || !canMove}>
-                <td className="dp-td font-mono text-[11px] text-gray-500">{i.docId ?? '—'}</td>
-                <td className="dp-td">
-                  <Link className="font-medium text-[var(--accent)] hover:underline" href={`/invoices/${i.id}`}>
-                    {i.vendor}
-                  </Link>
-                  {unreadNoteInvoiceIds.has(i.id) && (
-                    <span className="ml-1.5" title="Ungelesene Nachricht an Sie — Rechnung öffnen zum Lesen">💬</span>
-                  )}
-                  {pendingByInvoice.has(i.id) && (
-                    <span
-                      className="ml-1.5 rounded-full bg-[var(--warn-bg)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--warn-strong)]"
-                      title={`Vier-Augen-Freigabe nach „${basketById.get(pendingByInvoice.get(i.id)!.targetBasketId)?.name ?? '?'}“ ausstehend (${pendingByInvoice.get(i.id)!.count}/2) — bisher: ${(approverEmailsByInvoice.get(i.id) ?? []).join(', ')}`}
-                    >
-                      ⏳ Freigabe ausstehend
-                    </span>
-                  )}
-                  {i.duplicateOfId && (
-                    <span className="ml-1.5 rounded-full bg-[var(--warn-bg)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--warn-strong)]">
-                      Dublette
-                    </span>
-                  )}
-                  {i.tags && <p className="text-[10px] text-gray-400">{i.tags}</p>}
-                </td>
-                <td className="dp-td font-mono text-xs">{i.invoiceNumber ?? '—'}</td>
-                <td className="dp-td text-xs">{i.invoiceDate ? format(i.invoiceDate, 'dd.MM.yyyy', { locale: de }) : '—'}</td>
-                <td className="dp-td text-xs">
-                  {i.directDebitByVendor
-                    ? <span className="text-gray-500" title="Lieferant bucht per Lastschrift/Abbuchung selbst ab">wird abgebucht</span>
-                    : i.dueDate ? format(i.dueDate, 'dd.MM.yyyy', { locale: de }) : '—'}
-                </td>
-                <td className="dp-td whitespace-nowrap text-xs" title="Eingang in E-Invoice">
-                  {format(i.createdAt, 'dd.MM.yyyy HH:mm', { locale: de })}
-                </td>
-                <td className="dp-td">{formatAmount(i.amountNet ? Number(i.amountNet) : null, i.currency)}</td>
-                <td className="dp-td">{formatAmount(i.amountGross ? Number(i.amountGross) : null, i.currency)}</td>
-                <td className="dp-td">
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                    i.status === 'REJECTED'
-                      ? 'bg-red-50 text-[var(--danger)]'
-                      : i.status === 'NEW'
-                        ? 'bg-[var(--warn-bg)] text-[var(--warn-strong)]'
-                        : 'bg-[var(--accent-bg)] text-[var(--accent)]'
-                  }`}>{STATUS_LABELS[i.status]}</span>
-                </td>
-                <td className="dp-td">
-                  <div className="flex flex-col items-start gap-0.5">
-                    {i.docFormat === 'ZUGFERD' || i.docFormat?.startsWith('XRECHNUNG') ? (
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                          i.validationOk === false
-                            ? 'bg-red-50 text-[var(--danger)]'
-                            : 'bg-[var(--accent-bg)] text-[var(--accent)]'
-                        }`}
-                        title={i.validationIssues ? `Fehlend: ${i.validationIssues}` : 'Pflichtangaben vollständig'}
-                      >
-                        {i.docFormat === 'ZUGFERD' ? 'ZUGFeRD' : 'XRechnung'}
-                        {i.validationOk === false ? ' ✗' : i.validationOk ? ' ✓' : ''}
-                      </span>
-                    ) : i.encrypted ? (
-                      <span className="text-[10px] text-gray-400" title="Inhalt verschlüsselt — nur der Kunde kann ihn lesen">🔒</span>
-                    ) : i.source === 'SCAN' ? (
-                      <span className="rounded-full bg-[var(--surface-muted)] px-2 py-0.5 text-[10px] font-semibold text-gray-600" title="Papierrechnung gescannt/fotografiert">
-                        📷 Scan
-                      </span>
-                    ) : i.fileName ? (
-                      <span className="text-[10px] text-gray-400">nur PDF</span>
-                    ) : (
-                      <span className="text-[10px] text-gray-400">—</span>
-                    )}
-                    {i.source === 'SCAN' && (
-                      <span
-                        className={`text-[10px] ${i.aiAssisted ? 'text-[var(--accent)]' : 'text-gray-400'}`}
-                        title={i.aiAssisted ? 'Felder per KI übernommen — bitte trotzdem gegenprüfen' : 'Felder von Hand erfasst'}
-                      >
-                        {i.aiAssisted ? '✨ KI' : '✋ manuell'}
-                      </span>
-                    )}
-                  </div>
-                </td>
-                {!showTrash && (
-                  <td className="dp-td">
-                    <CheckBadges
-                      invoiceId={i.id}
-                      electronicAt={i.checkElectronicAt ? i.checkElectronicAt.toISOString() : null}
-                      electronicBy={i.checkElectronicBy}
-                      formalAt={i.checkFormalAt ? i.checkFormalAt.toISOString() : null}
-                      formalBy={i.checkFormalBy}
-                      substantiveAt={i.checkSubstantiveAt ? i.checkSubstantiveAt.toISOString() : null}
-                      substantiveBy={i.checkSubstantiveBy}
-                      accountingAt={i.checkAccountingAt ? i.checkAccountingAt.toISOString() : null}
-                      accountingBy={i.checkAccountingBy}
-                      canApprove={canApprove}
-                      canAccounting={canHandover}
-                    />
-                  </td>
-                )}
-                <td className="dp-td text-xs">
-                  {i.fileName ? (
-                    <FileLink invoiceId={i.id} encrypted={i.encrypted} origMime={i.encOrigMime} />
-                  ) : '—'}
-                </td>
-                {showTrash ? (
-                  <td className="dp-td">
-                    <RestoreButton invoiceId={i.id} />
-                  </td>
-                ) : (
-                  <td className="dp-td">
-                    {canApprove ? (
-                      <DeleteInvoiceButton invoiceId={i.id} />
-                    ) : (
-                      <span className="text-[10px] text-gray-400" title="Kein Recht zum Löschen in diesem Korb">kein Zugriff</span>
-                    )}
-                  </td>
-                )}
-              </DraggableInvoiceRow>
-            ))}
-            {invoices.length === 0 && (
-              <tr>
-                <td className="dp-td py-8 text-center text-gray-400" colSpan={showTrash ? 12 : 13}>
-                  {showTrash ? 'Papierkorb ist leer.' : 'Keine Rechnungen gefunden.'}
-                </td>
-              </tr>
-            )}
+            <InvoiceRows
+              rows={invoiceRows}
+              showTrash={showTrash}
+              canMove={canMove}
+              canApprove={canApprove}
+              canHandover={canHandover}
+              q={q}
+              sortField={sortField}
+              sortDir={sortDir}
+              encryptionEnabled={tenantEncryptionEnabled}
+            />
           </tbody>
         </table>
       </div>

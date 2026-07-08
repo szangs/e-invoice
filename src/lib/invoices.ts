@@ -1,6 +1,13 @@
 // Gemeinsame Helfer für das Rechnungsmodul
 import { Invoice, InvoiceStatus } from '@prisma/client'
 
+// Inhalts-Verschlüsselung (Stefan 2026-07-09): fester Platzhalter für die
+// NOT-NULL-Spalte vendor, wenn der echte Lieferant nur noch verschlüsselt in
+// contentEnc steckt — an einer Stelle definiert, da sowohl die Anlage- als
+// auch die Bearbeiten-Route ihn brauchen (siehe api/invoices/route.ts und
+// api/invoices/[id]/route.ts).
+export const CONTENT_ENC_VENDOR_PLACEHOLDER = '🔒 Verschlüsselt'
+
 export const STATUS_LABELS: Record<InvoiceStatus, string> = {
   NEW: 'Neu',
   CHECKED: 'Geprüft',
@@ -28,6 +35,8 @@ export type InvoiceDTO = {
   origMime: string | null
   mimeType: string | null
   docFormat: string | null
+  validationOk: boolean | null
+  validationIssues: string | null
   duplicateOfId: string | null
   source: string
   aiAssisted: boolean
@@ -44,6 +53,11 @@ export type InvoiceDTO = {
   deletedBy: string | null
   createdAt: string
   basketId: string | null
+  // Inhalts-Verschlüsselung (Stefan 2026-07-09): gesetzt = vendor/invoice
+  // Number/amount*/currency/tags/notes oben sind nur Platzhalter/leer, der
+  // echte Inhalt steckt hier drin (AES-GCM, Base64) und muss client-seitig
+  // entschlüsselt werden — siehe components/crypto/useDecryptedContent.ts.
+  contentEnc: string | null
 }
 
 export function toDTO(inv: Invoice): InvoiceDTO {
@@ -67,6 +81,8 @@ export function toDTO(inv: Invoice): InvoiceDTO {
     origMime: inv.encOrigMime,
     mimeType: inv.mimeType,
     docFormat: inv.docFormat,
+    validationOk: inv.validationOk,
+    validationIssues: inv.validationIssues,
     duplicateOfId: inv.duplicateOfId,
     source: inv.source,
     aiAssisted: inv.aiAssisted,
@@ -83,6 +99,7 @@ export function toDTO(inv: Invoice): InvoiceDTO {
     deletedBy: inv.deletedBy,
     createdAt: inv.createdAt.toISOString(),
     basketId: inv.basketId,
+    contentEnc: inv.contentEnc,
   }
 }
 

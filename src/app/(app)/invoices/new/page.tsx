@@ -14,7 +14,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { encryptBytes, sha256Hex } from '@/lib/clientCrypto'
+import { encryptBytes, encryptJson, sha256Hex } from '@/lib/clientCrypto'
 import { EINVOICE_FORMATS, FORMAT_LABELS, type DocFormat } from '@/lib/docFormat'
 import { fetchEncConfig, getCachedDek, unlockWithPassphrase } from '@/lib/keyStore'
 
@@ -74,7 +74,12 @@ export default function NewInvoicePage() {
   }, [])
 
   const isEInvoice = detectedFormat ? (EINVOICE_FORMATS as string[]).includes(detectedFormat) : false
-  const canOfferAi = Boolean(file) && !encEnabled && detectedFormat !== null && !isEInvoice
+  // Bei aktiver Verschlüsselung wird die Formaterkennung übersprungen (s. u.),
+  // isEInvoice ist dann immer false — die Datei selbst ist an dieser Stelle
+  // aber noch unverschlüsselter Klartext im Browser (Verschlüsselung passiert
+  // erst beim Speichern), KI-Erkennung ist also trotzdem möglich (Stefan
+  // 2026-07-09) — nur eben ohne die Format-Sofort-Erkennung als Vorstufe.
+  const canOfferAi = Boolean(file) && !isEInvoice && (encEnabled || detectedFormat !== null)
 
   async function onFileSelected(picked: File | null) {
     setFile(picked)
@@ -177,16 +182,18 @@ export default function NewInvoicePage() {
 
   async function checkDuplicateFirst(fileHash: string | null): Promise<boolean> {
     // Dubletten-Vorabprüfung (Stefan 2026-07-08): fragt VOR dem Speichern nach,
-    // statt eine vermutliche Dublette stillschweigend zu markieren.
-    if (!fileHash && !(f.vendor && f.invoiceNumber)) return true
+    // statt eine vermutliche Dublette stillschweigend zu markieren. Bei
+    // aktiver Verschlüsselung gehen Lieferant/Nummer nicht im Klartext an den
+    // Server — nur der (schon vor dem Verschlüsseln gebildete) Datei-Hash zählt.
+    if (!fileHash && !(!encEnabled && f.vendor && f.invoiceNumber)) return true
     try {
       const res = await fetch('/api/invoices/check-duplicate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fileHash: fileHash ?? undefined,
-          vendor: f.vendor || undefined,
-          invoiceNumber: f.invoiceNumber || undefined,
+          vendor: !encEnabled && f.vendor ? f.vendor : undefined,
+          invoiceNumber: !encEnabled && f.invoiceNumber ? f.invoiceNumber : undefined,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -217,23 +224,42 @@ export default function NewInvoicePage() {
       if (!(await checkDuplicateFirst(plainHash))) return
 
       const fd = new FormData()
-      const { directDebitByVendor, ...textFields } = f
-      Object.entries(textFields).forEach(([k, v]) => fd.append(k, v))
+      const { directDebitByVendor, invoiceDate, dueDate, ...contentFields } = f
+      // Fälligkeit/Rechnungsdatum bleiben immer Klartext (Workflow-Felder —
+      // Sortierung, Fälligkeits-Erinnerungen, Körbe-Zähler laufen serverseitig).
+      if (invoiceDate) fd.append('invoiceDate', invoiceDate)
+      if (dueDate) fd.append('dueDate', dueDate)
       if (usedAi) fd.append('aiAssisted', '1')
       if (directDebitByVendor) fd.append('directDebitByVendor', '1')
-      if (file) {
-        if (encEnabled) {
-          // Beleg im Browser verschlüsseln — Schlüssel verlässt den Browser nicht
-          let dek = await getCachedDek()
-          if (!dek) {
-            try {
-              dek = await unlockWithPassphrase(passphrase)
-              setLocked(false)
-            } catch (err) {
-              setError(err instanceof Error ? err.message : 'Passphrase falsch.')
-              return
-            }
+
+      // Bei aktiver Verschlüsselung brauchen wir den Schlüssel für Datei UND
+      // Inhaltsfelder — einmal vorab entsperren statt doppelt zu fragen.
+      let dek: Awaited<ReturnType<typeof getCachedDek>> = null
+      if (encEnabled) {
+        dek = await getCachedDek()
+        if (!dek) {
+          try {
+            dek = await unlockWithPassphrase(passphrase)
+            setLocked(false)
+          } catch (err) {
+            setError(err instanceof Error ? err.message : 'Passphrase falsch.')
+            return
           }
+        }
+      }
+
+      if (encEnabled && dek) {
+        // Inhaltsfelder (Lieferant, Nummer, Beträge, Währung, Tags, Notizen) zu
+        // einem einzigen Chiffrat zusammenfassen — Server bekommt nur das,
+        // die Einzelspalten bleiben leer/Platzhalter (siehe /api/invoices).
+        fd.append('contentEnc', await encryptJson(dek, contentFields))
+      } else {
+        Object.entries(contentFields).forEach(([k, v]) => fd.append(k, v))
+      }
+
+      if (file) {
+        if (encEnabled && dek) {
+          // Beleg im Browser verschlüsseln — Schlüssel verlässt den Browser nicht
           const plainBuffer = await file.arrayBuffer()
           const cipher = await encryptBytes(dek, plainBuffer)
           fd.append('file', new Blob([cipher as unknown as BlobPart]), `${file.name}.enc`)
@@ -315,6 +341,13 @@ export default function NewInvoicePage() {
           </button>
           <p className="text-[11px] text-gray-500">
             Liest den Beleg und befüllt die Felder unten inkl. Verschlagwortung — bitte prüfen.
+            {encEnabled && (
+              <span className="block text-[var(--warn-strong)]">
+                ⚠ Der Beleg wird für diese Erkennung an den externen KI-Anbieter gesendet — eine
+                bewusste Ausnahme vom Zero-Knowledge-Grundsatz für diesen einen Schritt, unser Server
+                speichert den Klartext dabei nicht.
+              </span>
+            )}
           </p>
         </div>
       )}

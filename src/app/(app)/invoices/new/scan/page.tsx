@@ -14,7 +14,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
-import { encryptBytes, sha256Hex } from '@/lib/clientCrypto'
+import { encryptBytes, encryptJson, sha256Hex } from '@/lib/clientCrypto'
 import { fetchEncConfig, getCachedDek, unlockWithPassphrase } from '@/lib/keyStore'
 import { DocumentCamera } from './DocumentCamera'
 
@@ -220,16 +220,18 @@ export default function ScanInvoicePage() {
 
   async function checkDuplicateFirst(fileHash: string | null): Promise<boolean> {
     // Dubletten-Vorabprüfung (Stefan 2026-07-08): fragt VOR dem Speichern nach,
-    // statt eine vermutliche Dublette stillschweigend zu markieren.
-    if (!fileHash && !(f.vendor && f.invoiceNumber)) return true
+    // statt eine vermutliche Dublette stillschweigend zu markieren. Bei
+    // aktiver Verschlüsselung gehen Lieferant/Nummer nicht im Klartext an den
+    // Server — nur der (schon vor dem Verschlüsseln gebildete) Datei-Hash zählt.
+    if (!fileHash && !(!encEnabled && f.vendor && f.invoiceNumber)) return true
     try {
       const res = await fetch('/api/invoices/check-duplicate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fileHash: fileHash ?? undefined,
-          vendor: f.vendor || undefined,
-          invoiceNumber: f.invoiceNumber || undefined,
+          vendor: !encEnabled && f.vendor ? f.vendor : undefined,
+          invoiceNumber: !encEnabled && f.invoiceNumber ? f.invoiceNumber : undefined,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -263,13 +265,17 @@ export default function ScanInvoicePage() {
       if (!(await checkDuplicateFirst(plainHash))) return
 
       const fd = new FormData()
-      const { directDebitByVendor, ...textFields } = f
-      Object.entries(textFields).forEach(([k, v]) => fd.append(k, v))
+      const { directDebitByVendor, invoiceDate, dueDate, ...contentFields } = f
+      // Fälligkeit/Rechnungsdatum bleiben immer Klartext (Workflow-Felder).
+      if (invoiceDate) fd.append('invoiceDate', invoiceDate)
+      if (dueDate) fd.append('dueDate', dueDate)
       fd.append('source', 'SCAN')
       if (usedAi) fd.append('aiAssisted', '1')
       if (directDebitByVendor) fd.append('directDebitByVendor', '1')
+
+      let dek: Awaited<ReturnType<typeof getCachedDek>> = null
       if (encEnabled) {
-        let dek = await getCachedDek()
+        dek = await getCachedDek()
         if (!dek) {
           try {
             dek = await unlockWithPassphrase(passphrase)
@@ -279,6 +285,15 @@ export default function ScanInvoicePage() {
             return
           }
         }
+      }
+
+      if (encEnabled && dek) {
+        fd.append('contentEnc', await encryptJson(dek, contentFields))
+      } else {
+        Object.entries(contentFields).forEach(([k, v]) => fd.append(k, v))
+      }
+
+      if (encEnabled && dek) {
         const plainBuffer = await file.arrayBuffer()
         const cipher = await encryptBytes(dek, plainBuffer)
         fd.append('file', new Blob([cipher as unknown as BlobPart]), `${file.name}.enc`)
@@ -402,6 +417,13 @@ export default function ScanInvoicePage() {
             <p className="text-[11px] text-gray-500">
               Liest die erste fotografierte Seite und befüllt die Felder unten inkl. Verschlagwortung
               (Tags) — bitte prüfen und korrigieren.
+              {encEnabled && (
+                <span className="block text-[var(--warn-strong)]">
+                  ⚠ Der Beleg wird für diese Erkennung an den externen KI-Anbieter gesendet — eine
+                  bewusste Ausnahme vom Zero-Knowledge-Grundsatz für diesen einen Schritt, unser
+                  Server speichert den Klartext dabei nicht.
+                </span>
+              )}
             </p>
           </div>
         ) : (

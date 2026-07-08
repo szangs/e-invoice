@@ -5,11 +5,11 @@ import { z } from 'zod'
 import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
 import { alwaysFullAccess, hasBasketRight, requireInvoiceContentAccess } from '@/lib/basketRights'
-import { ensureSystemBaskets } from '@/lib/baskets'
+import { ensureSystemBaskets, requestMove } from '@/lib/baskets'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { EINVOICE_FORMATS } from '@/lib/docFormat'
-import { toDTO } from '@/lib/invoices'
+import { CONTENT_ENC_VENDOR_PLACEHOLDER, toDTO } from '@/lib/invoices'
 
 // Steuerlich relevante Felder — bei ZUGFeRD/XRechnung ist das XML das
 // rechtsverbindliche Original, hier darf die Anzeige nie davon abweichen
@@ -32,6 +32,10 @@ const schema = z.object({
   status: z.nativeEnum(InvoiceStatus).optional(),
   tags: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
+  // Inhalts-Verschlüsselung (Stefan 2026-07-09): ersetzt vendor/invoiceNumber/
+  // amount*/currency/tags/notes oben durch ein einziges Chiffrat — siehe
+  // clientCrypto.ts encryptJson / /invoices/[id]/InvoiceEditForm.tsx.
+  contentEnc: z.string().optional(),
   // Dubletten-Kennzeichnung aufheben ("keine Dublette")
   duplicateOfId: z.null().optional(),
   // Wird gesetzt, wenn beim Speichern zuvor "Mit KI erkennen" genutzt wurde
@@ -87,6 +91,27 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     // ein direkter API-Aufruf darf sie ebenfalls nicht ändern können).
     if ((EINVOICE_FORMATS as string[]).includes(existing.docFormat ?? '')) {
       for (const field of TAX_RELEVANT_FIELDS) delete data[field]
+      // E-Rechnungen lassen sich strukturell nie verschlüsselt anlegen (der
+      // Server muss das XML beim Einlesen lesen können) — ein contentEnc
+      // würde hier nur die GoBD-Sperre der Felder oben umgehen.
+      delete data.contentEnc
+    }
+
+    // Inhalts-Verschlüsselung (Stefan 2026-07-09): wird contentEnc gesetzt,
+    // ersetzt das die einzelnen Klartext-Felder — vendor bekommt den
+    // Platzhalter (NOT NULL), alle anderen content-Felder werden geleert,
+    // damit kein alter Klartext neben dem neuen Chiffrat liegen bleibt (z. B.
+    // wenn eine vorher unverschlüsselte Rechnung jetzt erstmals verschlüsselt
+    // gespeichert wird).
+    if (data.contentEnc) {
+      data.vendor = CONTENT_ENC_VENDOR_PLACEHOLDER
+      data.invoiceNumber = null
+      data.amountNet = null
+      data.amountTax = null
+      data.amountGross = null
+      data.currency = 'EUR'
+      data.tags = null
+      data.notes = null
     }
 
     // Korb-Rechte (Stefan 2026-07-08): "Sachlich freigeben" braucht APPROVE,
@@ -193,7 +218,48 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         ? `Rechnung ${invoice.vendor} ${invoice.invoiceNumber ?? invoice.id} wiederhergestellt`
         : `Rechnung ${invoice.vendor} ${invoice.invoiceNumber ?? invoice.id} geändert`,
     })
-    return NextResponse.json({ invoice: toDTO(invoice) })
+
+    // Automatischer Wechsel in den Übergabekorb (Stefan 2026-07-09): sobald
+    // alle drei Prüf-Häkchen stehen, muss die Rechnung nicht mehr von Hand
+    // (Drag&Drop) dorthin verschoben werden — das war der letzte manuelle
+    // Schritt vor der eigentlichen Fibu-Übergabe (die dort ja bereits
+    // automatisch feuert, siehe effectiveAccounting oben). Nur wenn der
+    // HANDELNDE Nutzer selbst das HANDOVER-Recht auf dem AKTUELLEN Korb hat
+    // (dieselbe Regel wie bei einem manuellen Verschieben) — sonst bleibt die
+    // Rechnung fertig geprüft liegen, bis jemand mit dem passenden Recht sie
+    // verschiebt. Läuft über dieselbe requestMove-Funktion wie Drag&Drop, das
+    // Vier-Augen-Prinzip eines Korbs (falls dort aktiviert) gilt also genauso
+    // — die "Freigabe" wird dann nur als eine von zwei nötigen Stimmen erfasst.
+    let autoMoveApprovalPending: { approvedBy: string[]; approvalsNeeded: number } | null = null
+    // Sichtbare Rückmeldung für den automatischen Wechsel (Stefan 2026-07-09):
+    // vorher verschwand die Zeile beim router.refresh() einfach kommentarlos
+    // aus der Liste — für den Nutzer nicht erkennbar, ob das Absicht war oder
+    // ein Fehler. targetBasketName geht ans UI, das daraus eine kurze Meldung zeigt.
+    let autoMoved: { targetBasketName: string } | null = null
+    if (
+      allPriorChecksDone &&
+      invoice.basketId &&
+      currentBasket?.kind !== 'HANDOVER' &&
+      currentBasket?.kind !== 'ARCHIVE' &&
+      (await hasBasketRight(ctx.userId, ctx.role, invoice.basketId, 'HANDOVER'))
+    ) {
+      try {
+        const { handoverId } = await ensureSystemBaskets(tenantId)
+        const moveResult = await requestMove(tenantId, params.id, handoverId, ctx.userId, ctx.email, ctx.role)
+        if (!moveResult.moved) {
+          autoMoveApprovalPending = { approvedBy: moveResult.approvedBy, approvalsNeeded: moveResult.approvalsNeeded }
+        } else {
+          const handoverBasket = await prisma.basket.findUnique({ where: { id: handoverId }, select: { name: true } })
+          autoMoved = { targetBasketName: handoverBasket?.name ?? 'Übergabekorb' }
+        }
+      } catch {
+        // Automatischer Korb-Wechsel ist eine Zusatzfunktion — falls er aus
+        // irgendeinem Grund fehlschlägt, soll das die eigentliche Häkchen-
+        // Änderung oben (bereits gespeichert) nicht rückgängig machen.
+      }
+    }
+
+    return NextResponse.json({ invoice: toDTO(invoice), autoMoveApprovalPending, autoMoved })
   } catch (e) {
     return jsonError(e)
   }

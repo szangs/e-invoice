@@ -37,15 +37,39 @@ export function CheckBadges({
 }: Props) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
+  // Sichtbare Rückmeldung beim automatischen Wechsel (Stefan 2026-07-09): die
+  // Zeile verschwindet sonst kommentarlos aus der Liste beim router.refresh()
+  // — kurzer, nicht-blockierender Hinweis statt window.alert, damit man
+  // direkt weiterarbeiten kann.
+  const [autoMoveNotice, setAutoMoveNotice] = useState<string | null>(null)
 
   async function toggle(key: 'checkSubstantive' | 'checkAccounting', value: boolean) {
     setBusy(true)
-    await fetch(`/api/invoices/${invoiceId}`, {
+    const res = await fetch(`/api/invoices/${invoiceId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ [key]: value }),
     })
+    const data = await res.json().catch(() => ({}))
     setBusy(false)
+    // Vier-Augen-Korb (Stefan 2026-07-09): wenn alle drei Häkchen stehen,
+    // versucht die Rechnung automatisch in den Übergabekorb zu wechseln — ist
+    // der Ausgangskorb Vier-Augen-gesperrt, zählt das nur als eine von zwei
+    // nötigen Freigaben.
+    if (data?.autoMoveApprovalPending) {
+      window.alert(
+        `Freigabe für automatischen Wechsel in den Übergabekorb erfasst — noch ${data.autoMoveApprovalPending.approvalsNeeded} weitere Freigabe(n) durch einen anderen Mitarbeiter nötig (Vier-Augen-Korb).`,
+      )
+      router.refresh()
+      return
+    }
+    if (data?.autoMoved) {
+      setAutoMoveNotice(`✓ Vollständig geprüft → automatisch in „${data.autoMoved.targetBasketName}“ verschoben`)
+      // Zeile bleibt kurz sichtbar, damit die Meldung gelesen werden kann,
+      // statt sofort aus der Liste zu verschwinden.
+      setTimeout(() => router.refresh(), 1800)
+      return
+    }
     router.refresh()
   }
 

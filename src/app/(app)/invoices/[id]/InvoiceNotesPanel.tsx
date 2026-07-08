@@ -60,7 +60,7 @@ export function InvoiceNotesPanel({
   }
 
   return (
-    <div className="border-t border-[var(--line)] pt-3">
+    <div className="dp-card">
       <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500"
         title="Adressierte Nachricht an einen Kollegen, wichtig für dessen nächsten Bearbeitungsschritt — anders als das freie Notizfeld oben">
         💬 Nachricht an Kollegen

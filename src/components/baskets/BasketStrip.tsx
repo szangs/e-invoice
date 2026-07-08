@@ -21,6 +21,9 @@ export type BasketTile = {
   overdue?: number
   /** Ungelesene, an den aktuellen Nutzer gerichtete Nachrichten in diesem Korb. */
   unreadNotes?: number
+  /** Vollständig geprüft und noch nicht übergeben (Stefan 2026-07-09) — nur im
+   * Übergabekorb angezeigt, dort aussagekräftiger als offen/bearbeitet. */
+  readyForHandover?: number
 }
 
 export function BasketStrip({
@@ -155,7 +158,7 @@ export function BasketStrip({
                 </span>
                 <span className="block text-[11px] text-gray-500">{total} Beleg{total === 1 ? '' : 'e'}</span>
               </span>
-              {b.unprocessed > 0 && (
+              {b.kind !== 'ARCHIVE' && b.unprocessed > 0 && (
                 <span
                   title="Anzahl noch unbearbeiteter Belege"
                   className="ml-auto flex h-6 min-w-[1.5rem] shrink-0 items-center justify-center rounded-full bg-[var(--warn)] px-1.5 text-[11px] font-bold text-white"
@@ -164,14 +167,31 @@ export function BasketStrip({
                 </span>
               )}
             </Link>
-            <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-[var(--surface-muted)]" title={`${pct}% bearbeitet`}>
-              <div className={`h-full rounded-full ${style.barActive} transition-all`} style={{ width: `${pct}%` }} />
-            </div>
-            <p className="mt-1.5 text-[11px] text-gray-500">
-              <span title="Noch keine Vorprüfung/Formalprüfung durchgeführt" className="font-medium text-[var(--warn-strong)]">{b.unprocessed} offen</span>
-              {' · '}
-              <span title="Elektronische Vorprüfung oder Formal richtig bereits abgehakt">{b.processed} bearbeitet</span>
-            </p>
+            {/* Ablage (Stefan 2026-07-09): offen/bearbeitet ergibt hier keinen
+                Sinn mehr — alles liegt schon vollständig geprüft und übergeben,
+                die Beleg-Anzahl oben reicht. Übergabekorb: statt offen/
+                bearbeitet ist "bereit zur Übergabe" die aussagekräftigere Zahl. */}
+            {b.kind === 'HANDOVER' ? (
+              <p className="mt-2 text-[11px]">
+                <span
+                  title="Elektronisch, Formal und Sachlich richtig sind abgehakt — wartet nur noch auf die Übergabe an die Fibu"
+                  className={`font-medium ${(b.readyForHandover ?? 0) > 0 ? 'text-[var(--accent)]' : 'text-gray-400'}`}
+                >
+                  {b.readyForHandover ?? 0} bereit zur Übergabe
+                </span>
+              </p>
+            ) : b.kind !== 'ARCHIVE' && (
+              <>
+                <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-[var(--surface-muted)]" title={`${pct}% bearbeitet`}>
+                  <div className={`h-full rounded-full ${style.barActive} transition-all`} style={{ width: `${pct}%` }} />
+                </div>
+                <p className="mt-1.5 text-[11px] text-gray-500">
+                  <span title="Noch keine Vorprüfung/Formalprüfung durchgeführt" className="font-medium text-[var(--warn-strong)]">{b.unprocessed} offen</span>
+                  {' · '}
+                  <span title="Elektronische Vorprüfung oder Formal richtig bereits abgehakt">{b.processed} bearbeitet</span>
+                </p>
+              </>
+            )}
             {((b.overdue ?? 0) > 0 || (b.dueSoon ?? 0) > 0) && (
               <p className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px]">
                 {(b.overdue ?? 0) > 0 && (

@@ -18,7 +18,7 @@ export function ERechnungView({
 }) {
   const currency = data?.currency ?? 'EUR'
   return (
-    <div className="dp-card max-w-2xl space-y-4">
+    <div className="dp-card space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <span className="rounded-full bg-[var(--accent-bg)] px-2.5 py-1 text-xs font-semibold text-[var(--accent)]">
           {FORMAT_LABELS[format]}
