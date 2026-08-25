@@ -17,6 +17,7 @@ export default async function EditTenantPage({ params }: { params: { id: string 
         id: tenant.id,
         slug: tenant.slug,
         name: tenant.name,
+        legalName: tenant.legalName ?? '',
         contactName: tenant.contactName ?? '',
         contactEmail: tenant.contactEmail ?? '',
         street: tenant.street ?? '',

@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { EncryptionUnlockBanner } from '@/components/crypto/EncryptionUnlockBanner'
 import { BasketStrip } from '@/components/baskets/BasketStrip'
+import { getClosedYears } from '@/lib/auditClosure'
 import { getBasketRightMap, RIGHT_RANK } from '@/lib/basketRights'
 import { ensureSystemBaskets, getBasketCounts, sortBaskets } from '@/lib/baskets'
 import { getContext } from '@/lib/context'
@@ -12,6 +13,7 @@ import { STATUS_LABELS, toDTO } from '@/lib/invoices'
 import { DatevExportButton } from './DatevExportButton'
 import { InterfaceRequestForm } from './InterfaceRequestForm'
 import { CONTENT_SORT_FIELDS, InvoiceRows, type InvoiceRowData } from './InvoiceRows'
+import { BulkActionBar, InvoiceSelectionProvider, SelectAllCheckbox } from './InvoiceSelection'
 
 export const dynamic = 'force-dynamic'
 
@@ -57,11 +59,12 @@ export default async function InvoicesPage({
   // Körbe zuerst laden — "Alle Körbe" gibt es nicht mehr (Stefan 2026-07-08):
   // die Liste zeigt immer genau einen Korb, ohne Auswahl fällt sie auf den
   // Eingangskorb zurück (dort landet jede neue Rechnung ohnehin zuerst).
-  const [basketsRaw, basketCounts, rightMap, tenantRow] = await Promise.all([
+  const [basketsRaw, basketCounts, rightMap, tenantRow, closedYears] = await Promise.all([
     prisma.basket.findMany({ where: { tenantId, deletedAt: null } }),
     getBasketCounts(tenantId, ctx.userId),
     getBasketRightMap(tenantId, ctx.userId, ctx.role),
     prisma.tenant.findUnique({ where: { id: tenantId }, select: { datevFibuEmail: true, encryptionEnabled: true } }),
+    getClosedYears(),
   ])
   const tenantEncryptionEnabled = Boolean(tenantRow?.encryptionEnabled)
   // Suche/Sortierung bei Inhalts-Verschlüsselung (Stefan 2026-07-09, #109):
@@ -211,6 +214,9 @@ export default async function InvoicesPage({
     pendingApprovalTitle: pendingByInvoice.has(i.id)
       ? `Vier-Augen-Freigabe nach „${basketById.get(pendingByInvoice.get(i.id)!.targetBasketId)?.name ?? '?'}“ ausstehend (${pendingByInvoice.get(i.id)!.count}/2) — bisher: ${(approverEmailsByInvoice.get(i.id) ?? []).join(', ')}`
       : null,
+    // Perioden-Abschluss (§18, Stefan 2026-08-25): Beleg-Eingang fällt in ein
+    // bereits abgeschlossenes Jahr → schreibgeschützt (siehe lib/auditClosure.ts).
+    locked: closedYears.has(i.createdAt.getFullYear()),
   }))
 
   const exportUrl = `/api/invoices/export?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`
@@ -242,6 +248,7 @@ export default async function InvoicesPage({
           baseParams={basketBaseParams}
           allowDrop={!showTrash}
           trash={{ href: trashHref, active: showTrash, count: trashCount, canDelete: canApprove }}
+          livePulse={!showTrash}
         />
       </div>
       <form className="dp-card flex flex-wrap items-end gap-3" method="get">
@@ -331,10 +338,24 @@ export default async function InvoicesPage({
         {showTrash ? 'Papierkorb' : activeBasket?.name ?? 'Rechnungen'}
       </h3>
 
+      <InvoiceSelectionProvider>
+      {!showTrash && (
+        <BulkActionBar
+          baskets={visibleBaskets.map((b) => ({ id: b.id, name: b.name }))}
+          currentBasketId={basketFilter ?? null}
+          canMove={canMove}
+          canApprove={canApprove}
+        />
+      )}
       <div className="dp-card overflow-x-auto p-0">
         <table className="w-full min-w-[1120px]">
           <thead>
             <tr className="dp-tr">
+              {!showTrash && (
+                <th className="dp-th w-8">
+                  <SelectAllCheckbox ids={invoiceRows.map((r) => r.id)} />
+                </th>
+              )}
               <SortTh label="Dok-ID" href={sortHref('docId')} arrow={sortArrow('docId')} />
               <SortTh label="Lieferant" href={sortHref('vendor')} arrow={sortArrow('vendor')} />
               <SortTh label="Nummer" href={sortHref('invoiceNumber')} arrow={sortArrow('invoiceNumber')} />
@@ -345,6 +366,8 @@ export default async function InvoicesPage({
               <SortTh label="Brutto" href={sortHref('amountGross')} arrow={sortArrow('amountGross')} />
               <SortTh label="Status" href={sortHref('status')} arrow={sortArrow('status')} />
               <th className="dp-th" title="Beleg-Format und Erfassungsart (elektronisch/Scan, KI/manuell)">Inhalt</th>
+              {!showTrash && <th className="dp-th" title="Kurzer Auszug aus dem Mailtext, mit dem der Beleg eintraf — nur zur groben Einschätzung, volle Ansicht auf der Detailseite">Mailtext</th>}
+              {!showTrash && <th className="dp-th" title="Kleine Vorschau des Belegs">Vorschau</th>}
               {!showTrash && <th className="dp-th" title="Elektronische Vorprüfung und Formal richtig — Sachlich richtig/An Buchhaltung übergeben direkt anklickbar">Prüfung</th>}
               <th className="dp-th">Beleg</th>
               <th className="dp-th">Aktion</th>
@@ -365,6 +388,7 @@ export default async function InvoicesPage({
           </tbody>
         </table>
       </div>
+      </InvoiceSelectionProvider>
     </div>
   )
 }

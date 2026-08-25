@@ -9,6 +9,7 @@ import { PLANS } from '@/lib/license'
 
 const schema = z.object({
   name: z.string().min(2).optional(),
+  legalName: z.string().nullable().optional(),
   contactEmail: z.string().email().optional().or(z.literal('')),
   contactName: z.string().optional(),
   street: z.string().optional(),

@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
+import { isInvoiceLockedByClosure } from '@/lib/auditClosure'
 import { requireInvoiceContentAccess } from '@/lib/basketRights'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
@@ -10,7 +11,7 @@ import { deleteInvoiceFile, readInvoiceFile } from '@/lib/storage'
 async function loadAttachment(tenantId: string, invoiceId: string, attachmentId: string) {
   const attachment = await prisma.invoiceAttachment.findFirst({
     where: { id: attachmentId, invoiceId, tenantId },
-    include: { invoice: { select: { basketId: true } } },
+    include: { invoice: { select: { basketId: true, createdAt: true } } },
   })
   if (!attachment) throw new ApiError(404, 'Anhang nicht gefunden.')
   return attachment
@@ -40,6 +41,9 @@ export async function DELETE(_req: NextRequest, { params }: { params: { id: stri
     const tenantId = requireTenant(ctx)
     const attachment = await loadAttachment(tenantId, params.id, params.attachmentId)
     await requireInvoiceContentAccess(ctx, attachment.invoice.basketId)
+    if (await isInvoiceLockedByClosure(attachment.invoice.createdAt)) {
+      throw new ApiError(423, `Diese Rechnung gehört zum abgeschlossenen Prüfungszeitraum ${attachment.invoice.createdAt.getFullYear()} und ist schreibgeschützt.`)
+    }
     await prisma.invoiceAttachment.delete({ where: { id: attachment.id } })
     await deleteInvoiceFile(tenantId, attachment.fileName)
     await audit({

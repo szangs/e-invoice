@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
+import { isInvoiceLockedByClosure } from '@/lib/auditClosure'
 import { requireInvoiceContentAccess } from '@/lib/basketRights'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
@@ -50,6 +51,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     if (!invoice) throw new ApiError(404, 'Rechnung nicht gefunden.')
     await requireInvoiceContentAccess(ctx, invoice.basketId)
     if (invoice.deletedAt) throw new ApiError(400, 'Rechnung ist gelöscht.')
+    if (await isInvoiceLockedByClosure(invoice.createdAt)) {
+      throw new ApiError(423, `Diese Rechnung gehört zum abgeschlossenen Prüfungszeitraum ${invoice.createdAt.getFullYear()} und ist schreibgeschützt.`)
+    }
 
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { encryptionEnabled: true } })
     if (tenant?.encryptionEnabled) {

@@ -26,11 +26,14 @@ import { STATUS_LABELS, type InvoiceDTO } from '@/lib/invoices'
 import { CheckBadges } from './CheckBadges'
 import { DeleteInvoiceButton } from './DeleteInvoiceButton'
 import { DraggableInvoiceRow } from './DraggableInvoiceRow'
+import { RowCheckbox } from './InvoiceSelection'
 import { RestoreButton } from './RestoreButton'
 
 export type InvoiceRowData = InvoiceDTO & {
   unreadNote: boolean
   pendingApprovalTitle: string | null
+  /** Beleg-Eingang fällt in ein abgeschlossenes Audit-Jahr (§18) — schreibgeschützt. */
+  locked: boolean
 }
 
 type DecryptedContent = {
@@ -47,6 +50,16 @@ function fmtDateOnly(iso: string | null): string {
   if (!iso) return '—'
   const [y, m, d] = iso.split('-')
   return `${d}.${m}.${y}`
+}
+
+/** Kurzer, einzeiliger Auszug aus dem Mailtext für die Listenspalte (Stefan
+ * 2026-08-25) — Leerzeilen/Mehrfach-Whitespace zusammengefasst, damit die
+ * Spalte klein bleibt und nicht durch Formatierungsreste aufgebläht wird. */
+function mailExcerpt(text: string | null, maxLen = 220): string | null {
+  if (!text) return null
+  const collapsed = text.replace(/\s+/g, ' ').trim()
+  if (!collapsed) return null
+  return collapsed.length > maxLen ? `${collapsed.slice(0, maxLen).trimEnd()}…` : collapsed
 }
 
 function toNumber(v?: string | null): number | null {
@@ -162,7 +175,7 @@ export function InvoiceRows({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, q, sortField, sortDir, encryptionEnabled, decrypted, decryptionPending])
 
-  const colSpan = showTrash ? 12 : 13
+  const colSpan = showTrash ? 12 : 16
 
   return (
     <>
@@ -174,9 +187,26 @@ export function InvoiceRows({
           </td>
         </tr>
       )}
-      {visibleRows.map((i) => (
-        <DraggableInvoiceRow key={i.id} invoiceId={i.id} className="dp-tr" disabled={showTrash || !canMove}>
-          <td className="dp-td font-mono text-[11px] text-gray-500">{i.docId ?? '—'}</td>
+      {visibleRows.map((i) => {
+        // KI-erkannte, noch nicht bestätigte Werte: andere Schriftfarbe + nicht
+        // per Drag&Drop verschiebbar (serverseitig zusätzlich in lib/baskets.ts
+        // requestMove erzwungen — hier nur die UI-Vorabsperre/Kennzeichnung).
+        const needsAiConfirm = i.aiAssisted && !i.aiConfirmedAt
+        return (
+        <DraggableInvoiceRow key={i.id} invoiceId={i.id}
+          className={i.locked ? 'dp-tr text-gray-400' : needsAiConfirm ? 'dp-tr text-[var(--warn-strong)]' : 'dp-tr'}
+          disabled={showTrash || !canMove || needsAiConfirm || i.locked}>
+          {!showTrash && (
+            <td className="dp-td">
+              <RowCheckbox id={i.id} />
+            </td>
+          )}
+          <td className="dp-td font-mono text-[11px] text-gray-500">
+            {i.locked && (
+              <span title={`Abgeschlossener Prüfungszeitraum ${new Date(i.createdAt).getFullYear()} — schreibgeschützt`}>🔒 </span>
+            )}
+            {i.docId ?? '—'}
+          </td>
           <td className="dp-td">
             <InvoiceVendorCell
               invoiceId={i.id}
@@ -237,7 +267,7 @@ export function InvoiceRows({
             <div className="flex flex-col items-start gap-0.5">
               {i.docFormat === 'ZUGFERD' || i.docFormat?.startsWith('XRECHNUNG') ? (
                 <span
-                  className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                  className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-semibold ${
                     i.validationOk === false
                       ? 'bg-red-50 text-[var(--danger)]'
                       : 'bg-[var(--accent-bg)] text-[var(--accent)]'
@@ -248,28 +278,72 @@ export function InvoiceRows({
                   {i.validationOk === false ? ' ✗' : i.validationOk ? ' ✓' : ''}
                 </span>
               ) : i.encrypted ? (
-                <span className="text-[10px] text-gray-400" title="Inhalt verschlüsselt — nur der Kunde kann ihn lesen">
+                <span className="whitespace-nowrap text-[10px] text-gray-400" title="Inhalt verschlüsselt — nur der Kunde kann ihn lesen">
                   🔒
                 </span>
               ) : i.source === 'SCAN' ? (
-                <span className="rounded-full bg-[var(--surface-muted)] px-2 py-0.5 text-[10px] font-semibold text-gray-600" title="Papierrechnung gescannt/fotografiert">
+                <span className="whitespace-nowrap rounded-full bg-[var(--surface-muted)] px-2 py-0.5 text-[10px] font-semibold text-gray-600" title="Papierrechnung gescannt/fotografiert">
                   📷 Scan
+                </span>
+              ) : i.htmlRendered ? (
+                <span
+                  className="whitespace-nowrap rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-[10px] font-semibold text-[var(--accent)]"
+                  title="Kein vom Lieferanten mitgeschicktes Original — diese PDF wurde automatisch aus dem HTML-Mailtext erzeugt (Rechnung kam ohne Anhang, direkt als Mailtext)"
+                >
+                  ✉️ aus Dokumenten-Text
                 </span>
               ) : i.hasFile ? (
                 <span className="text-[10px] text-gray-400">nur PDF</span>
               ) : (
                 <span className="text-[10px] text-gray-400">—</span>
               )}
-              {i.source === 'SCAN' && (
-                <span
-                  className={`text-[10px] ${i.aiAssisted ? 'text-[var(--accent)]' : 'text-gray-400'}`}
-                  title={i.aiAssisted ? 'Felder per KI übernommen — bitte trotzdem gegenprüfen' : 'Felder von Hand erfasst'}
-                >
-                  {i.aiAssisted ? '✨ KI' : '✋ manuell'}
-                </span>
+              {(i.source === 'SCAN' || i.aiAssisted) && (
+                i.aiAssisted && !i.aiConfirmedAt ? (
+                  <span
+                    className="whitespace-nowrap rounded-full bg-[var(--warn-bg)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--warn-strong)]"
+                    title="Von der KI automatisch erkannt — bitte auf der Detailseite prüfen und bestätigen (erst danach verschiebbar)"
+                  >
+                    ⏳ KI ungeprüft
+                  </span>
+                ) : (
+                  <span
+                    className={`whitespace-nowrap text-[10px] ${i.aiAssisted ? 'text-[var(--accent)]' : 'text-gray-400'}`}
+                    title={i.aiAssisted ? 'Felder per KI übernommen und bestätigt' : 'Felder von Hand erfasst'}
+                  >
+                    {i.aiAssisted ? '✨ KI' : '✋ manuell'}
+                  </span>
+                )
               )}
             </div>
           </td>
+          {!showTrash && (
+            <td className="dp-td w-[220px] max-w-[220px]">
+              {mailExcerpt(i.mailBodyText) ? (
+                <span className="line-clamp-3 whitespace-normal break-words text-[10px] leading-snug text-gray-500" title={i.mailBodyText ?? undefined}>
+                  {mailExcerpt(i.mailBodyText)}
+                </span>
+              ) : (
+                <span className="text-[10px] text-gray-300">—</span>
+              )}
+            </td>
+          )}
+          {!showTrash && (
+            <td className="dp-td">
+              {i.hasFile && !i.encrypted ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={`/api/invoices/${i.id}/thumbnail`}
+                  alt=""
+                  loading="lazy"
+                  title="Mini-Vorschau des Belegs"
+                  className="h-10 w-10 rounded border border-[var(--line)] object-cover"
+                  onError={(e) => { e.currentTarget.style.display = 'none' }}
+                />
+              ) : (
+                <span className="text-[10px] text-gray-300">—</span>
+              )}
+            </td>
+          )}
           {!showTrash && (
             <td className="dp-td">
               <CheckBadges
@@ -296,7 +370,11 @@ export function InvoiceRows({
             </td>
           ) : (
             <td className="dp-td">
-              {canApprove ? (
+              {i.locked ? (
+                <span className="text-[10px] text-gray-400" title={`Abgeschlossener Prüfungszeitraum ${new Date(i.createdAt).getFullYear()} — schreibgeschützt`}>
+                  🔒 gesperrt
+                </span>
+              ) : canApprove ? (
                 <DeleteInvoiceButton invoiceId={i.id} />
               ) : (
                 <span className="text-[10px] text-gray-400" title="Kein Recht zum Löschen in diesem Korb">
@@ -306,7 +384,8 @@ export function InvoiceRows({
             </td>
           )}
         </DraggableInvoiceRow>
-      ))}
+        )
+      })}
       {visibleRows.length === 0 && (
         <tr>
           <td className="dp-td py-8 text-center text-gray-400" colSpan={colSpan}>

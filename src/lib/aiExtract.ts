@@ -5,6 +5,7 @@
 // Beleg-Verschlüsselung aktiv — sonst dürfte der Klartext nie an einen
 // externen KI-Anbieter gehen (Zero-Knowledge). Siehe /api/ai/config und
 // /api/invoices/ai-extract, die diese Prüfung serverseitig erzwingen.
+import { ApiError } from '@/lib/context'
 import { getSettings } from '@/lib/settings'
 
 export type AiExtractedInvoice = {
@@ -27,6 +28,24 @@ export type AiExtractedInvoice = {
   // Begründung(en) dazu.
   uncertainFields: string[]
   warnings: string[]
+  // Spam-/Nicht-Rechnung-Erkennung beim Mail-Eingang (Stefan 2026-08-25):
+  // dieselbe KI-Antwort liefert zusätzlich eine Einschätzung, ob das
+  // Dokument überhaupt eine Rechnung ist — vermeidet einen zweiten,
+  // separaten API-Call nur für die Klassifikation. Siehe lib/mailin.ts.
+  documentType: 'invoice' | 'not_invoice' | 'unsure'
+  // Positionszeilen (Stefan 2026-08-25): bei nackten PDFs/Scans ohne
+  // strukturiertes XML war bisher nur die Gesamtsumme sichtbar — bei
+  // Rechnungen mit vielen Posten fehlte die Aufschlüsselung komplett.
+  // Best-effort, kann leer bleiben (z. B. bei schlecht lesbarem Beleg).
+  lines: { name: string; qty: string | null; unitPrice: number | null; total: number | null }[]
+  // Skonto (Stefan 2026-08-25): dueDate oben ist IMMER das eigentliche
+  // Zahlungsziel (netto, ohne Abzug) — vorher konnte die KI hier
+  // versehentlich die kürzere Skonto-Frist statt des Zahlungsziels
+  // zurückgeben, wenn auf der Rechnung beides steht (z. B. "2 % Skonto
+  // innerhalb 7 Tagen, netto innerhalb 30 Tagen"). Skonto-Frist und -Satz
+  // jetzt separat, damit beide Angaben erhalten bleiben statt verwechselt zu werden.
+  discountDueDate: string | null
+  discountPercent: number | null
 }
 
 const KNOWN_FIELDS = [
@@ -65,7 +84,7 @@ export async function isAiConfigured(): Promise<boolean> {
 export async function extractInvoiceFromImage(base64: string, mimeType: string): Promise<AiExtractedInvoice> {
   const s = await getSettings()
   if (!s.AI_BASE_URL || !s.AI_MODEL) {
-    throw new Error('Kein KI-Anbieter konfiguriert (Systemeinstellungen).')
+    throw new ApiError(400, 'Kein KI-Anbieter konfiguriert (Systemeinstellungen).')
   }
   const url = s.AI_BASE_URL.replace(/\/$/, '') + '/chat/completions'
   let res: Response
@@ -79,7 +98,12 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
       body: JSON.stringify({
         model: s.AI_MODEL,
         temperature: 0,
-        max_tokens: 500,
+        // 2000 statt knapp bemessener 500 (Stefan 2026-08-25): "denkende"
+        // Modelle (z. B. Gemini 3.x) verbrauchen einen Teil von max_tokens
+        // für unsichtbare interne Reasoning-Tokens, die nicht im sichtbaren
+        // content erscheinen aber trotzdem gegen das Limit zählen — bei 500
+        // riss die JSON-Antwort mitten im Feld ab (finish_reason "length").
+        max_tokens: 2000,
         messages: [
           {
             role: 'system',
@@ -95,7 +119,14 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
                 text:
                   'Extrahiere aus dieser Rechnung ein JSON-Objekt mit genau diesen Schlüsseln: ' +
                   'vendor (Name des Rechnungsstellers), invoiceNumber, invoiceDate (ISO yyyy-mm-dd), ' +
-                  'dueDate (ISO yyyy-mm-dd oder null), amountNet (Zahl, Punkt als Dezimaltrennzeichen), ' +
+                  'dueDate (ISO yyyy-mm-dd oder null — WICHTIG: das eigentliche Zahlungsziel OHNE ' +
+                  'Skonto-Abzug, z. B. bei "2 % Skonto innerhalb 7 Tagen, netto innerhalb 30 Tagen" ' +
+                  'IMMER das 30-Tage-Datum, NIEMALS das kürzere Skonto-Datum), ' +
+                  'discountDueDate (ISO yyyy-mm-dd oder null — die separate, KÜRZERE Skonto-Frist aus ' +
+                  'demselben Beispiel das 7-Tage-Datum, nur wenn ein Skonto-Rabatt für vorzeitige ' +
+                  'Zahlung ausdrücklich genannt ist, sonst null), ' +
+                  'discountPercent (Zahl oder null — der Skonto-Prozentsatz, z. B. 2 für "2 % Skonto"), ' +
+                  'amountNet (Zahl, Punkt als Dezimaltrennzeichen), ' +
                   'amountTax (Zahl), amountGross (Zahl), currency (ISO-Code, z. B. EUR), ' +
                   'tags (1 bis 3 kurze, kommagetrennte Kategorie-Schlagworte passend zur Rechnung, ' +
                   'z. B. "Büromaterial", "Reisekosten", "Software", "Miete", "Werbung" — als EIN ' +
@@ -105,7 +136,16 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
                   'reiner Angabe von IBAN/Überweisungsdaten ohne Lastschrift-Hinweis: false), ' +
                   'unsureFields (Array mit den Schlüsseln oben, bei denen du dir UNSICHER bist, ' +
                   'z. B. wegen Unschärfe, Abschneidung, schlechter Lesbarkeit oder Mehrdeutigkeit — ' +
-                  'leeres Array wenn alles klar lesbar war). ' +
+                  'leeres Array wenn alles klar lesbar war), documentType (EXAKT einer der drei Werte ' +
+                  '"invoice" wenn das Bild eindeutig eine Rechnung/einen Zahlungsbeleg zeigt, ' +
+                  '"not_invoice" wenn es eindeutig KEINE Rechnung ist — z. B. Newsletter, Werbung, ' +
+                  'Vertrag, Bewerbungsschreiben, Spam, Screenshot ohne Rechnungsbezug — oder ' +
+                  '"unsure" wenn nicht eindeutig erkennbar), lines (Array der einzelnen ' +
+                  'Rechnungspositionen/Posten, falls als Tabelle/Liste erkennbar — je Position ein ' +
+                  'Objekt mit name (Bezeichnung), qty (Menge als Text, z. B. "3" oder "2 Stück", ' +
+                  'oder null), unitPrice (Einzelpreis als Zahl oder null), total (Zeilensumme als ' +
+                  'Zahl oder null) — leeres Array wenn keine einzelnen Positionen erkennbar sind, z. B. ' +
+                  'bei einer Pauschalrechnung ohne Aufschlüsselung). ' +
                   'Unbekannte Felder als null. Keine weiteren Felder, kein Zusatztext.',
               },
               { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
@@ -113,10 +153,14 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
           },
         ],
       }),
-      signal: AbortSignal.timeout(30000),
+      // 60s statt vorher 30s (Stefan 2026-08-25): eine Bild-Anfrage mit
+      // max_tokens 2000 an ein "denkendes" Modell (siehe Kommentar oben)
+      // braucht spürbar länger als eine reine Text-Anfrage — 30s riss live
+      // beobachtet regelmäßig mitten in der Antwort ab.
+      signal: AbortSignal.timeout(60000),
     })
   } catch {
-    throw new Error('KI-Anbieter nicht erreichbar (Timeout/Netzwerk).')
+    throw new ApiError(502, 'KI-Anbieter nicht erreichbar (Timeout/Netzwerk).')
   }
   if (!res.ok) {
     // Fehlertext des Anbieters mitgeben (z. B. "model does not support images") —
@@ -135,7 +179,11 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
         'Bitte in den Systemeinstellungen ein Vision-fähiges Modell eintragen (Verbindungstest ' +
         'zeigt jetzt die beim Anbieter verfügbaren Modelle an).'
       : ''
-    throw new Error(`KI-Anbieter antwortete mit Fehler ${res.status}${detail ? `: ${detail.slice(0, 300)}` : '.'}${hint}`)
+    // res.status 1:1 durchreichen (Stefan 2026-08-25): so kommt z. B. ein
+    // Rate-Limit (429) auch als 429 beim Nutzer an, statt in der generischen
+    // "Interner Fehler"-500-Antwort unterzugehen (jsonError kennt nur
+    // ApiError/ZodError speziell, alles andere wird zu 500 ohne Detailtext).
+    throw new ApiError(res.status, `KI-Anbieter antwortete mit Fehler ${res.status}${detail ? `: ${detail.slice(0, 300)}` : '.'}${hint}`)
   }
   const data = await res.json()
   const content: string = data?.choices?.[0]?.message?.content ?? ''
@@ -144,12 +192,14 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
   try {
     parsed = JSON.parse(cleaned)
   } catch {
-    throw new Error('KI-Antwort konnte nicht als Rechnungsdaten gelesen werden.')
+    throw new ApiError(502, 'KI-Antwort konnte nicht als Rechnungsdaten gelesen werden.')
   }
   const vendor = str(parsed.vendor)
   const invoiceNumber = str(parsed.invoiceNumber)
   const invoiceDate = str(parsed.invoiceDate)
   const dueDate = str(parsed.dueDate)
+  const discountDueDate = str(parsed.discountDueDate)
+  const discountPercent = num(parsed.discountPercent)
   const amountNet = num(parsed.amountNet)
   const amountTax = num(parsed.amountTax)
   const amountGross = num(parsed.amountGross)
@@ -197,11 +247,36 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
     }
   }
 
+  // KI-Angabe übernehmen, aber gegen die eigenen Kernfelder absichern: eine
+  // als "invoice" gemeldete Erkennung ohne Betrag UND ohne Lieferant ist
+  // widersprüchlich (z. B. Modell "rät" den Dokumenttyp ohne echte Grundlage)
+  // — dann lieber "unsure" als fälschlich vertrauenswürdig einstufen.
+  const rawDocType = String(parsed.documentType ?? '').trim().toLowerCase()
+  const documentType: AiExtractedInvoice['documentType'] =
+    rawDocType === 'not_invoice'
+      ? 'not_invoice'
+      : rawDocType === 'invoice' && (amountGross !== null || vendor)
+        ? 'invoice'
+        : 'unsure'
+
+  const lines: AiExtractedInvoice['lines'] = Array.isArray(parsed.lines)
+    ? parsed.lines
+        .filter((l: unknown): l is Record<string, unknown> => typeof l === 'object' && l !== null)
+        .map((l: Record<string, unknown>) => ({
+          name: str(l.name) ?? '(ohne Bezeichnung)',
+          qty: str(l.qty),
+          unitPrice: num(l.unitPrice),
+          total: num(l.total),
+        }))
+    : []
+
   return {
     vendor,
     invoiceNumber,
     invoiceDate,
     dueDate,
+    discountDueDate,
+    discountPercent,
     amountNet,
     amountTax,
     amountGross,
@@ -210,5 +285,7 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
     directDebitByVendor,
     uncertainFields: Array.from(flagged),
     warnings,
+    documentType,
+    lines,
   }
 }

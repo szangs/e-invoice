@@ -56,8 +56,9 @@ export function BackupOps() {
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <a className="btn-secondary" href="/api/platform/backup">System-Backup herunterladen</a>
-        <button className="btn-primary" onClick={runNow} disabled={busy}>
+        <a className="btn-secondary" href="/api/platform/backup" title="Vollständige System-Sicherung (alle Mandanten) als Datei herunterladen">System-Backup herunterladen</a>
+        <button className="btn-primary" onClick={runNow} disabled={busy}
+          title="Startet sofort alle für Mandanten aktivierten automatischen Sicherungen und Berichte, ohne auf den Zeitplan zu warten">
           Alle aktivierten Sicherungen &amp; Berichte jetzt ausführen
         </button>
       </div>
@@ -73,13 +74,15 @@ export function BackupOps() {
         <div className="mt-1 flex flex-wrap items-center gap-2">
           <input ref={fileRef} type="file" accept="application/json,.json" className="dp-input !w-auto" />
           <select className="dp-input !w-auto" value={restoreTenantId}
+            title="Ziel-Mandant für die Rücksicherung — leer lassen, wenn es sich um eine Systemsicherung handelt"
             onChange={(e) => setRestoreTenantId(e.target.value)}>
             <option value="">Ziel: automatisch / System</option>
             {tenants.map((t) => (
               <option key={t.id} value={t.id}>Mandant: {t.name}</option>
             ))}
           </select>
-          <button className="btn-danger" onClick={restore} disabled={busy}>Wiederherstellen</button>
+          <button className="btn-danger" onClick={restore} disabled={busy}
+            title="Ausgewählte Sicherungsdatei einspielen — überschreibt/ergänzt vorhandene Daten unwiderruflich">Wiederherstellen</button>
         </div>
         <p className="mt-1 text-[10px] text-gray-400">
           Systemsicherungen werden automatisch erkannt; bei Mandantensicherungen den Ziel-Mandanten wählen.

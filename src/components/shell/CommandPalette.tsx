@@ -84,6 +84,7 @@ export function CommandPalette() {
                 }`}
                 onMouseEnter={() => setIndex(i)}
                 onClick={() => go(r)}
+                title={r.hint}
               >
                 <span>{r.label}</span>
                 <span className="text-[10px] font-mono opacity-50">{r.code}</span>

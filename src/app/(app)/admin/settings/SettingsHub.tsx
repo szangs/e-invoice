@@ -5,7 +5,7 @@
 // öffnet darunter genau diesen Bereich, statt vorher alle Abschnitte
 // ununterschieden untereinander zu stapeln.
 import { useRouter } from 'next/navigation'
-import { useRef, useState } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { CostCodesPanel } from './CostCodesPanel'
 import { DatevAccountsPanel } from './DatevAccountsPanel'
 import { EncryptionSetup } from './EncryptionSetup'
@@ -17,6 +17,14 @@ type Switches = {
   backupEnabled: boolean
   defaultLanguage: string
   mailAllowedDomains: string
+  mailInGraphEnabled: boolean
+  mailInGraphMailbox: string
+  mailInGraphFolder: string
+  mailInGraphMoveToFolder: string
+  spamReplyEnabled: boolean
+  mailInGraphTenantId: string
+  mailInGraphClientId: string
+  mailInGraphClientSecret: string
   backupFrequency: string
   backupEmail: string
   backupReminderDays: number
@@ -35,6 +43,8 @@ type Switches = {
   datevWjBeginn: string
   datevFibuEmail: string
   costCentersEnabled: boolean
+  dueReminderDaysAfterReceipt: number | null
+  dueReminderDaysBeforeDue: number | null
 }
 
 const FREQUENCIES = [
@@ -121,6 +131,7 @@ export function SettingsHub({
   const [msg, setMsg] = useState('')
   const [backupMsg, setBackupMsg] = useState('')
   const [reportMsg, setReportMsg] = useState('')
+  const [graphMailinMsg, setGraphMailinMsg] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
   async function save() {
@@ -172,7 +183,49 @@ export function SettingsHub({
     router.refresh()
   }
 
-  const toggle = (key: 'aiAllowed' | 'ipLoggingAllowed', label: string, hint?: string) => (
+  async function testGraphMailin() {
+    setBusy(true)
+    setGraphMailinMsg('Prüfe …')
+    await save()
+    const res = await fetch('/api/admin/tenant/mailin-graph-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mailbox: s.mailInGraphMailbox, folder: s.mailInGraphFolder, moveToFolder: s.mailInGraphMoveToFolder }),
+    })
+    const data = await res.json().catch(() => ({}))
+    setBusy(false)
+    setGraphMailinMsg(res.ok ? data.message : (data.error ?? 'Test fehlgeschlagen.'))
+  }
+
+  async function sendTestInvoicesGraph() {
+    if (!window.confirm('10 Test-Rechnungen (PDF/XRechnung/ZUGFeRD gemischt) an Ihr Mail-Eingang-Postfach senden?')) return
+    setBusy(true)
+    setGraphMailinMsg('Sende Testrechnungen …')
+    await save()
+    const res = await fetch('/api/admin/tenant/test-invoices', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count: 10 }),
+    })
+    const data = await res.json().catch(() => ({}))
+    setBusy(false)
+    setGraphMailinMsg(res.ok ? data.message : (data.error ?? 'Senden fehlgeschlagen.'))
+  }
+
+  const helpBox = (summary: string, steps: ReactNode[]) => (
+    <details className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 open:pb-3">
+      <summary className="cursor-pointer select-none text-xs font-semibold text-[var(--accent)]">
+        {summary}
+      </summary>
+      <ol className="mt-2 list-decimal space-y-1.5 pl-4 text-xs leading-relaxed text-gray-600">
+        {steps.map((step, i) => (
+          <li key={i}>{step}</li>
+        ))}
+      </ol>
+    </details>
+  )
+
+  const toggle = (key: 'aiAllowed' | 'ipLoggingAllowed' | 'mailInGraphEnabled', label: string, hint?: string) => (
     <label className="flex items-start gap-2 text-sm text-gray-700">
       <input type="checkbox" className="mt-0.5" checked={s[key]}
         onChange={(e) => setS((p) => ({ ...p, [key]: e.target.checked }))} />
@@ -237,13 +290,124 @@ export function SettingsHub({
         <section className="dp-card space-y-3">
           <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Allgemein</h2>
           {toggle('aiAllowed', 'KI-Funktionen erlauben', 'Bei "aus" werden keine Daten an eine KI übergeben — serverseitig erzwungen.')}
-          {toggle('ipLoggingAllowed', 'IP-Protokollierung erlauben')}
+          {toggle('ipLoggingAllowed', 'IP-Protokollierung erlauben', 'Speichert IP-Adressen der Benutzer im Audit-Protokoll (§18) — nur möglich, wenn der Betreiber es für Ihren Mandanten freigeschaltet hat.')}
           <div>
             <label className="dp-label">E-Mail-Eingang: nur Absender dieser Domänen</label>
             <input className="dp-input mt-1" value={s.mailAllowedDomains}
               placeholder="z. B. meinefirma.de, lieferant.de — leer = alle"
               onChange={(e) => setS((p) => ({ ...p, mailAllowedDomains: e.target.value }))} />
           </div>
+
+          <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] p-3 space-y-2">
+            {toggle('mailInGraphEnabled', 'E-Mail-Eingang per Microsoft Graph (Alternative)',
+              'Statt einer Weiterleitung auf unsere Einlieferungs-Adresse: ein Postfach + Ordner wird direkt bei Office 365 abgefragt. Der Betreiber muss den Abrufprozess global aktiviert haben (Systemeinstellungen) — Zugangsdaten unten sind Ihre eigenen.')}
+            {s.mailInGraphEnabled && (
+              <>
+                <p className="text-[11px] text-gray-500">
+                  Wichtig: Das ist <strong>Ihre eigene</strong> Azure-App-Registrierung in Ihrem
+                  eigenen Microsoft-365-Tenant — der Betreiber kann mit seinen Zugangsdaten nicht
+                  auf Ihr Postfach zugreifen, das braucht zwingend Ihre eigene App.
+                </p>
+                {helpBox('Anleitung: eigene Azure-AD-App-Registrierung einrichten (braucht Ihren Microsoft-365-Admin, einmalig)', [
+                  <>
+                    Ihr Admin meldet sich auf <span className="font-mono">portal.azure.com</span> an (im
+                    Microsoft-365-Tenant Ihrer Firma!) → <strong>Azure Active Directory</strong> →{' '}
+                    <strong>App-Registrierungen</strong> → <strong>„Neue Registrierung"</strong>. Name frei
+                    wählbar (z. B. „E-Invoice Mail-Eingang").
+                  </>,
+                  <>Auf der Übersichtsseite <strong>Tenant-ID</strong> und <strong>Client-ID</strong> notieren — beide unten eintragen.</>,
+                  <>
+                    <strong>„Zertifikate &amp; Geheimnisse"</strong> → <strong>„Neuer geheimer Clientschlüssel"</strong> →
+                    den angezeigten <strong>Wert</strong> sofort kopieren (nicht die Geheimnis-ID) — das ist das Client-Secret unten.
+                  </>,
+                  <>
+                    <strong>„API-Berechtigungen"</strong> → <strong>„Berechtigung hinzufügen"</strong> → Microsoft Graph →{' '}
+                    <strong>„Anwendungsberechtigungen"</strong> (nicht „Delegiert") → <span className="font-mono">Mail.Read</span> hinzufügen.
+                  </>,
+                  <><strong>„Administratorzustimmung erteilen"</strong> klicken und bestätigen.</>,
+                  <>
+                    Optional, falls Sie unten auch „Verarbeitete Mails verschieben nach" nutzen: zusätzlich{' '}
+                    <span className="font-mono">Mail.ReadWrite</span> statt nur <span className="font-mono">Mail.Read</span> hinzufügen
+                    (Verschieben braucht Schreibzugriff) — sonst reicht <span className="font-mono">Mail.Read</span>.
+                  </>,
+                  <>Postfach + Ordner unten eintragen (das Postfach muss in Ihrem eigenen Tenant existieren), speichern, „Ordner testen".</>,
+                ])}
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="dp-label">Postfach</label>
+                    <input className="dp-input mt-1" type="email" value={s.mailInGraphMailbox}
+                      placeholder="z. B. rechnungen@mandant.de"
+                      onChange={(e) => setS((p) => ({ ...p, mailInGraphMailbox: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="dp-label">Ordner</label>
+                    <input className="dp-input mt-1" value={s.mailInGraphFolder}
+                      placeholder="leer = Posteingang, sonst Ordnername (Hauptverzeichnis oder Posteingang/Unterordner)"
+                      onChange={(e) => setS((p) => ({ ...p, mailInGraphFolder: e.target.value }))} />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="dp-label">Verarbeitete Mails verschieben nach (optional)</label>
+                    <input className="dp-input mt-1" value={s.mailInGraphMoveToFolder}
+                      placeholder="leer = im Postfach nicht verändern, sonst z. B. Verarbeitet"
+                      onChange={(e) => setS((p) => ({ ...p, mailInGraphMoveToFolder: e.target.value }))} />
+                    <p className="mt-0.5 text-[10px] text-gray-400">
+                      Jede abgerufene Mail wird nach der Verarbeitung automatisch in diesen Ordner
+                      verschoben (angelegte Rechnung bleibt davon unberührt) — braucht „Mail.ReadWrite"
+                      statt nur „Mail.Read" in der App-Registrierung, siehe Anleitung oben.
+                    </p>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="flex items-center gap-2 text-sm text-gray-700">
+                      <input type="checkbox" className="accent-[var(--accent)]" checked={s.spamReplyEnabled}
+                        onChange={(e) => setS((p) => ({ ...p, spamReplyEnabled: e.target.checked }))} />
+                      Automatische Antwort an den Absender bei Spam-Verdacht
+                    </label>
+                    <p className="mt-1 rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-[10px] text-[var(--warn-strong)]">
+                      Schickt eine kurze automatische Info, wenn eine Mail eindeutig NICHT als Rechnung
+                      erkannt wird ("Spam-Verdacht"-Korb) — mit dem Hinweis, sich bei echtem
+                      Rechnungsbezug direkt zu melden. <strong>Zu bedenken:</strong> echter Spam hat
+                      fast immer eine gefälschte Absenderadresse — die Antwort geht dann an eine
+                      unbeteiligte dritte Person (kein technischer Schutz davor möglich), und eine
+                      Auto-Antwort bestätigt Spam-Versendern eine aktive Mailbox. Nur einschalten, wenn
+                      Ihnen dieses Risiko bewusst ist. Je Beleg wird höchstens einmal geantwortet. Im
+                      Entwicklermodus (Systemeinstellungen) wird nie versendet — dort laufen Test-/Demo-Mails,
+                      oft mit echten Absenderadressen.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="dp-label">Tenant-ID (Ihr Azure AD)</label>
+                    <input className="dp-input mt-1" value={s.mailInGraphTenantId}
+                      onChange={(e) => setS((p) => ({ ...p, mailInGraphTenantId: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="dp-label">Client-ID (Ihre App-Registrierung)</label>
+                    <input className="dp-input mt-1" value={s.mailInGraphClientId}
+                      onChange={(e) => setS((p) => ({ ...p, mailInGraphClientId: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="dp-label">Client-Secret</label>
+                    <input className="dp-input mt-1" value={s.mailInGraphClientSecret}
+                      placeholder="Nur ändern, wenn neu gesetzt werden soll"
+                      onChange={(e) => setS((p) => ({ ...p, mailInGraphClientSecret: e.target.value }))} />
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button type="button" className="btn-secondary" onClick={testGraphMailin}
+                    disabled={busy || !s.mailInGraphMailbox}
+                    title="Speichert die obigen Angaben und prüft, ob Postfach/Ordner mit Ihren Zugangsdaten bei Office 365 gefunden werden">
+                    Ordner testen
+                  </button>
+                  <button type="button" className="btn-secondary" onClick={sendTestInvoicesGraph}
+                    disabled={busy || !s.mailInGraphMailbox}
+                    title="Verschickt 10 echte Beispielrechnungen (PDF/XRechnung/ZUGFeRD) an Ihr Postfach — zum vollständigen Testen von Mail-Eingang, KI-Erkennung und E-Rechnungs-Visualisierung">
+                    Testrechnungen senden
+                  </button>
+                  {graphMailinMsg && <span className="text-xs text-gray-600">{graphMailinMsg}</span>}
+                </div>
+              </>
+            )}
+          </div>
+
           <div>
             <label className="dp-label">Standardsprache</label>
             <select className="dp-input mt-1 !w-auto" value={s.defaultLanguage}
@@ -252,6 +416,36 @@ export function SettingsHub({
               <option value="en">Englisch</option>
             </select>
           </div>
+
+          <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] p-3 space-y-3">
+            <p className="dp-label">Fälligkeits-Benachrichtigung ("Bearbeitungswarnung")</p>
+            <p className="text-[11px] text-gray-500">
+              Verschickt automatisch eine Mail an die für den jeweiligen Korb hinterlegten Mitarbeiter
+              (Korb-Einstellungen → Benachrichtigung), sobald eine Rechnung fällig wird oder — falls die
+              Fälligkeit unbekannt ist — seit dem Eingang zu lange unbearbeitet liegt. Jeweils leer lassen,
+              um die Benachrichtigung auszuschalten.
+            </p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="dp-label" title="Betrifft Rechnungen ohne bekannte Fälligkeit (weder E-Rechnung noch KI-Erkennung hatte ein Datum)">
+                  Ohne bekannte Fälligkeit: Tage nach Eingang
+                </label>
+                <input className="dp-input mt-1" type="number" min={1} max={365}
+                  value={s.dueReminderDaysAfterReceipt ?? ''}
+                  placeholder="z. B. 14"
+                  onChange={(e) => setS((p) => ({ ...p, dueReminderDaysAfterReceipt: e.target.value === '' ? null : Number(e.target.value) }))} />
+              </div>
+              <div>
+                <label className="dp-label" title="Betrifft Rechnungen mit bekannter Fälligkeit — E-Rechnung oder von der KI erkanntes Datum werden hier gleich behandelt">
+                  Mit bekannter Fälligkeit: Tage davor
+                </label>
+                <input className="dp-input mt-1" type="number" min={1} max={365}
+                  value={s.dueReminderDaysBeforeDue ?? ''}
+                  placeholder="z. B. 5"
+                  onChange={(e) => setS((p) => ({ ...p, dueReminderDaysBeforeDue: e.target.value === '' ? null : Number(e.target.value) }))} />
+              </div>
+            </div>
+          </div>
           <SaveBar />
         </section>
       )}
@@ -259,7 +453,8 @@ export function SettingsHub({
       {tab === 'backup' && (
         <section className="dp-card space-y-3">
           <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Datensicherung (§17)</h2>
-          <label className="flex items-start gap-2 text-sm text-gray-700">
+          <label className="flex items-start gap-2 text-sm text-gray-700"
+            title="Erstellt automatisch nach dem unten gewählten Zeitplan eine Sicherung dieses Mandanten">
             <input type="checkbox" className="mt-0.5" checked={s.backupEnabled}
               onChange={(e) => setS((p) => ({ ...p, backupEnabled: e.target.checked }))} />
             <span>Regelmäßige Sicherung aktiv</span>
@@ -345,7 +540,8 @@ export function SettingsHub({
             <label className="dp-label">Rücksicherung (Sicherungsdatei einspielen)</label>
             <div className="mt-1 flex flex-wrap items-center gap-2">
               <input ref={fileRef} type="file" accept=".zip,application/zip,application/json,.json" className="dp-input !w-auto" />
-              <button className="btn-danger" onClick={restore} disabled={busy}>Wiederherstellen</button>
+              <button className="btn-danger" onClick={restore} disabled={busy}
+                title="Ausgewählte Sicherungsdatei einspielen — überschreibt/ergänzt vorhandene Daten dieses Mandanten unwiderruflich">Wiederherstellen</button>
             </div>
             <p className="mt-0.5 text-[10px] text-gray-400">Akzeptiert die neuen .zip-Pakete sowie ältere, bereits heruntergeladene .json-Sicherungen.</p>
           </div>

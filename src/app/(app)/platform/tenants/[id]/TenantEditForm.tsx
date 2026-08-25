@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { PLAN_LABELS, PLANS } from '@/lib/license'
 
 export type TenantFormData = {
-  id: string; slug: string; name: string; contactName: string; contactEmail: string
+  id: string; slug: string; name: string; legalName: string; contactName: string; contactEmail: string
   street: string; zip: string; city: string; employeeCount: string; maxUsers: string
   licensePlan: string; licenseSerial: string; licenseExpiresAt: string
   aiAllowed: boolean; ipLoggingAllowed: boolean; backupEnabled: boolean
@@ -27,6 +27,7 @@ export function TenantEditForm({ tenant }: { tenant: TenantFormData }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name: f.name,
+        legalName: f.legalName || null,
         contactName: f.contactName,
         contactEmail: f.contactEmail,
         street: f.street,
@@ -60,8 +61,8 @@ export function TenantEditForm({ tenant }: { tenant: TenantFormData }) {
         onChange={(e) => setF((p) => ({ ...p, [key]: e.target.value }))} />
     </div>
   )
-  const toggle = (key: 'aiAllowed' | 'ipLoggingAllowed' | 'backupEnabled', label: string) => (
-    <label className="flex items-center gap-2 text-sm text-gray-700">
+  const toggle = (key: 'aiAllowed' | 'ipLoggingAllowed' | 'backupEnabled', label: string, hint?: string) => (
+    <label className="flex items-center gap-2 text-sm text-gray-700" title={hint}>
       <input type="checkbox" checked={f[key]}
         onChange={(e) => setF((p) => ({ ...p, [key]: e.target.checked }))} />
       {label}
@@ -76,6 +77,14 @@ export function TenantEditForm({ tenant }: { tenant: TenantFormData }) {
       </p>
       <div className="grid gap-4 sm:grid-cols-2">
         {input('name', 'Anzeigename')}
+        <div className="sm:col-span-2">
+          <label className="dp-label" title="Exakte, rechtsverbindliche Firmenbezeichnung (z. B. laut Handelsregister) — wird beim Öffnen einer E-Rechnung gegen den Rechnungsempfänger geprüft, bei Abweichung erscheint eine Warnung">
+            Exakte Firmenbezeichnung (für Rechnungsabgleich)
+          </label>
+          <input className="dp-input mt-1" value={f.legalName}
+            onChange={(e) => setF((p) => ({ ...p, legalName: e.target.value }))}
+            placeholder="leer = kein Abgleich" />
+        </div>
         {input('contactName', 'Ansprechpartner')}
         {input('contactEmail', 'Kontakt-E-Mail', 'email')}
         {input('street', 'Straße')}
@@ -105,9 +114,9 @@ export function TenantEditForm({ tenant }: { tenant: TenantFormData }) {
       </div>
       <div className="space-y-2 rounded-lg bg-[var(--surface-muted)] p-4">
         <p className="dp-label">Mandantenspezifische Schalter</p>
-        {toggle('aiAllowed', 'KI-Funktionen erlaubt (§19 — serverseitig erzwungen)')}
-        {toggle('ipLoggingAllowed', 'IP-Protokollierung erlaubt (§18)')}
-        {toggle('backupEnabled', 'Regelmäßige Sicherung aktiv (§17 — Versand folgt in Runde 2)')}
+        {toggle('aiAllowed', 'KI-Funktionen erlaubt (§19 — serverseitig erzwungen)', 'Erlaubt diesem Mandanten KI-gestützte Funktionen (z. B. Beleg-Auslesung) — wird serverseitig durchgesetzt, nicht nur in der Oberfläche ausgeblendet')}
+        {toggle('ipLoggingAllowed', 'IP-Protokollierung erlaubt (§18)', 'Erlaubt, IP-Adressen der Benutzer dieses Mandanten im Audit-Protokoll zu speichern')}
+        {toggle('backupEnabled', 'Regelmäßige Sicherung aktiv (§17 — Versand folgt in Runde 2)', 'Nimmt diesen Mandanten in die automatischen, regelmäßigen Sicherungsläufe auf')}
       </div>
       {msg && <p className={`text-sm ${msg === 'Gespeichert.' ? 'text-[var(--accent)]' : 'text-[var(--danger)]'}`}>{msg}</p>}
       <div className="flex gap-2">

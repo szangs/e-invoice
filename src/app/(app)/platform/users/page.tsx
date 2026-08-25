@@ -109,6 +109,7 @@ export default function PlatformUsersPage() {
                       className="dp-input !w-auto !py-1 text-xs"
                       value={u.role}
                       disabled={busy}
+                      title="Rolle des Benutzers ändern — bestimmt, welche Bereiche er sehen und bearbeiten darf"
                       onChange={(e) => patch(u.id, { role: e.target.value })}
                     >
                       {TENANT_ROLES.map((r) => (
@@ -130,14 +131,17 @@ export default function PlatformUsersPage() {
                 <td className="dp-td">
                   <div className="flex gap-1.5 whitespace-nowrap">
                     <button className="btn-secondary !px-2 !py-1 text-xs" disabled={busy}
+                      title={u.active ? 'Anmeldung dieses Benutzers sperren' : 'Anmeldung wieder erlauben'}
                       onClick={() => patch(u.id, { active: !u.active })}>
                       {u.active ? 'Deaktivieren' : 'Aktivieren'}
                     </button>
                     <button className="btn-secondary !px-2 !py-1 text-xs" disabled={busy}
+                      title="Neues Passwort erzeugen und anzeigen"
                       onClick={() => patch(u.id, { resetPassword: true }, `Passwort für ${u.email} neu setzen?`)}>
                       Passwort neu
                     </button>
                     <button className="btn-secondary !px-2 !py-1 text-xs" disabled={busy}
+                      title="Diesen Benutzer sofort aus allen aktiven Sitzungen abmelden"
                       onClick={() => patch(u.id, { forceLogout: true }, `${u.email} zwangsabmelden?`)}>
                       Abmelden
                     </button>

@@ -76,13 +76,21 @@ export function CheckBadges({
   const base = 'flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold'
   const on = 'bg-green-50 text-green-600'
   const off = 'bg-[var(--surface-muted)] text-gray-400'
+  const na = 'bg-[var(--surface-muted)] text-gray-300'
   // Erledigt = grünes Häkchen, offen = Buchstabe (damit man auch im offenen
   // Zustand noch sieht, welcher Schritt gemeint ist).
   const label = (at: string | null, letter: string) => (at ? '✓' : letter)
+  // Nicht-E-Rechnung (Stefan 2026-08-25): "Elektronische Vorprüfung" nicht
+  // anwendbar — eigenes, blasses "–" statt eines grünen Häkchens, das eine
+  // bestandene Prüfung vortäuschen würde (siehe lib/erechnung.ts autoElectronicCheck).
+  const electronicNotApplicable = Boolean(electronicAt && electronicBy?.startsWith('System (entfällt'))
 
   return (
     <div className="flex items-center gap-1">
-      <span className={`${base} ${electronicAt ? on : off}`} title={`Elektronische Vorprüfung — ${fmt(electronicAt, electronicBy)}`}>{label(electronicAt, 'E')}</span>
+      <span className={`${base} ${electronicNotApplicable ? na : electronicAt ? on : off}`}
+        title={`Elektronische Vorprüfung — ${electronicNotApplicable ? 'entfällt (kein E-Rechnungs-Format)' : fmt(electronicAt, electronicBy)}`}>
+        {electronicNotApplicable ? '–' : label(electronicAt, 'E')}
+      </span>
       <span className={`${base} ${formalAt ? on : off}`} title={`Formal richtig — ${fmt(formalAt, formalBy)}`}>{label(formalAt, 'F')}</span>
       <button
         type="button"

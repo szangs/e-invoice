@@ -2,13 +2,25 @@
 import { prisma } from '@/lib/db'
 
 export const SETTING_KEYS = [
-  // Mail-Versand (SMTP)
+  // Mail-Versand: Anbieter
+  'MAIL_PROVIDER', // "SMTP" (Standard) | "SMTP_OAUTH2" (Office 365, OAuth2/XOAUTH2) | "GRAPH" (Microsoft Graph API)
+  // Mail-Versand (SMTP, Benutzer/Passwort — MAIL_PROVIDER = "SMTP")
   'SMTP_HOST',
   'SMTP_PORT',
   'SMTP_SECURE', // "1" = TLS
   'SMTP_USER',
   'SMTP_PASS', // wird in der UI maskiert
   'SMTP_FROM',
+  // Microsoft 365 / Azure-AD-App-Registrierung DES BETREIBERS (für MAIL_PROVIDER
+  // "SMTP_OAUTH2" und "GRAPH") — nur für System-Mail-Versand aus der eigenen Domain
+  // des Betreibers. NICHT für den Mail-Eingang: dort braucht jeder Mandant seine
+  // eigene App-Registrierung (Mandanten-Einstellungen), da Anwendungsberechtigungen
+  // nur innerhalb des eigenen Azure-AD-Tenants gelten — der Betreiber kann mit seinen
+  // Zugangsdaten nicht in die Postfächer fremder, unabhängiger Mandanten-Firmen.
+  'MS_TENANT_ID',
+  'MS_CLIENT_ID',
+  'MS_CLIENT_SECRET', // wird in der UI maskiert
+  'MS_SENDER_EMAIL', // sendendes Postfach (muss der App-Registrierung erlaubt sein)
   // Fernwartungs-Relay (§14B — Werte werden hier bereits gepflegt, Client folgt in Runde 2)
   'REMOTE_RELAY_URL',
   'REMOTE_RELAY_KEY',
@@ -32,6 +44,18 @@ export const SETTING_KEYS = [
   // SMTP-Empfangs-Alternative: eigener SMTP-Server wartet auf weitergeleitete Mails
   'MAIL_SMTP_ENABLED', // "1" = SMTP-Empfänger aktiv (Prozess: npm run smtp)
   'MAIL_SMTP_PORT', // Standard 2525 (Produktion: 25 hinter Firewall/Relay)
+  // Mail-Eingang per Microsoft Graph (Alternative zum SMTP-Empfänger, Variante A):
+  // NUR der globale Ein/Aus-Schalter + Poll-Intervall für den Abrufprozess. Die
+  // Azure-Zugangsdaten (Tenant-ID/Client-ID/Client-Secret) trägt jeder Mandant
+  // selbst ein (Tenant.mailInGraphTenantId/-ClientId/-ClientSecret) — die
+  // Betreiber-Zugangsdaten oben (MS_TENANT_ID etc.) gelten nur für den eigenen
+  // Azure-AD-Tenant des Betreibers und können fremde Mandanten-Postfächer nicht lesen.
+  'MAIL_IN_GRAPH_ENABLED', // "1" = Graph-Poller aktiv (Prozess: npm run mailin-graph)
+  'MAIL_IN_GRAPH_POLL_SECONDS', // Poll-Intervall, Standard 120
+  // Kein eigener Test-Schalter: im bestehenden Entwicklungsmodus (DEV_MODE unten,
+  // §24) fallen Mandanten ohne eigene Graph-Zugangsdaten auf die Betreiber-
+  // Zugangsdaten zurück, statt übersprungen zu werden (siehe graphMailin.ts) —
+  // funktioniert nur für Postfächer im EIGENEN Azure-AD-Tenant des Betreibers.
   // Datensicherung Gesamtsystem (§17)
   'BACKUP_SYSTEM_ENABLED', // "1" = automatische System-Sicherung aktiv
   'BACKUP_SYSTEM_FREQ', // DAILY | WEEKLY | MONTHLY | YEARLY
@@ -43,7 +67,7 @@ export const SETTING_KEYS = [
 export type SettingKey = (typeof SETTING_KEYS)[number]
 
 /** Schlüssel, deren Werte nie im Klartext an das Frontend gehen (nur Maske). */
-export const SECRET_KEYS: SettingKey[] = ['SMTP_PASS', 'AI_API_KEY', 'REMOTE_RELAY_KEY']
+export const SECRET_KEYS: SettingKey[] = ['SMTP_PASS', 'AI_API_KEY', 'REMOTE_RELAY_KEY', 'MS_CLIENT_SECRET']
 
 export async function getSetting(key: SettingKey): Promise<string> {
   const row = await prisma.systemSetting.findUnique({ where: { key } })

@@ -14,6 +14,14 @@ const schema = z.object({
   defaultLanguage: z.string().optional(),
   backupEnabled: z.boolean().optional(),
   mailAllowedDomains: z.string().max(500).optional(),
+  mailInGraphEnabled: z.boolean().optional(),
+  mailInGraphMailbox: z.string().email().optional().or(z.literal('')),
+  mailInGraphFolder: z.string().max(300).optional(),
+  mailInGraphMoveToFolder: z.string().max(300).optional(),
+  spamReplyEnabled: z.boolean().optional(),
+  mailInGraphTenantId: z.string().max(200).optional(),
+  mailInGraphClientId: z.string().max(200).optional(),
+  mailInGraphClientSecret: z.string().max(500).optional(),
   backupFrequency: z.enum(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY']).optional(),
   backupEmail: z.string().email().optional().or(z.literal('')),
   // Sicherungs-Umstellung (Stefan 2026-07-08): Download-Link + Erinnerung + optionales WebDAV-Ziel
@@ -34,6 +42,9 @@ const schema = z.object({
   datevWjBeginn: z.string().regex(/^\d{4}$/).optional().or(z.literal('')),
   datevFibuEmail: z.string().email().optional().or(z.literal('')),
   costCentersEnabled: z.boolean().optional(),
+  // Fälligkeits-Benachrichtigung (Stefan 2026-08-24): leerer String = aus (null in der DB)
+  dueReminderDaysAfterReceipt: z.number().int().min(1).max(365).nullable().optional(),
+  dueReminderDaysBeforeDue: z.number().int().min(1).max(365).nullable().optional(),
 })
 
 export async function PATCH(req: NextRequest) {
@@ -51,6 +62,12 @@ export async function PATCH(req: NextRequest) {
       where: { id: tenantId },
       data: {
         ...data,
+        mailInGraphMailbox: data.mailInGraphMailbox === '' ? null : data.mailInGraphMailbox,
+        mailInGraphFolder: data.mailInGraphFolder === '' ? null : data.mailInGraphFolder,
+        mailInGraphMoveToFolder: data.mailInGraphMoveToFolder === '' ? null : data.mailInGraphMoveToFolder,
+        mailInGraphTenantId: data.mailInGraphTenantId === '' ? null : data.mailInGraphTenantId,
+        mailInGraphClientId: data.mailInGraphClientId === '' ? null : data.mailInGraphClientId,
+        mailInGraphClientSecret: data.mailInGraphClientSecret === '' ? null : data.mailInGraphClientSecret,
         backupEmail: data.backupEmail === '' ? null : data.backupEmail,
         backupWebdavUrl: data.backupWebdavUrl === '' ? null : data.backupWebdavUrl,
         backupWebdavUser: data.backupWebdavUser === '' ? null : data.backupWebdavUser,
@@ -61,7 +78,7 @@ export async function PATCH(req: NextRequest) {
       },
     })
     // Passwort nie im Klartext ins (für mehrere Personen einsehbare) Audit-Protokoll schreiben
-    const SECRET_FIELDS = new Set(['backupWebdavPass'])
+    const SECRET_FIELDS = new Set(['backupWebdavPass', 'mailInGraphClientSecret'])
     await audit({
       tenantId,
       actorId: ctx.userId,

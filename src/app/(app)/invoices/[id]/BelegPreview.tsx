@@ -10,7 +10,9 @@
 // den Klartext/die Passphrase).
 import { useEffect, useState } from 'react'
 import { decryptBytes } from '@/lib/clientCrypto'
+import type { DocFormat, ParsedInvoiceData } from '@/lib/erechnung'
 import { getCachedDek, unlockWithPassphrase } from '@/lib/keyStore'
+import { ERechnungMockInvoice } from './ERechnungMockInvoice'
 
 const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp']
 
@@ -20,12 +22,17 @@ export function BelegPreview({
   origMime,
   mimeType,
   originalName,
+  mockData,
+  mockFormat,
 }: {
   invoiceId: string
   encrypted: boolean
   origMime: string | null
   mimeType: string | null
   originalName: string | null
+  /** Reine XML-Rechnung (kein PDF/Bild vorhanden) — aus dem XML gelesene Daten für die nachgebaute Ansicht unten. */
+  mockData?: ParsedInvoiceData | null
+  mockFormat?: DocFormat | null
 }) {
   const url = `/api/invoices/${invoiceId}/file`
   const effectiveMime = origMime ?? mimeType
@@ -133,6 +140,13 @@ export function BelegPreview({
         <iframe src={src} title="Rechnungsbild (PDF)" className="h-[75vh] w-full lg:h-[calc(100vh-220px)]" />
       </div>
     )
+  }
+
+  // Reine XML-Rechnung (XRechnung): kein PDF/Bild vorhanden, aber die
+  // Nachbau-Visualisierung aus den gelesenen Daten (deutlich mit Wasserzeichen
+  // als Nachbau gekennzeichnet — niemals mit dem Original verwechselbar).
+  if (mockData && mockFormat) {
+    return <ERechnungMockInvoice data={mockData} format={mockFormat} />
   }
 
   // Unbekannter/nicht darstellbarer Dateityp — kein Inline-Bild, aber

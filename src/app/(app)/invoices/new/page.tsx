@@ -408,7 +408,8 @@ export default function NewInvoicePage() {
           (serverseitig zusätzlich erzwungen). Tags und Notizen sind davon nicht betroffen.
         </p>
       )}
-      <label className="flex items-center gap-2 text-sm text-gray-700">
+      <label className="flex items-center gap-2 text-sm text-gray-700"
+        title="Zahlungsart ist keine steuerlich relevante Angabe der Rechnung — immer frei änderbar">
         <input type="checkbox" checked={f.directDebitByVendor}
           onChange={(e) => setF((p) => ({ ...p, directDebitByVendor: e.target.checked }))} />
         Lieferant bucht per Lastschrift/Abbuchung selbst ab (statt Überweisung)

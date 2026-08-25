@@ -9,7 +9,7 @@ import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { nextDocId } from '@/lib/docId'
 import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
-import { analyzeInvoiceFile, EINVOICE_FORMATS, type Analysis } from '@/lib/erechnung'
+import { analyzeInvoiceFile, autoElectronicCheck, EINVOICE_FORMATS, type Analysis } from '@/lib/erechnung'
 import { CONTENT_ENC_VENDOR_PLACEHOLDER, toDTO } from '@/lib/invoices'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
 
@@ -121,18 +121,19 @@ export async function POST(req: NextRequest) {
     // Neue Rechnungen starten immer im Eingangskorb (Körbe-Workflow, Stefan
     // 2026-07-08) — von dort aus werden sie manuell in andere Körbe verschoben.
     const basketId = await getInboxBasketId(tenantId)
-    // Elektronische Vorprüfung automatisch abhaken, wenn die E-Rechnung
-    // (ZUGFeRD/XRechnung) beim Einlesen bereits als formal gültig erkannt
-    // wurde — Stefan 2026-07-07: soll nicht erst manuell gesetzt werden
-    // müssen, wenn die Maschine es ohnehin schon geprüft hat.
-    const autoElectronicOk = analysis?.validation?.valid === true
+    // Elektronische Vorprüfung automatisch abhaken/als "entfällt" markieren
+    // (Stefan 2026-07-07 / 2026-08-25) — siehe lib/erechnung.ts autoElectronicCheck:
+    // bei gültiger E-Rechnung automatisch erledigt, bei Nicht-E-Rechnung
+    // (nackte PDF, Scan, verschlüsselter Upload — strukturell nie eine
+    // E-Rechnung) "entfällt" statt eines offenen, aber sinnlosen Häkchens.
+    const electronicCheck = autoElectronicCheck(analysis?.format ?? 'PDF', analysis?.validation?.valid)
     const invoice = await prisma.invoice.create({
       data: {
         tenantId,
         docId,
         basketId,
-        checkElectronicAt: autoElectronicOk ? new Date() : null,
-        checkElectronicBy: autoElectronicOk ? 'System (automatische Prüfung)' : null,
+        checkElectronicAt: electronicCheck.at,
+        checkElectronicBy: electronicCheck.by,
         vendor: hasEncryptedContent
           ? VENDOR_PLACEHOLDER
           : isEInvoiceUpload ? (d?.sellerName || 'Unbekannt') : (fields.vendor || d?.sellerName || 'Unbekannt'),
@@ -151,6 +152,8 @@ export async function POST(req: NextRequest) {
         dueDate: isEInvoiceUpload
           ? (d?.dueDate ? new Date(d.dueDate) : null)
           : fields.dueDate ? new Date(fields.dueDate) : d?.dueDate ? new Date(d.dueDate) : null,
+        discountDueDate: d?.discountDueDate ? new Date(d.discountDueDate) : null,
+        discountPercent: d?.discountPercent ?? null,
         amountNet: hasEncryptedContent ? null : isEInvoiceUpload ? (d?.net ?? null) : (parseAmount(fields.amountNet) ?? d?.net ?? null),
         amountTax: hasEncryptedContent ? null : isEInvoiceUpload ? (d?.tax ?? null) : (parseAmount(fields.amountTax) ?? d?.tax ?? null),
         amountGross: hasEncryptedContent ? null : isEInvoiceUpload ? (d?.gross ?? null) : (parseAmount(fields.amountGross) ?? d?.gross ?? null),

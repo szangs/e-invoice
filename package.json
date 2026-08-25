@@ -3,16 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "TZ=Europe/Berlin next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "TZ=Europe/Berlin next start",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
-    "smtp": "tsx scripts/smtp-server.ts",
-    "backup": "tsx scripts/backup-scheduler.ts"
+    "smtp": "TZ=Europe/Berlin tsx scripts/smtp-server.ts",
+    "mailin-graph": "TZ=Europe/Berlin tsx scripts/graph-mailin-poller.ts",
+    "send-test-invoices": "TZ=Europe/Berlin tsx scripts/send-test-invoices.ts",
+    "backup": "TZ=Europe/Berlin tsx scripts/backup-scheduler.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
+  },
+  "overrides": {
+    "@napi-rs/canvas": "^1.0.2"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.2",
@@ -28,6 +33,7 @@
     "nodemailer": "^7.0.7",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.0.0",
+    "playwright": "^1.62.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "smtp-server": "^3.13.6",

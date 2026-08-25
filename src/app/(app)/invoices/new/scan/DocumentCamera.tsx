@@ -295,14 +295,16 @@ export function DocumentCamera({
     <div className="dp-card space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-gray-900">Live-Scan (automatische Kantenerkennung)</h3>
-        <button type="button" className="btn-secondary !px-2 !py-1 text-xs" onClick={onClose}>Schließen</button>
+        <button type="button" className="btn-secondary !px-2 !py-1 text-xs" onClick={onClose}
+          title="Live-Scan abbrechen und Kamera freigeben, ohne ein Foto aufzunehmen">Schließen</button>
       </div>
 
       {status === 'error' && (
         <div className="space-y-2">
           <p className="text-sm text-[var(--danger)]">{error}</p>
           <div className="flex gap-2">
-            <button type="button" className="btn-secondary" onClick={retryPermission}>Erneut versuchen</button>
+            <button type="button" className="btn-secondary" onClick={retryPermission}
+              title="Seite neu laden und Kamera-Zugriff erneut anfragen">Erneut versuchen</button>
             <button type="button" className="btn-secondary" onClick={onClose}>Stattdessen normales Foto aufnehmen</button>
           </div>
         </div>
@@ -334,7 +336,8 @@ export function DocumentCamera({
             >
               Jetzt aufnehmen
             </button>
-            <label className="flex items-center gap-1.5 text-xs text-gray-600">
+            <label className="flex items-center gap-1.5 text-xs text-gray-600"
+              title="Wenn aktiv, wird das Foto automatisch aufgenommen, sobald die Rechnung kurz stabil vollständig im Bild ist">
               <input type="checkbox" checked={autoCaptureOn} onChange={(e) => setAutoCaptureOn(e.target.checked)} />
               automatisch auslösen
             </label>

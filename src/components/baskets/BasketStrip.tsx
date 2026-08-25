@@ -7,12 +7,17 @@
 // verschoben (ruft dieselbe Route wie das Dropdown in der Liste auf).
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+
+const LIVE_POLL_MS = 15_000
+// Winziger Herzschlag bei JEDEM Poll (Stefan 2026-08-25) — zeigt nur "gerade
+// geprüft", unabhängig davon, ob etwas Neues dabei war. Bewusst sehr kurz.
+const HEARTBEAT_MS = 700
 
 export type BasketTile = {
   id: string
   name: string
-  kind: 'INBOX' | 'HANDOVER' | 'CUSTOM' | 'ARCHIVE'
+  kind: 'INBOX' | 'HANDOVER' | 'CUSTOM' | 'ARCHIVE' | 'QUARANTINE'
   unprocessed: number
   processed: number
   /** Zahlungsziel (dueDate) liegt in den nächsten Tagen — ohne Lastschrift/bereits an Fibu übergeben. */
@@ -33,6 +38,7 @@ export function BasketStrip({
   baseParams,
   allowDrop = false,
   trash,
+  livePulse = false,
 }: {
   baskets: BasketTile[]
   activeBasketId: string | null
@@ -47,11 +53,49 @@ export function BasketStrip({
    * canDelete steuert, ob eine hierher gezogene Rechnung gelöscht werden darf
    * (dasselbe APPROVE-Recht wie der Löschen-Button in der Liste). */
   trash?: { href: string; active: boolean; count: number; canDelete?: boolean }
+  /** Winzige Herzschlag-Animation am Eingangskorb bei jedem Hintergrund-Poll
+   * (Stefan 2026-08-25) — bewusst zurückhaltend statt eines Toasts (Stefan:
+   * "die Visualisierung ist mir zu bunt"), zeigt nur "gerade geprüft", nicht
+   * "es gibt etwas Neues" (das erledigen die Zahlen selbst nach router.refresh()).
+   * Nur dort aktivieren, wo Nutzer typischerweise länger geöffnet lassen
+   * (Dashboard, Rechnungsliste) — nicht in der Körbe-Verwaltung. */
+  livePulse?: boolean
 }) {
   const router = useRouter()
   const [dragOver, setDragOver] = useState<string | null>(null)
   const [trashDragOver, setTrashDragOver] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [heartbeat, setHeartbeat] = useState(false)
+  const sinceRef = useRef(new Date().toISOString())
+
+  useEffect(() => {
+    if (!livePulse) return
+    let stop = false
+    function beat() {
+      setHeartbeat(true)
+      setTimeout(() => setHeartbeat(false), HEARTBEAT_MS)
+    }
+    async function poll() {
+      try {
+        const res = await fetch(`/api/invoices/recent-arrivals?since=${encodeURIComponent(sinceRef.current)}`, { cache: 'no-store' })
+        beat()
+        if (!res.ok) return
+        const data = await res.json()
+        if (stop) return
+        sinceRef.current = data.now ?? new Date().toISOString()
+        const ids: string[] = data.basketIds ?? []
+        if (ids.length > 0) router.refresh()
+      } catch {
+        beat()
+      }
+    }
+    const t = setInterval(poll, LIVE_POLL_MS)
+    return () => {
+      stop = true
+      clearInterval(t)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [livePulse])
 
   function hrefFor(basketId: string | null): string {
     const params = new URLSearchParams({ ...(baseParams ?? {}), ...(basketId ? { basket: basketId } : {}) })
@@ -112,6 +156,7 @@ export function BasketStrip({
     HANDOVER: 'Fester Übergabekorb an die Finanzbuchhaltung — immer der letzte Schritt',
     CUSTOM: 'Eigener Korb',
     ARCHIVE: 'Feste Ablage — Rechnungen landen hier automatisch nach der Übergabe und bleiben hier. Nur Admin/Betreiber kann Belege wieder herausverschieben.',
+    QUARANTINE: 'Fester Spam-Verdacht-Korb — Mail-Eingang-Dokumente, die die automatische Erkennung als KEINE Rechnung einstuft, landen automatisch hier statt im Eingangskorb. Fehlklassifikation? Einfach zurückziehen.',
   }
 
   // Kräftigere, sofort unterscheidbare Farbgebung je Korb-Art statt neutralem Grau.
@@ -120,6 +165,7 @@ export function BasketStrip({
     HANDOVER: { ring: 'border-[var(--warn-strong)]', iconBg: 'bg-[var(--warn)]', iconFg: 'text-white', barActive: 'bg-[var(--warn)]' },
     CUSTOM: { ring: 'border-[var(--accent-soft)]', iconBg: 'bg-[var(--accent-bg)]', iconFg: 'text-[var(--accent)]', barActive: 'bg-[var(--accent-soft)]' },
     ARCHIVE: { ring: 'border-gray-400', iconBg: 'bg-gray-500', iconFg: 'text-white', barActive: 'bg-gray-400' },
+    QUARANTINE: { ring: 'border-[var(--danger)]', iconBg: 'bg-[var(--danger)]', iconFg: 'text-white', barActive: 'bg-[var(--danger)]' },
   }
 
   return (
@@ -127,6 +173,7 @@ export function BasketStrip({
       {baskets.map((b) => {
         const isActive = activeBasketId === b.id
         const isDragOver = dragOver === b.id
+        const isHeartbeat = heartbeat && b.kind === 'INBOX'
         const style = KIND_STYLE[b.kind]
         const total = b.unprocessed + b.processed
         const pct = total > 0 ? Math.round((b.processed / total) * 100) : 0
@@ -137,7 +184,7 @@ export function BasketStrip({
             onDragLeave={allowDrop ? () => setDragOver((d) => (d === b.id ? null : d)) : undefined}
             onDrop={allowDrop ? (e) => onDrop(e, b.id) : undefined}
             title={allowDrop ? `${KIND_HINT[b.kind]} — Rechnungszeile hier ablegen zum Verschieben` : KIND_HINT[b.kind]}
-            className={`min-w-[190px] rounded-2xl border-2 bg-white px-4 py-3.5 shadow-sm transition ${
+            className={`relative min-w-[190px] rounded-2xl border-2 bg-white px-4 py-3.5 shadow-sm transition ${
               isDragOver
                 ? `${style.ring} scale-[1.03] bg-[var(--accent-bg)] shadow-lg ring-4 ring-[var(--accent-bg)]`
                 : isActive
@@ -145,6 +192,12 @@ export function BasketStrip({
                   : 'border-[var(--line)] hover:border-[var(--accent-soft)] hover:shadow-md'
             }`}
           >
+            {isHeartbeat && (
+              <span className="absolute right-2.5 top-2.5 flex h-2 w-2" title="Prüfe auf neue Rechnungen …">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--accent)] opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--accent)]" />
+              </span>
+            )}
             <Link href={hrefFor(b.id)} className="flex items-center gap-2.5">
               <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${style.iconBg} ${style.iconFg}`}>
                 <BasketKindIcon kind={b.kind} />
@@ -296,6 +349,15 @@ export function BasketKindIcon({ kind }: { kind: BasketTile['kind'] }) {
         <path d="M4 5h16v4H4z" />
         <path d="M5 9v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9" />
         <path d="M10 13h4" />
+      </svg>
+    )
+  }
+  if (kind === 'QUARANTINE') {
+    return (
+      <svg {...common} aria-hidden="true">
+        <path d="M12 3 2 20h20L12 3z" />
+        <path d="M12 10v4" />
+        <path d="M12 17h.01" />
       </svg>
     )
   }

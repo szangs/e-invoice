@@ -8,6 +8,22 @@ import { Invoice, InvoiceStatus } from '@prisma/client'
 // api/invoices/[id]/route.ts).
 export const CONTENT_ENC_VENDOR_PLACEHOLDER = '🔒 Verschlüsselt'
 
+// Positionszeilen aus der KI-Erkennung (Stefan 2026-08-25) — nur bei nackten
+// PDFs/Scans gesetzt, siehe Invoice.lineItems in schema.prisma.
+export type InvoiceLineItem = { name: string; qty: string | null; unitPrice: number | null; total: number | null }
+
+function parseLineItems(v: unknown): InvoiceLineItem[] | null {
+  if (!Array.isArray(v) || v.length === 0) return null
+  return v
+    .filter((l): l is Record<string, unknown> => typeof l === 'object' && l !== null)
+    .map((l) => ({
+      name: typeof l.name === 'string' ? l.name : '(ohne Bezeichnung)',
+      qty: typeof l.qty === 'string' ? l.qty : null,
+      unitPrice: typeof l.unitPrice === 'number' ? l.unitPrice : null,
+      total: typeof l.total === 'number' ? l.total : null,
+    }))
+}
+
 export const STATUS_LABELS: Record<InvoiceStatus, string> = {
   NEW: 'Neu',
   CHECKED: 'Geprüft',
@@ -22,6 +38,9 @@ export type InvoiceDTO = {
   invoiceNumber: string | null
   invoiceDate: string | null
   dueDate: string | null
+  // Skonto (Stefan 2026-08-25) — siehe Invoice.discountDueDate/-Percent in schema.prisma.
+  discountDueDate: string | null
+  discountPercent: number | null
   amountNet: number | null
   amountTax: number | null
   amountGross: number | null
@@ -40,6 +59,19 @@ export type InvoiceDTO = {
   duplicateOfId: string | null
   source: string
   aiAssisted: boolean
+  aiConfirmedAt: string | null
+  aiConfirmedBy: string | null
+  aiUncertainFields: string | null
+  // Spam-/Nicht-Rechnung-Klassifikation beim Mail-Eingang (lib/mailin.ts) —
+  // 'INVOICE' | 'UNCERTAIN' | 'NOT_INVOICE', null bei Scan/manuellem Upload.
+  invoiceClass: string | null
+  // Beleg-PDF wurde aus dem HTML-Mailtext gerendert, kein Original-PDF vom
+  // Lieferanten (lib/htmlToPdf.ts) — Kennzeichnung in der "Inhalt"-Spalte.
+  htmlRendered: boolean
+  // Mailtext, der zusammen mit dem Beleg ankam (lib/mailin.ts) — nur beim Mail-Eingang gesetzt.
+  mailBodyText: string | null
+  // Positionszeilen aus der KI-Erkennung (nur nackte PDFs/Scans, siehe oben) — null wenn keine gesetzt.
+  lineItems: InvoiceLineItem[] | null
   directDebitByVendor: boolean
   checkElectronicAt: string | null
   checkElectronicBy: string | null
@@ -72,6 +104,8 @@ export function toDTO(inv: Invoice): InvoiceDTO {
     invoiceNumber: inv.invoiceNumber,
     invoiceDate: inv.invoiceDate ? inv.invoiceDate.toISOString().slice(0, 10) : null,
     dueDate: inv.dueDate ? inv.dueDate.toISOString().slice(0, 10) : null,
+    discountDueDate: inv.discountDueDate ? inv.discountDueDate.toISOString().slice(0, 10) : null,
+    discountPercent: inv.discountPercent ? Number(inv.discountPercent) : null,
     amountNet: inv.amountNet ? Number(inv.amountNet) : null,
     amountTax: inv.amountTax ? Number(inv.amountTax) : null,
     amountGross: inv.amountGross ? Number(inv.amountGross) : null,
@@ -90,6 +124,13 @@ export function toDTO(inv: Invoice): InvoiceDTO {
     duplicateOfId: inv.duplicateOfId,
     source: inv.source,
     aiAssisted: inv.aiAssisted,
+    aiConfirmedAt: inv.aiConfirmedAt ? inv.aiConfirmedAt.toISOString() : null,
+    aiConfirmedBy: inv.aiConfirmedBy,
+    aiUncertainFields: inv.aiUncertainFields,
+    invoiceClass: inv.invoiceClass,
+    htmlRendered: inv.htmlRendered,
+    mailBodyText: inv.mailBodyText,
+    lineItems: parseLineItems(inv.lineItems),
     directDebitByVendor: inv.directDebitByVendor,
     checkElectronicAt: inv.checkElectronicAt ? inv.checkElectronicAt.toISOString() : null,
     checkElectronicBy: inv.checkElectronicBy,

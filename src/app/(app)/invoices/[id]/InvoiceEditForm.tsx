@@ -7,13 +7,20 @@ import { DEK_UNLOCKED_EVENT, notifyDekUnlocked, useDecryptedContent } from '@/co
 import { decryptBytes, encryptJson } from '@/lib/clientCrypto'
 import { EINVOICE_FORMATS } from '@/lib/docFormat'
 import { getCachedDek, unlockWithPassphrase } from '@/lib/keyStore'
-import type { InvoiceDTO } from '@/lib/invoices'
+import { formatAmount, type InvoiceDTO, type InvoiceLineItem } from '@/lib/invoices'
 import { BasketMoveSelect } from '../BasketMoveSelect'
-import { AttachmentsPanel } from './AttachmentsPanel'
 import { InvoiceNotesPanel } from './InvoiceNotesPanel'
+import { RequestCorrectionForm } from './RequestCorrectionForm'
 
 const AI_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp']
 const CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP']
+
+// Felder, die beim automatischen Mail-Eingang per KI vorbelegt werden (siehe
+// lib/mailin.ts) und deshalb vor dem ersten Verschieben von einem Menschen
+// durchgegangen werden müssen — Reihenfolge = Tab-Reihenfolge im Formular.
+type ReviewField = 'vendor' | 'invoiceNumber' | 'invoiceDate' | 'dueDate' | 'amountNet' | 'amountTax' | 'amountGross'
+const REVIEW_FIELD_ORDER: ReviewField[] = ['vendor', 'invoiceNumber', 'invoiceDate', 'dueDate', 'amountNet', 'amountTax', 'amountGross']
+type ReviewStatus = 'pending' | 'confirmed' | 'flagged'
 
 // Steuerlich relevante Felder bei ZUGFeRD/XRechnung sind gesperrt (Stefan
 // 2026-07-08): das XML ist das rechtsverbindliche Original — würde man
@@ -25,6 +32,17 @@ const CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP']
 const LOCK_REASON =
   'Aus der elektronischen Rechnung (ZUGFeRD/XRechnung) automatisch übernommen — laut GoBD nicht änderbar, ' +
   'da die Anzeige sonst vom rechtsverbindlichen Original abweichen würde.'
+
+// Bearbeitungskette (Stefan 2026-08-25): Herkunft der Rechnung lesbar
+// beschriften — "wurde über E-Invoice/E-Mail-Eingang verarbeitet" statt nur
+// des internen Kürzels aus Invoice.source.
+const SOURCE_LABELS: Record<string, string> = {
+  EMAIL: 'E-Mail-Eingang (E-Invoice, automatisch verarbeitet)',
+  UPLOAD: 'Manueller Upload',
+  SCAN: 'Scan (Kamera)',
+  EXTENSION: 'Rechnungs-Catcher (Browser-Erweiterung)',
+  RESTORE: 'Wiederhergestellt aus Sicherung',
+}
 
 const STATUS_OPTIONS = [
   { value: 'NEW', label: 'Neu' },
@@ -49,6 +67,9 @@ export function InvoiceEditForm({
   encryptionEnabled,
   costCentersEnabled,
   colleagues,
+  locked,
+  validationMissing,
+  suggestedVendorEmail,
 }: {
   invoice: InvoiceDTO
   baskets: { id: string; name: string }[]
@@ -56,6 +77,12 @@ export function InvoiceEditForm({
   encryptionEnabled: boolean
   costCentersEnabled: boolean
   colleagues: { id: string; name: string }[]
+  /** Beleg-Eingang fällt in ein abgeschlossenes Audit-Jahr (§18, Stefan 2026-08-25) — vollständig schreibgeschützt (serverseitig ebenfalls erzwungen, siehe api/invoices/[id]/route.ts). */
+  locked: boolean
+  /** Fehlende Pflichtangaben (EN 16931/§14 UStG) — null wenn keine E-Rechnung oder vollständig, siehe lib/erechnung.ts validateData. */
+  validationMissing: string[] | null
+  /** Aus dem Notiztext vorgeschlagene Absenderadresse für "Korrektur anfordern" — nur ein Vorschlag, siehe page.tsx. */
+  suggestedVendorEmail: string | null
 }) {
   const router = useRouter()
   const [f, setF] = useState({
@@ -63,6 +90,8 @@ export function InvoiceEditForm({
     invoiceNumber: invoice.invoiceNumber ?? '',
     invoiceDate: invoice.invoiceDate ?? '',
     dueDate: invoice.dueDate ?? '',
+    discountDueDate: invoice.discountDueDate ?? '',
+    discountPercent: toInput(invoice.discountPercent),
     amountNet: toInput(invoice.amountNet),
     amountTax: toInput(invoice.amountTax),
     amountGross: toInput(invoice.amountGross),
@@ -76,6 +105,11 @@ export function InvoiceEditForm({
   })
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+  // Positionszeilen aus der KI-Erkennung (Stefan 2026-08-25) — nur bei
+  // nackten PDFs/Scans, siehe Invoice.lineItems. Bewusst nur Anzeige, keine
+  // Bearbeitung — die App bietet nirgends eine Zeilen-Bearbeitung an, weder
+  // hier noch bei ZUGFeRD/XRechnung (dort sind es Original-XML-Daten).
+  const [lineItems, setLineItems] = useState<InvoiceLineItem[]>(invoice.lineItems ?? [])
 
   // Kostenstellen/Kostenträger (Stefan 2026-07-09, #114): Listen nur laden,
   // wenn der Mandant die Funktion eingeschaltet hat — Workflow-Feld, immer
@@ -168,8 +202,27 @@ export function InvoiceEditForm({
   const [aiBusy, setAiBusy] = useState(false)
   const [aiError, setAiError] = useState('')
   const [aiWarnings, setAiWarnings] = useState<string[]>([])
-  const [aiFlags, setAiFlags] = useState<string[]>([])
+  const [aiFlags, setAiFlags] = useState<string[]>(() => (invoice.aiUncertainFields ?? '').split(',').filter(Boolean))
   const [usedAi, setUsedAi] = useState(false)
+  // Bestätigungs-Fluss für automatisch (ohne Browser-Sitzung) per KI erkannte
+  // Werte, z. B. beim Mail-Eingang (lib/mailin.ts) — solange aiConfirmedAt
+  // leer ist, muss jedes Feld einmal per Tab (übernehmen) oder Shift+Tab
+  // (als falsch markieren) durchlaufen werden, bevor die Rechnung gespeichert
+  // werden kann UND verschiebbar wird (serverseitig erzwungen, siehe
+  // lib/baskets.ts requestMove).
+  const needsAiConfirm = invoice.aiAssisted && !invoice.aiConfirmedAt
+  const [reviewStatus, setReviewStatus] = useState<Record<ReviewField, ReviewStatus>>(
+    () => Object.fromEntries(REVIEW_FIELD_ORDER.map((k) => [k, 'pending'])) as Record<ReviewField, ReviewStatus>,
+  )
+  const activeReviewFields = REVIEW_FIELD_ORDER.filter((k) => k !== 'dueDate' || !invoice.directDebitByVendor)
+  const reviewedCount = activeReviewFields.filter((k) => reviewStatus[k] !== 'pending').length
+  const allReviewed = needsAiConfirm && reviewedCount === activeReviewFields.length
+  function reviewKeyDown(field: ReviewField) {
+    return (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key !== 'Tab' || !needsAiConfirm) return
+      setReviewStatus((p) => ({ ...p, [field]: e.shiftKey ? 'flagged' : 'confirmed' }))
+    }
+  }
   const [compareBusy, setCompareBusy] = useState(false)
   const [compareError, setCompareError] = useState('')
   const [compareResult, setCompareResult] = useState<{ field: string; label: string; xmlValue: string; aiValue: string }[] | null>(null)
@@ -242,10 +295,12 @@ export function InvoiceEditForm({
       }
       const d = data.data as {
         vendor: string | null; invoiceNumber: string | null; invoiceDate: string | null
-        dueDate: string | null; amountNet: number | null; amountTax: number | null
+        dueDate: string | null; discountDueDate: string | null; discountPercent: number | null
+        amountNet: number | null; amountTax: number | null
         amountGross: number | null; currency: string | null; tags: string | null
         directDebitByVendor: boolean | null
         uncertainFields: string[]; warnings: string[]
+        lines: InvoiceLineItem[]
       }
       setF((p) => ({
         ...p,
@@ -253,6 +308,8 @@ export function InvoiceEditForm({
         invoiceNumber: d.invoiceNumber ?? p.invoiceNumber,
         invoiceDate: d.invoiceDate ?? p.invoiceDate,
         dueDate: d.dueDate ?? p.dueDate,
+        discountDueDate: d.discountDueDate ?? p.discountDueDate,
+        discountPercent: d.discountPercent !== null ? toInput(d.discountPercent) : p.discountPercent,
         amountNet: d.amountNet !== null ? toInput(d.amountNet) : p.amountNet,
         amountTax: d.amountTax !== null ? toInput(d.amountTax) : p.amountTax,
         amountGross: d.amountGross !== null ? toInput(d.amountGross) : p.amountGross,
@@ -262,6 +319,7 @@ export function InvoiceEditForm({
       }))
       setAiFlags(d.uncertainFields ?? [])
       setAiWarnings(d.warnings ?? [])
+      if (d.lines && d.lines.length > 0) setLineItems(d.lines)
       setUsedAi(true)
       setMsg('KI-Vorschlag übernommen — bitte prüfen und speichern.')
     } catch {
@@ -278,10 +336,17 @@ export function InvoiceEditForm({
     const base = {
       invoiceDate: f.invoiceDate || null,
       dueDate: f.dueDate || null,
+      discountDueDate: f.discountDueDate || null,
+      discountPercent: toNumber(f.discountPercent),
       status: f.status,
       directDebitByVendor: f.directDebitByVendor,
       ...(costCentersEnabled ? { costCenterCode: f.costCenterCode || null, costCarrierCode: f.costCarrierCode || null } : {}),
       ...(usedAi ? { aiAssisted: true } : {}),
+      ...(allReviewed ? { confirmAi: true as const } : {}),
+      // Positionszeilen sind Workflow-Metadaten wie Kostenstelle/-träger, keine
+      // GoBD-gesperrten Rechnungsdaten — deshalb immer im Klartext, auch bei
+      // aktiver Inhalts-Verschlüsselung (analog costCenterCode oben).
+      lineItems: lineItems.length > 0 ? lineItems : null,
     }
     let body: Record<string, unknown>
     if (shouldEncryptContent) {
@@ -404,6 +469,13 @@ export function InvoiceEditForm({
   // Notizen, Prüfung, Anhänge, Nachrichten) — bessere Übersicht, gleiche Logik.
   return (
     <form onSubmit={save} className="space-y-4">
+      {locked && (
+        <div className="dp-card border-2 border-gray-300 bg-[var(--surface-muted)] text-sm text-gray-600">
+          🔒 Diese Rechnung gehört zum abgeschlossenen Prüfungszeitraum {new Date(invoice.createdAt).getFullYear()}
+          {' '}und ist schreibgeschützt — keine Änderungen, kein Verschieben, kein Löschen mehr möglich.
+        </div>
+      )}
+      <fieldset disabled={locked} className="contents border-0 p-0">
       <div className="dp-card space-y-2.5">
         {invoice.docId && (
           <p className="font-mono text-[11px] text-gray-400" title="Eindeutige Dokumenten-ID (GoBD-Referenzierung)">
@@ -417,7 +489,8 @@ export function InvoiceEditForm({
             </span>
             <input type="password" className="dp-input !w-auto flex-1" value={unlockPass} autoFocus
               onChange={(e) => setUnlockPass(e.target.value)} placeholder="Passphrase" />
-            <button type="button" className="btn-secondary" onClick={unlockContent} disabled={unlockBusy || !unlockPass}>
+            <button type="button" className="btn-secondary" onClick={unlockContent} disabled={unlockBusy || !unlockPass}
+              title="Verschlüsselte Inhalte mit dieser Passphrase im Browser entschlüsseln">
               {unlockBusy ? 'Entsperre …' : 'Entsperren'}
             </button>
             {unlockError && <span className="w-full text-xs text-[var(--danger)]">{unlockError}</span>}
@@ -432,6 +505,8 @@ export function InvoiceEditForm({
               currentBasketId={invoice.basketId}
               baskets={baskets}
               pending={pendingApproval}
+              disabled={needsAiConfirm}
+              disabledReason="Von der KI erkannte Werte müssen erst geprüft und bestätigt werden (siehe oben)."
             />
           </div>
         )}
@@ -491,13 +566,31 @@ export function InvoiceEditForm({
             ⚠ Bitte besonders prüfen — {aiWarnings.join(' ')}
           </p>
         )}
+        {needsAiConfirm && (
+          <div className="rounded-lg border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2">
+            <p className="text-xs font-semibold text-[var(--warn-strong)]">
+              🤖 Diese Werte wurden beim Mail-Eingang automatisch per KI erkannt und noch NICHT bestätigt
+              ({reviewedCount}/{activeReviewFields.length} Feld{activeReviewFields.length === 1 ? '' : 'er'} geprüft).
+              Die Rechnung lässt sich erst danach in einen anderen Korb verschieben.
+            </p>
+            <p className="mt-1 text-[11px] text-[var(--warn-strong)]">
+              Mit <kbd className="rounded border px-1 font-mono">Tab</kbd> durch die Felder gehen (übernimmt den
+              vorgeschlagenen Wert), bei einem falschen Wert stattdessen{' '}
+              <kbd className="rounded border px-1 font-mono">Shift+Tab</kbd> drücken, um ihn zu markieren, und den
+              richtigen Wert eintragen. Danach unten „Speichern".
+            </p>
+          </div>
+        )}
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Lieferant *" value={f.vendor} onChange={(v) => set('vendor', v)} required
-            warn={aiFlags.includes('vendor')} locked={isEInvoice} lockReason={LOCK_REASON} />
+            warn={aiFlags.includes('vendor')} locked={isEInvoice} lockReason={LOCK_REASON}
+            onKeyDown={reviewKeyDown('vendor')} reviewStatus={needsAiConfirm ? reviewStatus.vendor : undefined} />
           <Field label="Rechnungsnummer" value={f.invoiceNumber} onChange={(v) => set('invoiceNumber', v)}
-            warn={aiFlags.includes('invoiceNumber')} locked={isEInvoice} lockReason={LOCK_REASON} />
+            warn={aiFlags.includes('invoiceNumber')} locked={isEInvoice} lockReason={LOCK_REASON}
+            onKeyDown={reviewKeyDown('invoiceNumber')} reviewStatus={needsAiConfirm ? reviewStatus.invoiceNumber : undefined} />
           <Field label="Rechnungsdatum" type="date" value={f.invoiceDate} onChange={(v) => set('invoiceDate', v)}
-            warn={aiFlags.includes('invoiceDate')} locked={isEInvoice} lockReason={LOCK_REASON} />
+            warn={aiFlags.includes('invoiceDate')} locked={isEInvoice} lockReason={LOCK_REASON}
+            onKeyDown={reviewKeyDown('invoiceDate')} reviewStatus={needsAiConfirm ? reviewStatus.invoiceDate : undefined} />
           {f.directDebitByVendor ? (
             <div>
               <label className="dp-label">Fälligkeit</label>
@@ -507,14 +600,31 @@ export function InvoiceEditForm({
             </div>
           ) : (
             <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)}
-              warn={aiFlags.includes('dueDate')} locked={isEInvoice} lockReason={LOCK_REASON} />
+              warn={aiFlags.includes('dueDate')} locked={isEInvoice} lockReason={LOCK_REASON}
+              onKeyDown={reviewKeyDown('dueDate')} reviewStatus={needsAiConfirm ? reviewStatus.dueDate : undefined} />
+          )}
+          {/* Skonto (Stefan 2026-08-25): eigene Felder, getrennt von der
+              Fälligkeit oben — die ist IMMER das Zahlungsziel netto, Skonto
+              ist die kürzere Frist mit Rabatt bei vorzeitiger Zahlung. Nur
+              sichtbar, wenn erkannt/eingetragen ODER frei editierbar (keine
+              E-Rechnung), sonst unnötig leeres, gesperrtes Feldpaar. */}
+          {(f.discountDueDate || f.discountPercent || !isEInvoice) && (
+            <>
+              <Field label="Skonto-Frist" type="date" value={f.discountDueDate} onChange={(v) => set('discountDueDate', v)}
+                locked={isEInvoice} lockReason={LOCK_REASON} />
+              <Field label="Skonto (%)" value={f.discountPercent} onChange={(v) => set('discountPercent', v)}
+                locked={isEInvoice} lockReason={LOCK_REASON} />
+            </>
           )}
           <Field label="Netto" value={f.amountNet} onChange={(v) => set('amountNet', v)}
-            warn={aiFlags.includes('amountNet')} locked={isEInvoice} lockReason={LOCK_REASON} />
+            warn={aiFlags.includes('amountNet')} locked={isEInvoice} lockReason={LOCK_REASON}
+            onKeyDown={reviewKeyDown('amountNet')} reviewStatus={needsAiConfirm ? reviewStatus.amountNet : undefined} />
           <Field label="Steuer" value={f.amountTax} onChange={(v) => set('amountTax', v)}
-            warn={aiFlags.includes('amountTax')} locked={isEInvoice} lockReason={LOCK_REASON} />
+            warn={aiFlags.includes('amountTax')} locked={isEInvoice} lockReason={LOCK_REASON}
+            onKeyDown={reviewKeyDown('amountTax')} reviewStatus={needsAiConfirm ? reviewStatus.amountTax : undefined} />
           <Field label="Brutto" value={f.amountGross} onChange={(v) => set('amountGross', v)}
-            warn={aiFlags.includes('amountGross')} locked={isEInvoice} lockReason={LOCK_REASON} />
+            warn={aiFlags.includes('amountGross')} locked={isEInvoice} lockReason={LOCK_REASON}
+            onKeyDown={reviewKeyDown('amountGross')} reviewStatus={needsAiConfirm ? reviewStatus.amountGross : undefined} />
           <div>
             <label className="dp-label">
               Währung
@@ -547,6 +657,37 @@ export function InvoiceEditForm({
             🔒 Gesperrte Felder stammen aus der elektronischen Rechnung und sind laut GoBD nicht änderbar.
             Notizen, Tags, Status, Zahlungsart und Korb sind davon nicht betroffen und bleiben frei editierbar.
           </p>
+        )}
+        {/* Positionszeilen (Stefan 2026-08-25): nur bei nackten PDFs/Scans — bei
+            ZUGFeRD/XRechnung zeigt ERechnungView oben bereits die Positionen
+            live aus dem Original-XML, keine doppelte Tabelle nötig. Reine
+            Anzeige, nicht editierbar — von der KI gelesen, nicht von Hand erfasst. */}
+        {!isEInvoice && lineItems.length > 0 && (
+          <div>
+            <p className="dp-label mb-1">Positionszeilen ({lineItems.length}) — von der KI gelesen, bitte gegenprüfen</p>
+            <div className="max-h-72 overflow-y-auto rounded-lg border border-[var(--line)]">
+              <table className="w-full">
+                <thead className="sticky top-0 bg-[var(--surface)]">
+                  <tr className="dp-tr">
+                    <th className="dp-th">Bezeichnung</th>
+                    <th className="dp-th">Menge</th>
+                    <th className="dp-th text-right">Einzelpreis</th>
+                    <th className="dp-th text-right">Betrag</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lineItems.map((l, i) => (
+                    <tr key={i} className="dp-tr">
+                      <td className="dp-td">{l.name}</td>
+                      <td className="dp-td text-xs">{l.qty ?? '—'}</td>
+                      <td className="dp-td text-right text-xs">{l.unitPrice !== null ? formatAmount(l.unitPrice, f.currency) : '—'}</td>
+                      <td className="dp-td text-right">{l.total !== null ? formatAmount(l.total, f.currency) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         )}
         {canCompareXml && aiAvailable && (
           <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] px-3 py-2">
@@ -631,7 +772,12 @@ export function InvoiceEditForm({
       </div>
 
       <div className="dp-card">
-        <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">Rechnungsprüfung</h3>
+        <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">Bearbeitungskette</h3>
+        <p className="mb-2 flex items-center gap-2 text-sm text-gray-700">
+          <span className="text-gray-400">📥</span>
+          Eingang: {SOURCE_LABELS[invoice.source] ?? invoice.source}
+          <span className="text-[11px] text-gray-400">am {new Date(invoice.createdAt).toLocaleString('de-DE')}</span>
+        </p>
         <div className="space-y-1.5">
           <CheckRow
             label="Elektronische Vorprüfung"
@@ -645,14 +791,38 @@ export function InvoiceEditForm({
             at={invoice.checkFormalAt} by={invoice.checkFormalBy}
             busy={busy} onToggle={(v) => toggleCheck('checkFormal', v)}
           />
+          {/* Sachlich richtig / An Buchhaltung übergeben werden weiterhin nur in
+              der Rechnungsliste abgehakt (Korb-Recht APPROVE/HANDOVER, dort per
+              CheckBadges.tsx togglebar) — hier nur lesend, damit die komplette
+              Bearbeitungskette (wer hat wann was freigegeben) an einer Stelle
+              sichtbar ist, ohne die Rechte-Logik dieser Seite zu duplizieren. */}
+          <CheckRow
+            label="Sachlich richtig"
+            hint="Vier-Augen-Freigabe — togglebar in der Rechnungsliste (Korb-Recht „Sachlich freigeben“)"
+            at={invoice.checkSubstantiveAt} by={invoice.checkSubstantiveBy}
+            readOnly
+          />
+          <CheckRow
+            label="An Buchhaltung übergeben"
+            hint="Togglebar in der Rechnungsliste, nur im Übergabekorb (Korb-Recht HANDOVER)"
+            at={invoice.checkAccountingAt} by={invoice.checkAccountingBy}
+            readOnly
+          />
         </div>
-        <p className="mt-2 text-[11px] text-gray-400">
-          „Sachlich richtig" und „An Buchhaltung übergeben" werden in der Rechnungsliste abgehakt
-          (Buchhaltungs-Schritte, nicht Teil der Erfassung).
-        </p>
+        {/* "Korrektur anfordern" (Stefan 2026-08-25): Mensch löst den Versand
+            bewusst aus, kein Automatismus — siehe RequestCorrectionForm.tsx. */}
+        <div className="mt-3 border-t border-[var(--line)] pt-3">
+          <RequestCorrectionForm
+            invoiceId={invoice.id}
+            vendor={f.vendor}
+            invoiceNumber={f.invoiceNumber || null}
+            missing={validationMissing}
+            suggestedEmail={suggestedVendorEmail}
+            locked={locked}
+          />
+        </div>
       </div>
 
-      <AttachmentsPanel invoiceId={invoice.id} encryptionEnabled={encryptionEnabled} />
       <InvoiceNotesPanel invoiceId={invoice.id} colleagues={colleagues} />
 
       <div className="dp-card flex flex-wrap items-center gap-2">
@@ -670,20 +840,52 @@ export function InvoiceEditForm({
           <p className={`w-full text-sm ${msg === 'Gespeichert.' ? 'text-[var(--accent)]' : 'text-[var(--danger)]'}`}>{msg}</p>
         )}
       </div>
+      </fieldset>
     </form>
   )
 }
 
 function CheckRow({
-  label, hint, at, by, busy, onToggle,
+  label, hint, at, by, busy, onToggle, readOnly,
 }: {
-  label: string; hint?: string; at: string | null; by: string | null; busy: boolean; onToggle: (v: boolean) => void
+  label: string; hint?: string; at: string | null; by: string | null
+  busy?: boolean; onToggle?: (v: boolean) => void; readOnly?: boolean
 }) {
   const checked = at !== null
+  // Stefan 2026-08-25: bei Nicht-E-Rechnungen (nackte PDF, Scan, aus
+  // Dokumenten-Text) ist "Elektronische Vorprüfung" gar nicht anwendbar —
+  // System markiert das automatisch (siehe lib/erechnung.ts
+  // autoElectronicCheck), erkennbar am "System (entfällt"-Präfix. Statt
+  // eines togglebaren Häkchens (das nichts zu prüfen hätte) ein neutraler,
+  // nicht interaktiver Hinweis.
+  if (checked && by?.startsWith('System (entfällt')) {
+    return (
+      <p className="flex flex-wrap items-center gap-2 text-sm text-gray-400" title={`${hint ?? ''} — kein E-Rechnungs-Format, daher nichts maschinell zu prüfen.`}>
+        <span className="text-gray-300">–</span>
+        {label}
+        <span className="text-[11px] text-gray-400">entfällt (kein E-Rechnungs-Format)</span>
+      </p>
+    )
+  }
+  // Nur-Lese-Darstellung (Stefan 2026-08-25): "Sachlich richtig"/"An
+  // Buchhaltung übergeben" sind hier nicht togglebar (Rechte-Prüfung bleibt
+  // in der Liste, siehe CheckBadges.tsx) — trotzdem als Teil der
+  // Bearbeitungskette sichtbar, wer wann freigegeben hat bzw. dass es noch offen ist.
+  if (readOnly) {
+    return (
+      <p className="flex flex-wrap items-center gap-2 text-sm text-gray-700" title={hint}>
+        <span className={checked ? 'text-green-600' : 'text-gray-300'}>{checked ? '✓' : '○'}</span>
+        {label}
+        <span className="text-[11px] text-gray-400">
+          {checked ? `— ${by} am ${new Date(at as string).toLocaleString('de-DE')}` : '— noch offen'}
+        </span>
+      </p>
+    )
+  }
   return (
     <label className="flex flex-wrap items-center gap-2 text-sm text-gray-700" title={hint}>
       <input type="checkbox" checked={checked} disabled={busy} className="accent-green-600"
-        onChange={(e) => onToggle(e.target.checked)} />
+        onChange={(e) => onToggle?.(e.target.checked)} />
       {checked && <span className="text-green-600">✓</span>}
       {label}
       {checked && (
@@ -695,18 +897,26 @@ function CheckRow({
   )
 }
 
+const REVIEW_STATUS_ICON: Record<ReviewStatus, { icon: string; title: string; className: string }> = {
+  pending: { icon: '⏳', title: 'Noch zu prüfen — Tab zum Übernehmen, Shift+Tab wenn der Wert falsch ist', className: 'text-[var(--warn-strong)]' },
+  confirmed: { icon: '✓', title: 'Bestätigt', className: 'text-[var(--accent)]' },
+  flagged: { icon: '✗', title: 'Als falsch markiert — bitte Wert korrigieren', className: 'text-[var(--danger)]' },
+}
+
 function Field({
-  label, value, onChange, type = 'text', required, warn, locked, lockReason,
+  label, value, onChange, type = 'text', required, warn, locked, lockReason, onKeyDown, reviewStatus,
 }: {
   label: string; value: string; onChange: (v: string) => void; type?: string; required?: boolean; warn?: boolean
-  locked?: boolean; lockReason?: string
+  locked?: boolean; lockReason?: string; onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>; reviewStatus?: ReviewStatus
 }) {
+  const rs = reviewStatus ? REVIEW_STATUS_ICON[reviewStatus] : null
   return (
     <div>
       <label className="dp-label">
         {label}
         {warn && <span className="ml-1 text-[var(--warn-strong)]" title="KI ist sich hier unsicher — bitte prüfen">⚠</span>}
         {locked && <span className="ml-1 text-gray-400" title={lockReason}>🔒</span>}
+        {rs && <span className={`ml-1 ${rs.className}`} title={rs.title}>{rs.icon}</span>}
       </label>
       {locked ? (
         <p className="dp-input mt-1 flex items-center bg-[var(--surface-muted)] text-gray-500" title={lockReason}>
@@ -714,9 +924,10 @@ function Field({
         </p>
       ) : (
         <input
-          className={`dp-input mt-1 ${warn ? 'border-[var(--warn-border)] bg-[var(--warn-bg)]' : ''}`}
+          className={`dp-input mt-1 ${warn || reviewStatus === 'flagged' ? 'border-[var(--warn-border)] bg-[var(--warn-bg)]' : ''}`}
           type={type} value={value} required={required}
           onChange={(e) => onChange(e.target.value)}
+          onKeyDown={onKeyDown}
         />
       )}
     </div>
