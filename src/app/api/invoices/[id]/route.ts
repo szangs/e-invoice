@@ -1,9 +1,10 @@
 // Rechnung bearbeiten / löschen — Mandantentrennung an der Quelle (§22)
 import { NextRequest, NextResponse } from 'next/server'
-import { InvoiceStatus } from '@prisma/client'
+import { InvoiceStatus, Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
+import { isInvoiceLockedByClosure } from '@/lib/auditClosure'
 import { alwaysFullAccess, hasBasketRight, requireInvoiceContentAccess } from '@/lib/basketRights'
 import { ensureSystemBaskets, requestMove } from '@/lib/baskets'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
@@ -17,7 +18,8 @@ import { CONTENT_ENC_VENDOR_PLACEHOLDER, toDTO } from '@/lib/invoices'
 // versteckt (Stefan 2026-07-08). Notizen/Tags/Status/Zahlungsart/Korb sind
 // NICHT betroffen — das ist unsere eigene Workflow-Metadaten-Ebene.
 const TAX_RELEVANT_FIELDS = [
-  'vendor', 'invoiceNumber', 'invoiceDate', 'dueDate', 'amountNet', 'amountTax', 'amountGross', 'currency',
+  'vendor', 'invoiceNumber', 'invoiceDate', 'dueDate', 'discountDueDate', 'discountPercent',
+  'amountNet', 'amountTax', 'amountGross', 'currency',
 ] as const
 
 const schema = z.object({
@@ -25,6 +27,8 @@ const schema = z.object({
   invoiceNumber: z.string().nullable().optional(),
   invoiceDate: z.string().nullable().optional(),
   dueDate: z.string().nullable().optional(),
+  discountDueDate: z.string().nullable().optional(),
+  discountPercent: z.number().nullable().optional(),
   amountNet: z.number().nullable().optional(),
   amountTax: z.number().nullable().optional(),
   amountGross: z.number().nullable().optional(),
@@ -32,6 +36,14 @@ const schema = z.object({
   status: z.nativeEnum(InvoiceStatus).optional(),
   tags: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
+  // Positionszeilen aus "Mit KI erkennen" (Stefan 2026-08-25) — nur bei
+  // nackten PDFs/Scans, siehe Invoice.lineItems in schema.prisma.
+  lineItems: z.array(z.object({
+    name: z.string(),
+    qty: z.string().nullable(),
+    unitPrice: z.number().nullable(),
+    total: z.number().nullable(),
+  })).nullable().optional(),
   // Kostenstellen/Kostenträger (Stefan 2026-07-09, #114): Workflow-Feld wie
   // Status/Fälligkeit — bleibt IMMER Klartext, auch bei E-Rechnungen (nicht
   // in TAX_RELEVANT_FIELDS) und bei aktiver Inhalts-Verschlüsselung.
@@ -43,8 +55,13 @@ const schema = z.object({
   contentEnc: z.string().optional(),
   // Dubletten-Kennzeichnung aufheben ("keine Dublette")
   duplicateOfId: z.null().optional(),
+  // Abweichung Rechnungsempfänger/Firmenbezeichnung akzeptiert (Stefan 2026-08-25)
+  buyerNameMismatchAcknowledged: z.boolean().optional(),
   // Wird gesetzt, wenn beim Speichern zuvor "Mit KI erkennen" genutzt wurde
   aiAssisted: z.boolean().optional(),
+  // Menschliche Bestätigung der KI-erkannten Werte (Tab-Bestätigungs-Flow im
+  // Formular) — Server stempelt wer/wann, wie bei den Prüf-Häkchen unten.
+  confirmAi: z.literal(true).optional(),
   // Zahlungsart
   directDebitByVendor: z.boolean().optional(),
   // Rechnungsprüfung (4-Augen-Workflow) — Absicht als Boolean, Server setzt
@@ -75,9 +92,17 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     const ctx = await getContext()
     const tenantId = requireTenant(ctx)
     const existing = await findOwn(params.id, tenantId)
-    const { checkElectronic, checkFormal, checkSubstantive, checkAccounting, restore, ...rest } =
+    const { checkElectronic, checkFormal, checkSubstantive, checkAccounting, restore, confirmAi, lineItems, ...rest } =
       schema.parse(await req.json())
     const data = { ...rest } as typeof rest
+    // Separat behandelt statt im generischen `data`-Spread (Stefan
+    // 2026-08-25): Prisma verlangt für Json?-Spalten beim Löschen das
+    // Sentinel Prisma.JsonNull statt eines rohen `null` — ein bedingter
+    // Objekt-Spread `{...(x ? {lineItems: ...} : {})}` lässt TS beim
+    // konkreten Typ hier durcheinanderkommen (Union über beide Zweige, auch
+    // den `null`-Fall aus dem ursprünglichen `rest`), einzeln zugewiesen ist eindeutig.
+    const lineItemsUpdate: Prisma.InvoiceUpdateInput['lineItems'] =
+      lineItems === undefined ? undefined : (lineItems ?? Prisma.JsonNull)
 
     // Weich gelöschte Rechnung: nur die Wiederherstellung ist erlaubt, keine
     // sonstigen Änderungen (verhindert versehentliches Weiterbearbeiten).
@@ -90,6 +115,16 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     // geschützt, alle anderen Felder (Lieferant, Beträge, Notizen, Formal-
     // Häkchen …) ließen sich ohne jedes Korb-Recht per API ändern.
     await requireInvoiceContentAccess(ctx, existing.basketId)
+
+    // Perioden-Abschluss (§18, Stefan 2026-08-25): Belege aus einem
+    // abgeschlossenen Jahr sind vollständig schreibgeschützt — keine
+    // Ausnahme, auch nicht für Notizen/Prüfhäkchen (siehe
+    // lib/auditClosure.ts, api/platform/audit/period-close). Defense in
+    // depth wie bei den GoBD-Feldern unten: die UI sperrt bereits, aber ein
+    // direkter API-Aufruf darf es ebenfalls nicht umgehen können.
+    if (await isInvoiceLockedByClosure(existing.createdAt)) {
+      throw new ApiError(423, `Diese Rechnung gehört zum abgeschlossenen Prüfungszeitraum ${existing.createdAt.getFullYear()} und ist schreibgeschützt.`)
+    }
 
     // Steuerlich relevante Felder bei ZUGFeRD/XRechnung serverseitig sperren
     // (defense-in-depth — die UI blendet sie zwar schon read-only ein, aber
@@ -203,16 +238,24 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       basketMove = { basketId: handoverId }
     }
 
+    // Als eigene, explizit getypte Variable statt eines großen Inline-Spreads
+    // (Stefan 2026-08-25): TS kommt bei so vielen kombinierten optionalen
+    // Feldern sonst mit Prismas "checked vs. unchecked update input"-Union
+    // durcheinander (spätestens seit lineItems dazukam).
+    const updateData: Prisma.InvoiceUpdateInput = {
+      ...data,
+      lineItems: lineItemsUpdate,
+      ...checkData,
+      ...basketMove,
+      ...(restore ? { deletedAt: null, deletedBy: null } : {}),
+      ...(confirmAi ? { aiConfirmedAt: new Date(), aiConfirmedBy: ctx.email } : {}),
+      invoiceDate: data.invoiceDate === undefined ? undefined : data.invoiceDate ? new Date(data.invoiceDate) : null,
+      dueDate: data.dueDate === undefined ? undefined : data.dueDate ? new Date(data.dueDate) : null,
+      discountDueDate: data.discountDueDate === undefined ? undefined : data.discountDueDate ? new Date(data.discountDueDate) : null,
+    }
     const invoice = await prisma.invoice.update({
       where: { id: params.id },
-      data: {
-        ...data,
-        ...checkData,
-        ...basketMove,
-        ...(restore ? { deletedAt: null, deletedBy: null } : {}),
-        invoiceDate: data.invoiceDate === undefined ? undefined : data.invoiceDate ? new Date(data.invoiceDate) : null,
-        dueDate: data.dueDate === undefined ? undefined : data.dueDate ? new Date(data.dueDate) : null,
-      },
+      data: updateData,
     })
     await audit({
       tenantId,
@@ -282,6 +325,9 @@ export async function DELETE(_req: NextRequest, { params }: { params: { id: stri
     // dasselbe Recht wie "Sachlich freigeben" (APPROVE) auf dem aktuellen Korb.
     if (existing.basketId && !(await hasBasketRight(ctx.userId, ctx.role, existing.basketId, 'APPROVE'))) {
       throw new ApiError(403, 'Kein Recht zum Löschen in diesem Korb.')
+    }
+    if (await isInvoiceLockedByClosure(existing.createdAt)) {
+      throw new ApiError(423, `Diese Rechnung gehört zum abgeschlossenen Prüfungszeitraum ${existing.createdAt.getFullYear()} und ist schreibgeschützt.`)
     }
     const invoice = await prisma.invoice.update({
       where: { id: existing.id },

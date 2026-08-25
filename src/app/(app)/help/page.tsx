@@ -16,7 +16,7 @@ export default function HelpPage() {
         <table className="w-full max-w-md">
           <tbody>
             {ALL_NAV_ITEMS.map((i) => (
-              <tr key={i.code} className="dp-tr">
+              <tr key={i.code} className="dp-tr" title={i.hint}>
                 <td className="px-2 py-1.5 font-mono text-xs text-[var(--accent)]">{i.code}</td>
                 <td className="px-2 py-1.5 text-sm text-gray-700">{i.label}</td>
               </tr>

@@ -70,6 +70,7 @@ export default async function DashboardPage() {
           }))}
           activeBasketId={null}
           basePath="/invoices"
+          livePulse
         />
       </section>
 

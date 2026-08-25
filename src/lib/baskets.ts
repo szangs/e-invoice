@@ -9,19 +9,21 @@
 // Rechnung selbst.
 import { BasketKind, Role } from '@prisma/client'
 import { audit } from '@/lib/audit'
+import { isInvoiceLockedByClosure } from '@/lib/auditClosure'
 import { hasBasketRight } from '@/lib/basketRights'
 import { ApiError } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { sendSystemMail } from '@/lib/mail'
 
-/** Legt Eingangs-/Übergabe-/Ablagekorb an, falls für den Mandanten noch nicht vorhanden. */
+/** Legt Eingangs-/Übergabe-/Ablage-/Spam-Verdacht-Korb an, falls für den Mandanten noch nicht vorhanden. */
 export async function ensureSystemBaskets(
   tenantId: string,
-): Promise<{ inboxId: string; handoverId: string; archiveId: string }> {
-  const [inbox, handover, archive] = await Promise.all([
+): Promise<{ inboxId: string; handoverId: string; archiveId: string; quarantineId: string }> {
+  const [inbox, handover, archive, quarantine] = await Promise.all([
     prisma.basket.findFirst({ where: { tenantId, kind: BasketKind.INBOX, deletedAt: null } }),
     prisma.basket.findFirst({ where: { tenantId, kind: BasketKind.HANDOVER, deletedAt: null } }),
     prisma.basket.findFirst({ where: { tenantId, kind: BasketKind.ARCHIVE, deletedAt: null } }),
+    prisma.basket.findFirst({ where: { tenantId, kind: BasketKind.QUARANTINE, deletedAt: null } }),
   ])
   const inboxId = inbox
     ? inbox.id
@@ -40,13 +42,27 @@ export async function ensureSystemBaskets(
     : (await prisma.basket.create({
         data: { tenantId, name: 'Ablage', kind: BasketKind.ARCHIVE, position: 1000 },
       })).id
-  return { inboxId, handoverId, archiveId }
+  // Spam-Verdacht (Stefan 2026-08-25): Mail-Eingang-Dokumente, die die
+  // automatische Klassifikation eindeutig als KEINE Rechnung einstuft,
+  // landen hier statt im Eingangskorb (siehe lib/mailin.ts).
+  const quarantineId = quarantine
+    ? quarantine.id
+    : (await prisma.basket.create({
+        data: { tenantId, name: 'Spam-Verdacht', kind: BasketKind.QUARANTINE, position: 500 },
+      })).id
+  return { inboxId, handoverId, archiveId, quarantineId }
 }
 
 /** Bequemer Zugriff für die Rechnungs-Anlage: liefert nur die Eingangskorb-ID. */
 export async function getInboxBasketId(tenantId: string): Promise<string> {
   const { inboxId } = await ensureSystemBaskets(tenantId)
   return inboxId
+}
+
+/** Bequemer Zugriff für den Mail-Eingang: liefert nur die Spam-Verdacht-Korb-ID. */
+export async function getQuarantineBasketId(tenantId: string): Promise<string> {
+  const { quarantineId } = await ensureSystemBaskets(tenantId)
+  return quarantineId
 }
 
 /**
@@ -60,7 +76,15 @@ export async function getInboxBasketId(tenantId: string): Promise<string> {
  */
 export function sortBaskets<T extends { kind: BasketKind; position: number }>(baskets: T[]): T[] {
   const rank = (k: BasketKind) =>
-    k === BasketKind.INBOX ? 0 : k === BasketKind.HANDOVER ? 2 : k === BasketKind.ARCHIVE ? 3 : 1
+    k === BasketKind.INBOX
+      ? 0
+      : k === BasketKind.HANDOVER
+        ? 3
+        : k === BasketKind.ARCHIVE
+          ? 4
+          : k === BasketKind.QUARANTINE
+            ? 2
+            : 1 // CUSTOM
   return [...baskets].sort((a, b) => rank(a.kind) - rank(b.kind) || a.position - b.position)
 }
 
@@ -206,11 +230,27 @@ export async function requestMove(
   const invoice = await prisma.invoice.findFirst({
     where: { id: invoiceId, tenantId },
     select: {
-      id: true, vendor: true, invoiceNumber: true, basketId: true,
+      id: true, vendor: true, invoiceNumber: true, basketId: true, createdAt: true,
       checkElectronicAt: true, checkFormalAt: true, checkSubstantiveAt: true,
+      aiAssisted: true, aiConfirmedAt: true,
     },
   })
   if (!invoice) throw new Error('Rechnung nicht gefunden')
+
+  // Perioden-Abschluss (§18, Stefan 2026-08-25): Belege aus einem
+  // abgeschlossenen Jahr dürfen auch nicht mehr zwischen Körben verschoben
+  // werden (siehe lib/auditClosure.ts).
+  if (await isInvoiceLockedByClosure(invoice.createdAt)) {
+    throw new ApiError(423, `Diese Rechnung gehört zum abgeschlossenen Prüfungszeitraum ${invoice.createdAt.getFullYear()} und ist schreibgeschützt.`)
+  }
+
+  // KI-erkannte Werte müssen erst von einem Menschen bestätigt werden (Tab-
+  // Bestätigungs-Flow im Formular), bevor die Rechnung irgendwohin verschoben
+  // werden darf — verhindert, dass eine ungeprüfte KI-Vermutung unbemerkt
+  // weiterläuft (siehe InvoiceEditForm.tsx / lib/mailin.ts).
+  if (invoice.aiAssisted && !invoice.aiConfirmedAt) {
+    throw new ApiError(400, 'Von der KI erkannte Werte müssen erst bestätigt werden, bevor die Rechnung verschoben werden kann.')
+  }
 
   const target = await prisma.basket.findFirst({ where: { id: targetBasketId, tenantId, deletedAt: null } })
   if (!target) throw new Error('Zielkorb nicht gefunden')

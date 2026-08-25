@@ -11,10 +11,13 @@ export function TenantActions({
   tenantId,
   tenantName,
   active,
+  devMode,
 }: {
   tenantId: string
   tenantName: string
   active: boolean
+  /** Nur im Entwicklungsmodus: "Testrechnungen senden" ist eine reine Test-/Demo-Funktion. */
+  devMode: boolean
 }) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
@@ -57,6 +60,23 @@ export function TenantActions({
       }
       await signIn('credentials', { ticket: data.ticket, redirect: false })
       window.location.href = '/dashboard'
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function sendTestInvoices() {
+    if (!window.confirm(`10 Test-Rechnungen (PDF/XRechnung/ZUGFeRD gemischt) an das Mail-Eingang-Postfach von "${tenantName}" senden?`)) return
+    setBusy(true)
+    setMsg('Sende Testrechnungen …')
+    try {
+      const res = await fetch(`/api/platform/tenants/${tenantId}/test-invoices`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count: 10 }),
+      })
+      const data = await res.json().catch(() => ({}))
+      setMsg(data.message ?? data.error ?? 'Unbekanntes Ergebnis')
     } finally {
       setBusy(false)
     }
@@ -114,6 +134,16 @@ export function TenantActions({
         title="Sicherung dieses Mandanten sofort herunterladen">
         Backup
       </a>
+      {devMode && (
+        <button
+          disabled={busy || !active}
+          className="btn-secondary !px-2 !py-1 text-xs"
+          title="10 Beispielrechnungen (PDF/XRechnung/ZUGFeRD) an das Mail-Eingang-Postfach dieses Mandanten senden — zum Testen ohne Kommandozeile. Braucht ein hinterlegtes Postfach (Mandanten-Einstellungen → Allgemein)."
+          onClick={sendTestInvoices}
+        >
+          Testrechnungen senden
+        </button>
+      )}
       <button
         disabled={busy}
         className="btn-secondary !px-2 !py-1 text-xs"
@@ -129,7 +159,11 @@ export function TenantActions({
       >
         Zugangsdaten
       </button>
-      {msg && <span className="text-xs text-[var(--danger)]">{msg}</span>}
+      {msg && (
+        <span className={`text-xs ${msg.startsWith('Sende') || /^\d+ Testrechnung/.test(msg) ? 'text-gray-500' : 'text-[var(--danger)]'}`}>
+          {msg}
+        </span>
+      )}
     </div>
   )
 }

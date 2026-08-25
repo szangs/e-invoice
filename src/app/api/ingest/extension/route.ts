@@ -11,7 +11,7 @@ import { ApiError } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { nextDocId } from '@/lib/docId'
 import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
-import { analyzeInvoiceFile, type Analysis } from '@/lib/erechnung'
+import { analyzeInvoiceFile, autoElectronicCheck, type Analysis } from '@/lib/erechnung'
 import { hasFeature } from '@/lib/license'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
 
@@ -93,18 +93,20 @@ export async function POST(req: NextRequest) {
 
     const docId = await nextDocId(tenant.id)
     const basketId = await getInboxBasketId(tenant.id)
-    const autoElectronicOk = analysis?.validation?.valid === true
+    const electronicCheck = autoElectronicCheck(analysis?.format ?? 'PDF', analysis?.validation?.valid)
     const invoice = await prisma.invoice.create({
       data: {
         tenantId: tenant.id,
         docId,
         basketId,
-        checkElectronicAt: autoElectronicOk ? new Date() : null,
-        checkElectronicBy: autoElectronicOk ? 'System (automatische Prüfung)' : null,
+        checkElectronicAt: electronicCheck.at,
+        checkElectronicBy: electronicCheck.by,
         vendor: d?.sellerName || vendor,
         invoiceNumber: d?.number ?? null,
         invoiceDate: d?.issueDate ? new Date(d.issueDate) : null,
         dueDate: d?.dueDate ? new Date(d.dueDate) : null,
+        discountDueDate: d?.discountDueDate ? new Date(d.discountDueDate) : null,
+        discountPercent: d?.discountPercent ?? null,
         amountNet: d?.net ?? null,
         amountTax: d?.tax ?? null,
         amountGross: d?.gross ?? null,

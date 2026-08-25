@@ -11,6 +11,7 @@ export function BasketMoveSelect({
   baskets,
   pending,
   disabled,
+  disabledReason,
 }: {
   invoiceId: string
   currentBasketId: string | null
@@ -18,6 +19,8 @@ export function BasketMoveSelect({
   pending: { targetName: string; approvedBy: string[]; needed: number } | null
   /** Kein Verschieben-Recht auf dem aktuellen Korb (Stefan 2026-07-08) — Auswahl ausgeblendet. */
   disabled?: boolean
+  /** Text statt "kein Zugriff", falls disabled aus einem anderen Grund gesetzt wurde (z. B. KI-Bestätigung ausstehend). */
+  disabledReason?: string
 }) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
@@ -43,7 +46,11 @@ export function BasketMoveSelect({
   }
 
   if (disabled) {
-    return <span className="text-[10px] text-gray-400" title="Kein Recht zum Verschieben aus diesem Korb">kein Zugriff</span>
+    return (
+      <span className="text-[10px] text-gray-400" title={disabledReason ?? 'Kein Recht zum Verschieben aus diesem Korb'}>
+        {disabledReason ? '⏳ noch nicht verschiebbar' : 'kein Zugriff'}
+      </span>
+    )
   }
 
   return (
@@ -52,6 +59,7 @@ export function BasketMoveSelect({
         className="dp-input !w-auto !py-1 text-xs"
         value=""
         disabled={busy}
+        title="Rechnung in einen anderen Korb verschieben"
         onChange={(e) => move(e.target.value)}
       >
         <option value="">→ verschieben…</option>

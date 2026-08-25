@@ -4,9 +4,11 @@ import { redirect } from 'next/navigation'
 import { AppSidebar } from '@/components/shell/AppSidebar'
 import { AppTopbar } from '@/components/shell/AppTopbar'
 import { CommandPalette } from '@/components/shell/CommandPalette'
+import { FeedbackButton } from '@/components/shell/FeedbackButton'
 import { SessionWatcher } from '@/components/shell/SessionWatcher'
 import { authOptions } from '@/lib/auth'
 import { APP_VERSION, COPYRIGHT } from '@/lib/config'
+import { getSetting } from '@/lib/settings'
 
 export const dynamic = 'force-dynamic'
 
@@ -14,6 +16,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const session = await getServerSession(authOptions)
   if (!session?.user) redirect('/auth/login')
   const u = session.user
+  const feedbackEnabled = (await getSetting('FEEDBACK_ENABLED')) === '1'
 
   return (
     <div className="app-bg relative flex min-h-screen">
@@ -32,6 +35,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </footer>
       </div>
       <CommandPalette />
+      <FeedbackButton enabled={feedbackEnabled} />
     </div>
   )
 }

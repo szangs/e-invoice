@@ -14,6 +14,8 @@ type Entry = {
   invoiceId: string | null
 }
 
+type GraphStatus = { active: boolean; mailbox: string | null; folder: string | null }
+
 const STATUS_LABEL: Record<string, { text: string; bad: boolean }> = {
   PROCESSED: { text: 'Beleg angelegt', bad: false },
   NO_ATTACHMENT: { text: 'kein verwertbarer Anhang', bad: true },
@@ -27,6 +29,7 @@ export default function MailinPage() {
   const [entries, setEntries] = useState<Entry[]>([])
   const [address, setAddress] = useState<string | null>(null)
   const [enabled, setEnabled] = useState(true)
+  const [graph, setGraph] = useState<GraphStatus>({ active: false, mailbox: null, folder: null })
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
@@ -40,6 +43,7 @@ export default function MailinPage() {
         setEntries(data.entries)
         setAddress(data.address)
         setEnabled(data.enabled)
+        setGraph(data.graph ?? { active: false, mailbox: null, folder: null })
         setLoaded(true)
       } catch {
         /* nächster Versuch */
@@ -75,16 +79,25 @@ export default function MailinPage() {
               Ihr Rechnungspostfach. Geben Sie die Adresse dennoch direkt weiter (was technisch
               funktioniert), übernehmen wir keine Gewähr für deren dauerhafte Verfügbarkeit.
             </p>
-            {!enabled && (
+            {!enabled && !graph.active && (
               <p className="mt-2 rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-strong)]">
                 Der automatische Abruf ist derzeit deaktiviert — eingehende Mails werden gesammelt
                 und nach Aktivierung verarbeitet.
               </p>
             )}
           </>
-        ) : (
+        ) : loaded && !graph.active ? (
           <p className="text-sm text-gray-400">
-            {loaded ? 'Die Einlieferungs-Adresse ist noch nicht eingerichtet — bitte Support kontaktieren (SU01).' : 'Lade …'}
+            Die Einlieferungs-Adresse ist noch nicht eingerichtet — bitte Support kontaktieren (SU01).
+          </p>
+        ) : !loaded ? (
+          <p className="text-sm text-gray-400">Lade …</p>
+        ) : null}
+        {graph.active && (
+          <p className="mt-2 rounded-lg bg-[var(--accent-bg)] px-3 py-2 text-xs text-[var(--accent)]">
+            Zusätzlich aktiv: automatischer Abruf per Microsoft Graph aus Postfach{' '}
+            <span className="font-mono">{graph.mailbox}</span>
+            {graph.folder ? <>, Ordner <span className="font-mono">{graph.folder}</span></> : null}.
           </p>
         )}
       </section>

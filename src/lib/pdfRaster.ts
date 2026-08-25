@@ -11,6 +11,17 @@
 // zwar in Node, benötigt aber eine eigene CanvasFactory, damit auch interne
 // Hilfs-Canvases (z. B. für Muster/Verläufe) über @napi-rs/canvas statt über
 // das DOM erzeugt werden.
+//
+// standardFontDataUrl (Stefan 2026-08-25): ohne diesen Pfad kann pdfjs nicht
+// eingebettete Standard-Fonts (Helvetica etc. — der Normalfall bei den
+// meisten PDF-Erzeugern) nicht rendern und schlägt beim Glyphen-Pfad still
+// fehl ("Value is none of these types `String`, `Path`") — betraf praktisch
+// jede "nackte" PDF (Thumbnails UND KI-Rasterung). Muss ein absoluter
+// Verzeichnispfad mit abschließendem "/" sein (wird von pdfjs intern per
+// fs.readFile gelesen, keine echte URL trotz des Namens).
+import path from 'node:path'
+const STANDARD_FONT_DATA_URL = path.join(process.cwd(), 'node_modules/pdfjs-dist/standard_fonts') + '/'
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PdfJsCanvasAndContext = { canvas: any; context: any }
 
@@ -58,7 +69,12 @@ export async function rasterizeFirstPage(pdfBuffer: Buffer, scale = 2): Promise<
     const loadingTask = (pdfjsLib as unknown as {
       getDocument: (opts: object) => { promise: Promise<unknown> }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    }).getDocument({ data: new Uint8Array(pdfBuffer), canvasFactory: factory, isEvalSupported: false })
+    }).getDocument({
+      data: new Uint8Array(pdfBuffer),
+      canvasFactory: factory,
+      isEvalSupported: false,
+      standardFontDataUrl: STANDARD_FONT_DATA_URL,
+    })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const doc = (await loadingTask.promise) as any
     const page = await doc.getPage(1)
@@ -70,6 +86,35 @@ export async function rasterizeFirstPage(pdfBuffer: Buffer, scale = 2): Promise<
     return png
   } catch (e) {
     console.error('PDF-Rasterung fehlgeschlagen:', e instanceof Error ? e.message : e)
+    return null
+  }
+}
+
+/**
+ * Liest den Textlayer der ersten Seite einer PDF (kein Rendering/Canvas nötig,
+ * deutlich billiger als rasterizeFirstPage) — für die Stichwort-Heuristik im
+ * Mail-Eingang, wenn kein KI-Anbieter konfiguriert ist (siehe lib/mailin.ts
+ * classifyPlainDocument). Gibt `null` zurück statt zu werfen (kein Textlayer,
+ * defekte PDF …) — Aufrufer soll das als "keine Aussage möglich" behandeln.
+ */
+export async function extractFirstPageText(pdfBuffer: Buffer): Promise<string | null> {
+  try {
+    const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs')
+    const loadingTask = (pdfjsLib as unknown as {
+      getDocument: (opts: object) => { promise: Promise<unknown> }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }).getDocument({ data: new Uint8Array(pdfBuffer), isEvalSupported: false })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const doc = (await loadingTask.promise) as any
+    const page = await doc.getPage(1)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const content = await page.getTextContent()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const text = (content.items as any[]).map((it) => it.str ?? '').join(' ').trim()
+    await doc.destroy()
+    return text || null
+  } catch (e) {
+    console.error('PDF-Textextraktion fehlgeschlagen:', e instanceof Error ? e.message : e)
     return null
   }
 }

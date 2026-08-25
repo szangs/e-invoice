@@ -6,7 +6,7 @@
 // untereinander gestapelt, jetzt wie bei den Mandanten-Einstellungen
 // (SettingsHub.tsx) ein Themenbereich anklicken, statt alles auf einmal zu
 // zeigen. Gleiches Muster/gleiche Icons wie dort für Wiedererkennbarkeit.
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { BackupOps } from './BackupOps'
 
 type Settings = Record<string, string>
@@ -18,10 +18,16 @@ const FREQUENCIES = [
   { value: 'YEARLY', label: 'jährlich' },
 ]
 
+const MAIL_PROVIDERS = [
+  { value: 'SMTP', label: 'Klassisches SMTP (Benutzer/Passwort)' },
+  { value: 'SMTP_OAUTH2', label: 'Office 365 SMTP mit OAuth2 (App-Registrierung)' },
+  { value: 'GRAPH', label: 'Microsoft Graph API (empfohlen für Office 365)' },
+]
+
 type TabKey = 'smtp' | 'mailin' | 'ai' | 'remote' | 'backup' | 'switches'
 
 const TABS: { key: TabKey; label: string; hint: string }[] = [
-  { key: 'smtp', label: 'Mail-Versand', hint: 'SMTP-Zugangsdaten, Willkommens-Mail, Test-Mail' },
+  { key: 'smtp', label: 'Mail-Versand', hint: 'SMTP / Office 365 (OAuth2, Graph), Willkommens-Mail, Test-Mail' },
   { key: 'mailin', label: 'Mail-Eingang', hint: 'Eigener SMTP-Empfänger für die Einlieferungs-Adressen der Mandanten' },
   { key: 'ai', label: 'KI-Anbieter', hint: 'Frei wählbarer, OpenAI-kompatibler Anbieter für die Belegerkennung' },
   { key: 'remote', label: 'Fernwartung', hint: 'Relay-Zugangsdaten (§14B)' },
@@ -156,8 +162,20 @@ export default function SystemSettingsPage() {
       {hint && <p className="mt-0.5 text-[10px] text-gray-400">{hint}</p>}
     </div>
   )
-  const toggle = (key: string, label: string, warn?: string) => (
-    <label className="flex items-start gap-2 text-sm text-gray-700">
+  const helpBox = (summary: string, steps: ReactNode[]) => (
+    <details className="rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] px-3 py-2 open:pb-3">
+      <summary className="cursor-pointer select-none text-xs font-semibold text-[var(--accent)]">
+        {summary}
+      </summary>
+      <ol className="mt-2 list-decimal space-y-1.5 pl-4 text-xs leading-relaxed text-gray-600">
+        {steps.map((step, i) => (
+          <li key={i}>{step}</li>
+        ))}
+      </ol>
+    </details>
+  )
+  const toggle = (key: string, label: string, warn?: string, hint?: string) => (
+    <label className="flex items-start gap-2 text-sm text-gray-700" title={hint}>
       <input type="checkbox" className="mt-0.5" checked={s[key] === '1'}
         onChange={(e) => set(key, e.target.checked ? '1' : '')} />
       <span>
@@ -204,7 +222,9 @@ export default function SystemSettingsPage() {
                   <span className={`block truncate text-sm font-semibold ${isActive ? 'text-[var(--accent)]' : 'text-gray-800'}`}>
                     {t.label}
                   </span>
-                  {t.key === 'smtp' && s.SMTP_HOST && <span className="block text-[11px] text-gray-500">eingerichtet</span>}
+                  {t.key === 'smtp' && (s.MAIL_PROVIDER === 'GRAPH' || s.MAIL_PROVIDER === 'SMTP_OAUTH2' ? s.MS_SENDER_EMAIL : s.SMTP_HOST) && (
+                    <span className="block text-[11px] text-gray-500">eingerichtet</span>
+                  )}
                   {t.key === 'mailin' && s.MAIL_SMTP_ENABLED === '1' && <span className="block text-[11px] text-gray-500">aktiv</span>}
                   {t.key === 'ai' && s.AI_PROVIDER && <span className="block text-[11px] text-gray-500">{s.AI_PROVIDER}</span>}
                   {t.key === 'backup' && s.BACKUP_SYSTEM_ENABLED === '1' && <span className="block text-[11px] text-gray-500">aktiv</span>}
@@ -218,16 +238,109 @@ export default function SystemSettingsPage() {
 
       {tab === 'smtp' && (
         <section className="dp-card space-y-4">
-          <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Mail-Versand (SMTP)</h2>
-          <div className="grid gap-4 sm:grid-cols-2">
-            {input('SMTP_HOST', 'Host')}
-            {input('SMTP_PORT', 'Port', 'number')}
-            {input('SMTP_USER', 'Benutzer')}
-            {input('SMTP_PASS', 'Passwort (maskiert)', 'text', 'Nur ändern, wenn neu gesetzt werden soll')}
-            {input('SMTP_FROM', 'Absender', 'text', 'z. B. E-Invoice <noreply@deltaplus.de>')}
-          </div>
-          {toggle('SMTP_SECURE', 'TLS/SSL (secure) verwenden')}
-          {toggle('WELCOME_MAIL_ENABLED', 'Willkommens-Mail mit Zugangsdaten automatisch versenden')}
+          <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Mail-Versand</h2>
+
+          {select('MAIL_PROVIDER', 'Anbieter', MAIL_PROVIDERS)}
+
+          {(s.MAIL_PROVIDER || 'SMTP') === 'SMTP' && (
+            <div className="space-y-3">
+              {helpBox('Anleitung: Zugangsdaten des Mail-Anbieters einrichten', [
+                <>Zugangsdaten bei eurem E-Mail-/Hosting-Anbieter besorgen (Host, Port, Benutzer, Passwort) — oft im Kundenportal unter „SMTP" oder „Postausgangsserver" zu finden.</>,
+                <>Üblich: Port <span className="font-mono">587</span> mit STARTTLS oder Port <span className="font-mono">465</span> mit SSL/TLS. Bei 587 „TLS/SSL verwenden" unten meist deaktiviert lassen (STARTTLS läuft automatisch), bei 465 aktivieren.</>,
+                <>Werte hier eintragen, „Speichern", dann unten eine Test-Mail an die eigene Adresse senden.</>,
+                <><strong>Office 365 / Exchange Online:</strong> Diese klassische Variante funktioniert bei den meisten Tenants nicht mehr — Microsoft hat SMTP AUTH mit Benutzer/Passwort größtenteils abgeschaltet. Bitte stattdessen oben „Microsoft Graph API" wählen.</>,
+              ])}
+              <div className="grid gap-4 sm:grid-cols-2">
+                {input('SMTP_HOST', 'Host')}
+                {input('SMTP_PORT', 'Port', 'number')}
+                {input('SMTP_USER', 'Benutzer')}
+                {input('SMTP_PASS', 'Passwort (maskiert)', 'text', 'Nur ändern, wenn neu gesetzt werden soll')}
+                {input('SMTP_FROM', 'Absender', 'text', 'z. B. E-Invoice <noreply@deltaplus.de>')}
+              </div>
+            </div>
+          )}
+          {(s.MAIL_PROVIDER || 'SMTP') === 'SMTP' && toggle('SMTP_SECURE', 'TLS/SSL (secure) verwenden', undefined, 'Bei Port 465 aktivieren, bei Port 587 mit STARTTLS meist deaktiviert lassen')}
+
+          {s.MAIL_PROVIDER === 'SMTP_OAUTH2' && (
+            <div className="space-y-3">
+              <p className="text-[11px] text-gray-400">
+                Microsoft hat SMTP AUTH mit Benutzer/Passwort für Exchange Online größtenteils
+                abgeschaltet. Diese Variante meldet sich stattdessen per OAuth2 (XOAUTH2) bei{' '}
+                <span className="font-mono">smtp.office365.com:587</span> an — dafür wird eine
+                Azure-AD-App-Registrierung mit Client-Secret benötigt, deren Tenant „SMTP AUTH
+                (OAuth 2.0)" für das Sende-Postfach zulässt.
+              </p>
+              {helpBox('Anleitung: Azure-AD-App + Exchange-Freigabe einrichten (braucht Tenant-Admin)', [
+                <>Wie bei „Microsoft Graph API" unten eine App-Registrierung anlegen und Tenant-ID, Client-ID und Client-Secret notieren (Schritte 1–3 dort) — die Anwendungsberechtigung „Mail.Send" wird hier <em>nicht</em> benötigt.</>,
+                <>Zusätzlich muss ein Tenant-Admin per PowerShell (Modul <span className="font-mono">ExchangeOnlineManagement</span>) OAuth für SMTP AUTH freischalten: <span className="font-mono">Set-OrganizationConfig -OAuth2ClientProfileEnabled $true</span></>,
+                <>Für das sendende Postfach SMTP AUTH aktivieren: <span className="font-mono">Set-CASMailbox -Identity noreply@deltaplus.de -SmtpClientAuthenticationDisabled $false</span></>,
+                <>Werte hier eintragen (Tenant-ID, Client-ID, Client-Secret, Postfach), speichern, Test-Mail senden.</>,
+                <><strong>Hinweis:</strong> Microsoft schränkt diesen Weg zunehmend ein. Falls es nicht zuverlässig funktioniert oder eure IT diese Freigabe nicht erlauben will, ist „Microsoft Graph API" der robustere, offiziell empfohlene Weg — und braucht keine Exchange-PowerShell-Freigabe.</>,
+              ])}
+              <div className="grid gap-4 sm:grid-cols-2">
+                {input('MS_TENANT_ID', 'Tenant-ID (Azure AD)')}
+                {input('MS_CLIENT_ID', 'Client-ID (App-Registrierung)')}
+                {input('MS_CLIENT_SECRET', 'Client-Secret (maskiert)', 'text', 'Nur ändern, wenn neu gesetzt werden soll')}
+                {input('MS_SENDER_EMAIL', 'Sendendes Postfach', 'email', 'z. B. noreply@deltaplus.de')}
+                {input('SMTP_HOST', 'SMTP-Host', 'text', 'Standard: smtp.office365.com')}
+                {input('SMTP_FROM', 'Absender (Anzeige)', 'text', 'Meist identisch mit dem sendenden Postfach')}
+              </div>
+            </div>
+          )}
+
+          {s.MAIL_PROVIDER === 'GRAPH' && (
+            <div className="space-y-3">
+              <p className="text-[11px] text-gray-400">
+                Versand über die Microsoft-Graph-API (<span className="font-mono">/users/&#123;Postfach&#125;/sendMail</span>)
+                — kein SMTP nötig, funktioniert auch bei tenant-weit gesperrtem SMTP AUTH. Die
+                Azure-AD-App-Registrierung benötigt die Anwendungsberechtigung „Mail.Send" mit
+                Admin-Zustimmung. Empfohlener Weg für Office 365.
+              </p>
+              {helpBox('Anleitung: Azure-AD-App-Registrierung einrichten (braucht Tenant-Admin, einmalig)', [
+                <>
+                  Auf <span className="font-mono">portal.azure.com</span> anmelden → <strong>Azure Active Directory</strong> →{' '}
+                  <strong>App-Registrierungen</strong> → <strong>„Neue Registrierung"</strong>. Name frei wählbar
+                  (z. B. „E-Invoice Mailversand"), Kontotyp „Nur Konten in diesem Organisationsverzeichnis".
+                </>,
+                <>Auf der Übersichtsseite der neuen App <strong>Tenant-ID</strong> (Verzeichnis-ID) und <strong>Client-ID</strong> (Anwendungs-ID) notieren — beide unten eintragen.</>,
+                <>
+                  Links im Menü <strong>„Zertifikate &amp; Geheimnisse"</strong> → <strong>„Neuer geheimer Clientschlüssel"</strong> →
+                  Beschreibung eintragen, Ablaufdatum wählen, „Hinzufügen". Sofort den angezeigten <strong>Wert</strong> kopieren
+                  (nicht die Geheimnis-ID!) — er wird danach nie wieder angezeigt. Das ist das <strong>Client-Secret</strong> unten.
+                </>,
+                <>
+                  Links im Menü <strong>„API-Berechtigungen"</strong> → <strong>„Berechtigung hinzufügen"</strong> →{' '}
+                  <strong>Microsoft Graph</strong> → <strong>„Anwendungsberechtigungen"</strong> (nicht „Delegierte Berechtigungen"!)
+                  → nach <span className="font-mono">Mail.Send</span> suchen, Häkchen setzen, „Berechtigungen hinzufügen".
+                </>,
+                <>
+                  Auf derselben Seite <strong>„Administratorzustimmung für [Tenant] erteilen"</strong> klicken und bestätigen —
+                  dafür sind Tenant-/Global-Admin-Rechte nötig. Ohne diesen Schritt bleibt der Status „Nicht erteilt" und der
+                  Versand schlägt fehl.
+                </>,
+                <>
+                  Als sendendes Postfach ein echtes, existierendes Postfach im Tenant eintragen (z. B.{' '}
+                  <span className="font-mono">noreply@deltaplus.de</span>) — die App darf damit senden, sobald oben Schritt 5
+                  erledigt ist.
+                </>,
+                <>
+                  Optional, aber empfohlen: Zugriff der App per <span className="font-mono">Application Access Policy</span> auf genau
+                  dieses Postfach einschränken (PowerShell, Modul <span className="font-mono">ExchangeOnlineManagement</span>):{' '}
+                  <span className="font-mono">New-ApplicationAccessPolicy -AppId &lt;Client-ID&gt; -PolicyScopeGroupId noreply@deltaplus.de -AccessRight RestrictAccess</span>.
+                  Sonst kann die App im Prinzip als jedes Postfach im Tenant senden.
+                </>,
+                <>Alle vier Werte unten eintragen, „Speichern", dann über „Test-Mail senden an" eine echte Mail an die eigene Adresse schicken.</>,
+              ])}
+              <div className="grid gap-4 sm:grid-cols-2">
+                {input('MS_TENANT_ID', 'Tenant-ID (Azure AD)')}
+                {input('MS_CLIENT_ID', 'Client-ID (App-Registrierung)')}
+                {input('MS_CLIENT_SECRET', 'Client-Secret (maskiert)', 'text', 'Nur ändern, wenn neu gesetzt werden soll')}
+                {input('MS_SENDER_EMAIL', 'Sendendes Postfach', 'email', 'z. B. noreply@deltaplus.de')}
+              </div>
+            </div>
+          )}
+
+          {toggle('WELCOME_MAIL_ENABLED', 'Willkommens-Mail mit Zugangsdaten automatisch versenden', undefined, 'Neu angelegte Benutzer erhalten ihr Startpasswort automatisch per E-Mail statt nur in der Oberfläche angezeigt')}
           <div className="border-t border-[var(--line)] pt-3">
             <label className="dp-label">Test-Mail senden an</label>
             <div className="mt-1 flex flex-wrap items-center gap-3">
@@ -263,8 +376,43 @@ export default function SystemSettingsPage() {
             {input('MAIL_IN_ALLOWED_DOMAINS', 'Nur Absender dieser Domänen (global)', 'text', 'kommagetrennt, leer = alle')}
           </div>
           <div>
-            {toggle('MAIL_SMTP_ENABLED', 'SMTP-Empfänger aktiv')}
+            {toggle('MAIL_SMTP_ENABLED', 'SMTP-Empfänger aktiv', undefined, 'Bei "aus" nimmt der eigene SMTP-Empfänger keine eingehenden Mails mehr an — Mandanten mit Weiterleitung dorthin bekommen dann keine automatischen Rechnungen mehr')}
           </div>
+
+          <h2 className="pt-2 text-sm font-bold uppercase tracking-wide text-gray-500">Mail-Eingang per Microsoft Graph (Alternative)</h2>
+          <p className="text-[11px] text-gray-400">
+            Statt Weiterleitung auf die Einlieferungs-Adresse oben: fragt für jeden dafür
+            aktivierten Mandanten dessen Postfach + Ordner direkt bei Office 365 ab. Wichtig:
+            Postfach, Ordner <strong>und die Azure-Zugangsdaten (Tenant-ID/Client-ID/Client-Secret)
+            legt jeder Mandant selbst</strong> unter Mandanten-Einstellungen → „Allgemein" fest —
+            mit seiner <strong>eigenen</strong> Azure-App-Registrierung in seinem eigenen
+            Microsoft-365-Tenant. Ihre Betreiber-Zugangsdaten von „Mail-Versand" oben können dafür
+            <strong> nicht</strong> mitgenutzt werden: Anwendungsberechtigungen gelten nur innerhalb
+            des Azure-AD-Tenants, in dem die App registriert ist — Sie betreuen typischerweise
+            viele voneinander unabhängige fremde Firmen, deren Postfächer Sie mit Ihren eigenen
+            Zugangsdaten nicht erreichen können. Läuft als eigener Prozess
+            (<span className="font-mono">npm run mailin-graph</span>), standardmäßig rein lesend —
+            optional (Mandant trägt einen Zielordner ein) werden verarbeitete Mails automatisch
+            dorthin verschoben.
+          </p>
+          {helpBox('Was hier zu tun ist (im Unterschied zu „Mail-Versand" oben)', [
+            <>Hier unten nur global aktivieren und ein Poll-Intervall festlegen, speichern — das steuert lediglich, ob und wie oft der Abrufprozess überhaupt läuft.</>,
+            <>Postfach, Ordner und die eigene Azure-App-Registrierung (Tenant-ID/Client-ID/Client-Secret, Berechtigung „Mail.Read") trägt jeder Mandant selbst in seinen Mandanten-Einstellungen ein — dort gibt es eine eigene Anleitung dafür.</>,
+            <>Mandanten ohne eigene eingetragene Zugangsdaten werden beim Abruf automatisch übersprungen (kein Fehler, erscheint nur im Prozess-Log) — außer im Entwicklungsmodus (Tab „Schalter"), siehe unten.</>,
+          ])}
+          <div className="grid gap-4 sm:grid-cols-2">
+            {input('MAIL_IN_GRAPH_POLL_SECONDS', 'Poll-Intervall (Sekunden)', 'number', 'Standard 120')}
+          </div>
+          <div>
+            {toggle('MAIL_IN_GRAPH_ENABLED', 'Graph-Mail-Eingang aktiv')}
+          </div>
+          <p className="text-[11px] text-[var(--warn-strong)]">
+            ⚠ Im Entwicklungsmodus (Tab „Schalter") fallen Mandanten ohne eigene Zugangsdaten auf
+            die Betreiber-Zugangsdaten oben zurück — nur zum Ausprobieren des Mechanismus,
+            funktioniert ausschließlich für Postfächer im eigenen Azure-AD-Tenant des Betreibers
+            und niemals für echte, unabhängige Mandanten-Firmen. Entwicklungsmodus vor dem
+            Produktivbetrieb ausschalten.
+          </p>
           <SaveBar />
         </section>
       )}
@@ -295,6 +443,7 @@ export default function SystemSettingsPage() {
                   <button
                     key={m}
                     type="button"
+                    title={`Als KI-Modell übernehmen: ${m}`}
                     className={`rounded-full border px-2 py-0.5 text-[11px] ${
                       m === s.AI_MODEL
                         ? 'border-[var(--accent)] bg-[var(--accent-bg)] text-[var(--accent)]'
@@ -348,7 +497,7 @@ export default function SystemSettingsPage() {
       {tab === 'switches' && (
         <section className="dp-card space-y-3">
           <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Schalter</h2>
-          {toggle('FEEDBACK_ENABLED', 'Nutzer-Feedback global aktiv (§26 — UI folgt in Runde 2)')}
+          {toggle('FEEDBACK_ENABLED', 'Nutzer-Feedback global aktiv (§26 — schwebender "💬 Feedback"-Knopf in der App)')}
           {toggle('DEV_MODE', 'Entwicklermodus', 'Nur für Testzwecke — vor Produktiveinsatz deaktivieren! (§24)')}
           <SaveBar />
         </section>

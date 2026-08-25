@@ -3,6 +3,7 @@ import { Role } from '@prisma/client'
 import { redirect } from 'next/navigation'
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { getSettings } from '@/lib/settings'
 import { SettingsHub } from './SettingsHub'
 
 export const dynamic = 'force-dynamic'
@@ -14,6 +15,12 @@ export default async function TenantSettingsPage() {
   const tenantId = ctx.tenantId
   const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } })
   if (!tenant) return null
+
+  const globalSettings = await getSettings()
+  const mailInDomain = globalSettings.MAIL_IN_DOMAIN
+  const mailInAddress = mailInDomain
+    ? `${globalSettings.MAIL_IN_PREFIX || ''}${tenant.slug}@${mailInDomain}`
+    : null
 
   return (
     <div className="max-w-xl space-y-6">
@@ -27,6 +34,17 @@ export default async function TenantSettingsPage() {
             ? `bis ${tenant.licenseExpiresAt.toLocaleDateString('de-DE')}`
             : 'unbegrenzt'}
         </p>
+        <p className="mt-2 text-xs text-gray-400">
+          E-Mail-Eingang:{' '}
+          {mailInAddress ? (
+            <>
+              <span className="font-mono text-gray-700">{mailInAddress}</span> (beliebiger Lokalteil
+              möglich, z. B. auch <span className="font-mono">irgendwas@{tenant.slug}.{mailInDomain}</span>)
+            </>
+          ) : (
+            'noch nicht eingerichtet — der Betreiber muss unter Systemeinstellungen → Mail-Eingang eine Basis-Domain hinterlegen'
+          )}
+        </p>
       </section>
       <SettingsHub
         initial={{
@@ -35,6 +53,14 @@ export default async function TenantSettingsPage() {
           backupEnabled: tenant.backupEnabled,
           defaultLanguage: tenant.defaultLanguage,
           mailAllowedDomains: tenant.mailAllowedDomains ?? '',
+          mailInGraphEnabled: tenant.mailInGraphEnabled,
+          mailInGraphMailbox: tenant.mailInGraphMailbox ?? '',
+          mailInGraphFolder: tenant.mailInGraphFolder ?? '',
+          mailInGraphMoveToFolder: tenant.mailInGraphMoveToFolder ?? '',
+          spamReplyEnabled: tenant.spamReplyEnabled,
+          mailInGraphTenantId: tenant.mailInGraphTenantId ?? '',
+          mailInGraphClientId: tenant.mailInGraphClientId ?? '',
+          mailInGraphClientSecret: tenant.mailInGraphClientSecret ?? '',
           backupFrequency: tenant.backupFrequency ?? 'WEEKLY',
           backupEmail: tenant.backupEmail ?? '',
           backupReminderDays: tenant.backupReminderDays ?? 14,
@@ -53,6 +79,8 @@ export default async function TenantSettingsPage() {
           datevWjBeginn: tenant.datevWjBeginn ?? '0101',
           datevFibuEmail: tenant.datevFibuEmail ?? '',
           costCentersEnabled: tenant.costCentersEnabled,
+          dueReminderDaysAfterReceipt: tenant.dueReminderDaysAfterReceipt,
+          dueReminderDaysBeforeDue: tenant.dueReminderDaysBeforeDue,
         }}
         encryptionEnabled={tenant.encryptionEnabled}
         lastBackupAt={tenant.lastBackupAt ? tenant.lastBackupAt.toISOString() : null}

@@ -40,6 +40,9 @@ export function OpsControls({
             disabled={busy}
             onClick={() => save({ maintenanceLock: !maintenanceLock })}
             className={maintenanceLock ? 'btn-danger' : 'btn-secondary'}
+            title={maintenanceLock
+              ? 'Anmeldesperre aufheben — Nutzer aller Mandanten können sich wieder anmelden'
+              : 'Anmeldung für alle Mandanten sofort sperren (z. B. für eine Wartung)'}
           >
             {maintenanceLock ? 'Sperre aktiv — aufheben' : 'Sperre aktivieren'}
           </button>
@@ -60,6 +63,7 @@ export function OpsControls({
             <input id="timeout" type="number" min={5} max={480} className="dp-input !w-24"
               value={timeout_} onChange={(e) => setTimeout_(e.target.value)} />
             <button disabled={busy} className="btn-secondary"
+              title="Speichert die Minutenzahl, nach der Fernwartungs-Sitzungen automatisch enden"
               onClick={() => save({ supportTimeoutMin: timeout_ })}>
               OK
             </button>
@@ -70,6 +74,7 @@ export function OpsControls({
           <button
             disabled={busy}
             className="btn-danger"
+            title="Beendet sofort alle laufenden Fernwartungs-Sitzungen über alle Mandanten hinweg"
             onClick={() => {
               if (window.confirm('Alle laufenden Fernwartungs-Sitzungen sofort beenden?')) {
                 save({ endAllSupport: true })

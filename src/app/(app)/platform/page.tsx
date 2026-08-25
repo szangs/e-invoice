@@ -36,6 +36,8 @@ export default async function PlatformPage() {
     ])
   const now = Date.now()
   const tenantName = new Map(tenants.map((t) => [t.id, t.name]))
+  // "Testrechnungen senden" ist eine reine Test-/Demo-Funktion (Stefan 2026-08-24) — nur im Entwicklungsmodus sichtbar.
+  const devMode = process.env.NODE_ENV === 'development' || settings.DEV_MODE === '1'
 
   const kpis = [
     { label: 'Mandanten', value: tenants.length, sub: `${tenants.filter((t) => t.active).length} aktiv` },
@@ -141,7 +143,7 @@ export default async function PlatformPage() {
                       : ' · unbegrenzt'}
                   </td>
                   <td className="dp-td">
-                    <TenantActions tenantId={t.id} tenantName={t.name} active={t.active} />
+                    <TenantActions tenantId={t.id} tenantName={t.name} active={t.active} devMode={devMode} />
                   </td>
                 </tr>
               )

@@ -32,6 +32,14 @@ model Tenant {
   id               String    @id @default(cuid())
   slug             String    @unique
   name             String
+  // Exakte, rechtsverbindliche Firmenbezeichnung (Stefan 2026-08-25) — z. B.
+  // laut Handelsregister, ggf. abweichend vom kurzen "Anzeigename" oben
+  // (name). Wird gegen den Rechnungsempfänger (buyerName) jeder
+  // eingehenden E-Rechnung geprüft (siehe erechnung.ts/ERechnungView.tsx) —
+  // Warnung bei Abweichung, z. B. bei einer versehentlich falsch adressierten
+  // oder gefälschten Rechnung. Leer = keine Prüfung (Mandant hat es noch
+  // nicht gepflegt).
+  legalName        String?
   contactName      String?
   contactEmail     String?
   contactPhone     String?
@@ -58,6 +66,45 @@ model Tenant {
   encWrappedDek     String? // verpackter Datenschlüssel (Base64: IV + Chiffrat)
   // E-Mail-Eingang: nur Absender dieser Domänen annehmen (kommagetrennt, leer = alle)
   mailAllowedDomains String?
+  // E-Mail-Eingang per Microsoft Graph (Alternative zum SMTP-Empfänger, Variante A):
+  // ein Postfach + Ordnerpfad wird regelmäßig abgefragt statt per SMTP-Weiterleitung —
+  // kein MX-Eintrag nötig. WICHTIG: eigene Azure-App-Registrierung DES MANDANTEN nötig
+  // (nicht die des Betreibers!) — Anwendungsberechtigungen gelten nur innerhalb des
+  // eigenen Azure-AD-Tenants. Der Betreiber betreut i. d. R. viele voneinander unabhängige
+  // fremde Firmen, kann also nicht mit seinen eigenen Zugangsdaten in deren Postfächer.
+  mailInGraphEnabled     Boolean @default(false)
+  mailInGraphMailbox     String? // z. B. rechnungen@mandant.de
+  mailInGraphFolder      String? // Ordnerpfad, z. B. "Posteingang/Rechnungen" — leer = Posteingang
+  mailInGraphTenantId    String? // Azure-AD-Tenant-ID DES MANDANTEN (eigene App-Registrierung)
+  mailInGraphClientId    String?
+  mailInGraphClientSecret String?
+  // Optional: verarbeitete Mails automatisch in diesen Ordner verschieben (leer =
+  // nichts verschieben, Postfach bleibt unverändert). Braucht "Mail.ReadWrite" statt
+  // nur "Mail.Read" in der Azure-App-Registrierung.
+  mailInGraphMoveToFolder String?
+  // Automatische Antwort bei Spam-Verdacht (Stefan 2026-08-25): schickt dem
+  // Absender einer als NOT_INVOICE eingestuften Mail eine kurze automatische
+  // Info, dass sie nicht als Rechnung erkannt wurde und er sich bei echtem
+  // Rechnungsbezug direkt an den Empfänger wenden soll (siehe lib/mailin.ts
+  // sendSpamNotice). Standardmäßig AUS wie alle anderen automatisierten
+  // Mail-Trigger in der App — Restrisiken bewusst in Kauf genommen (auf
+  // Wunsch aktiviert): Backscatter bei gefälschter Absenderadresse (kein
+  // technischer Schutz möglich) und Bestätigung einer aktiven Mailbox
+  // gegenüber Spam-Versendern. Je Empfänger nur einmal (Invoice.spamReplySentAt).
+  // Greift NIE im Entwicklermodus (Stefan 2026-08-25) — dort laufen Test-/
+  // Demo-Läufe, oft mit echten Absenderadressen (siehe lib/mailin.ts sendSpamNotice).
+  spamReplyEnabled Boolean @default(false)
+  // Fälligkeits-Benachrichtigung ("Bearbeitungswarnung"), pro Mandant
+  // einstellbar, null = jeweils aus. Läuft im Scheduler wie die
+  // Korb-Benachrichtigung (lib/dueReminders.ts runDueReminders, aufgerufen
+  // aus scripts/backup-scheduler.ts) — Empfänger sind dieselben Korb-
+  // Mitarbeiter wie bei notificationEnabled auf dem jeweiligen Korb.
+  // Fall A: Fälligkeit UNBEKANNT (weder E-Rechnung noch KI-Erkennung hat ein
+  // Datum geliefert) — Erinnerung X Tage NACH Eingang.
+  dueReminderDaysAfterReceipt Int?
+  // Fall B: Fälligkeit BEKANNT (E-Rechnung oder KI-erkanntes Datum — wird
+  // hier gleich behandelt) — Erinnerung X Tage VOR Fälligkeit.
+  dueReminderDaysBeforeDue    Int?
   // Datensicherung (§17): Häufigkeit + Zustell-Adresse + letzte Sicherung
   backupFrequency String? // DAILY | WEEKLY | MONTHLY | YEARLY
   backupEmail     String?
@@ -270,6 +317,27 @@ model AuditLog {
   @@index([tenantId, createdAt])
 }
 
+// Perioden-Abschluss des Audit-Protokolls (Stefan 2026-08-25): "sealt"
+// jeweils ein Kalenderjahr — hält den letzten Eintrag/dessen Hash zum
+// Abschlusszeitpunkt fest (die Verkettung in AuditLog macht diesen einen
+// Hash bereits zu einem kryptografischen Nachweis über ALLE davorliegenden
+// Einträge, siehe lib/audit.ts). Einmal abgeschlossen, UNVERÄNDERLICH — kein
+// erneutes Abschließen desselben Jahres. closedByName ist die eingegebene
+// "Unterschrift" (Klarname), die auf dem Zertifikat erscheint (siehe
+// lib/auditCertificate.ts) — keine Bild-Signatur, ein getippter Name mit
+// Zeitstempel, wie bei den übrigen Freigaben in der App (z. B. Vier-Augen-Prinzip).
+model AuditPeriodClosure {
+  id            String   @id @default(cuid())
+  year          Int      @unique
+  closedAt      DateTime @default(now())
+  closedByName  String
+  closedByEmail String
+  entryCount    Int
+  firstEntryId  Int?
+  lastEntryId   Int
+  chainHash     String
+}
+
 // ── Fernwartung §14A: eingebaute Bildschirmspiegelung (ohne externe Software) ──
 enum SupportStatus {
   REQUESTED // angefragt
@@ -305,9 +373,11 @@ model MailIntake {
   status      String // PROCESSED | NO_ATTACHMENT | UNKNOWN_RECIPIENT | TENANT_LOCKED | ERROR
   detail      String?
   invoiceId   String?
+  sourceMessageId String? // Graph-Nachrichten-ID (Dublettenprüfung beim Graph-Poller); SMTP: null
 
   @@index([tenantId, createdAt])
   @@index([createdAt])
+  @@index([tenantId, sourceMessageId])
 }
 
 // ── Körbe (Rechnungseingangsverarbeitung, Stefan 2026-07-08): Rechnungen
@@ -330,6 +400,15 @@ enum BasketKind {
   // — Korb-Rechte MOVE und höher lassen sich für ARCHIVE-Körbe gar nicht erst
   // vergeben (siehe admin/baskets/[id]/rights/route.ts).
   ARCHIVE
+  // Spam-Verdacht (Stefan 2026-08-25): fester Systemordner für Mail-Eingang-
+  // Dokumente, die die automatische Klassifikation (lib/mailin.ts) eindeutig
+  // als KEINE Rechnung einstuft (Newsletter, Bewerbungs-Spam, Werbe-PDF …).
+  // Der Beleg wird trotzdem angelegt (nichts geht bei einer Fehlklassifikation
+  // verloren) — landet aber nicht im Eingangskorb und stört dort nicht. Ganz
+  // normaler Korb (Rechte frei vergebbar, im Unterschied zu ARCHIVE), damit
+  // eine fälschlich einsortierte echte Rechnung einfach per Drag&Drop
+  // zurückgeholt werden kann.
+  QUARANTINE
 }
 
 model Basket {
@@ -462,6 +541,13 @@ model Invoice {
   invoiceNumber String?
   invoiceDate   DateTime?
   dueDate       DateTime?
+  // Skonto (Stefan 2026-08-25) — separate, kürzere Frist für vorzeitige
+  // Zahlung mit Rabatt, getrennt von dueDate (immer das eigentliche
+  // Zahlungsziel netto). Aus KI-Erkennung (lib/aiExtract.ts) oder bei
+  // XRechnung-CII/ZUGFeRD strukturiert aus dem XML (lib/erechnung.ts) —
+  // vorher wurde diese Unterscheidung gar nicht getroffen.
+  discountDueDate DateTime?
+  discountPercent Decimal?      @db.Decimal(5, 2)
   amountNet     Decimal?      @db.Decimal(12, 2)
   amountTax     Decimal?      @db.Decimal(12, 2)
   amountGross   Decimal?      @db.Decimal(12, 2)
@@ -501,10 +587,62 @@ model Invoice {
   fileHash      String? // SHA-256 der Beleg-Datei
   duplicateOfId String? // gesetzt = als Dublette erkannt
   // KI-Datenerkennung: true = mindestens ein Feld wurde per KI übernommen
-  // (Erstauswahl beim Scannen oder nachträglich auf der Detailseite), sonst
-  // von Hand erfasst — sichtbar in der Rechnungsliste (source = "SCAN" +
-  // aiAssisted zusammen zeigen dort Herkunft/Erfassungsart).
-  aiAssisted    Boolean @default(false)
+  // (Erstauswahl beim Scannen, nachträglich auf der Detailseite, oder
+  // automatisch beim Mail-Eingang für "nackte" PDFs ohne ZUGFeRD/XRechnung-XML)
+  // — sichtbar in der Rechnungsliste (source + aiAssisted zeigen dort
+  // Herkunft/Erfassungsart). aiConfirmedAt/-By: menschliche Bestätigung der
+  // KI-Werte (Tab-Bestätigungs-Flow im Formular) — solange leer, ist die
+  // Rechnung noch NICHT verschiebbar (siehe lib/baskets.ts requestMove) und
+  // erscheint in der Liste andersfarbig markiert. aiUncertainFields: von der
+  // KI selbst/durch Plausibilitätsprüfung als unsicher markierte Feldnamen,
+  // kommagetrennt (für die Warn-Hervorhebung im Formular nach automatischer
+  // Erkennung — bei einer LIVE-Erkennung im Browser kommt das direkt von der
+  // API-Antwort, hier persistiert für den Fall ohne offene Browser-Sitzung).
+  aiAssisted        Boolean @default(false)
+  aiConfirmedAt     DateTime?
+  aiConfirmedBy     String?
+  aiUncertainFields String?
+  // Spam-/Nicht-Rechnung-Klassifikation beim Mail-Eingang (Stefan 2026-08-25,
+  // lib/mailin.ts): INVOICE (vertrauenswürdig — strukturierte E-Rechnung ODER
+  // KI erkennt eindeutig Rechnung mit Kernfeldern), UNCERTAIN (KI/Heuristik
+  // nicht eindeutig — bleibt im Eingangskorb, ggf. zusätzlich per aiAssisted/
+  // aiConfirmedAt blockiert bis geprüft) oder NOT_INVOICE (KI erkennt
+  // eindeutig KEINE Rechnung — landet automatisch im Spam-Verdacht-Korb statt
+  // im Eingangskorb, siehe BasketKind.QUARANTINE). Null = nicht klassifiziert
+  // (Scan/manueller Upload/Bestand vor Einführung — dort hat ein Mensch die
+  // Auswahl schon bewusst getroffen, keine Klassifikation nötig).
+  invoiceClass      String?
+  // Beleg-PDF wurde serverseitig aus dem HTML-Mailtext gerendert, ist also
+  // KEIN vom Lieferanten mitgeschicktes Original-PDF (Stefan 2026-08-25,
+  // HTML-Auslandsrechnung ohne Anhang — siehe lib/htmlToPdf.ts). Anzeige als
+  // eigenes Kennzeichen in der "Inhalt"-Spalte (InvoiceRows.tsx), damit klar
+  // ist: das ist eine Rekonstruktion, kein Original.
+  htmlRendered      Boolean @default(false)
+  // Mailtext, der zusammen mit dem Beleg ankam (Stefan 2026-08-25) — bei
+  // HTML-Auslandsrechnungen identisch mit dem Belegtext, bei Anhängen
+  // zusätzlicher Begleittext, der sonst verloren ginge (z. B. "diese
+  // Rechnung ersetzt die vorherige"). Nur beim Mail-Eingang gesetzt, auf
+  // 5000 Zeichen gedeckelt (siehe lib/mailin.ts).
+  mailBodyText      String?
+  // Fälligkeits-Benachrichtigung (lib/dueReminders.ts): wann zuletzt eine
+  // Bearbeitungswarnung für diese Rechnung verschickt wurde — verhindert
+  // Mehrfachversand, wird einmalig gesetzt (keine wiederholte Eskalation).
+  dueReminderSentAt DateTime?
+  // Automatische Spam-Antwort bereits verschickt (Stefan 2026-08-25, Tenant.spamReplyEnabled) —
+  // verhindert Mehrfachversand bei erneuter Verarbeitung/Reklassifikation.
+  spamReplySentAt DateTime?
+  // Positionszeilen aus der KI-Erkennung (Stefan 2026-08-25, lib/aiExtract.ts):
+  // nur bei nackten PDFs/Scans OHNE strukturiertes XML gesetzt — für
+  // ZUGFeRD/XRechnung werden die Positionen stattdessen live aus xmlData
+  // gelesen (siehe ERechnungView.tsx), keine Duplizierung nötig. JSON-Array
+  // aus {name, qty, unitPrice, total}, null wenn (noch) keine KI-Erkennung
+  // gelaufen ist oder keine Positionen erkennbar waren.
+  lineItems Json?
+  // Warnung "Rechnungsempfänger weicht von der Firmenbezeichnung ab" wurde
+  // vom Nutzer bewusst akzeptiert (Stefan 2026-08-25, Tenant.legalName) —
+  // analog zum bestehenden Dubletten-"keine Dublette"-Muster: die Warnung
+  // bleibt sichtbar (Beweiswert), verschwindet aber aus dem aktiven Zustand.
+  buyerNameMismatchAcknowledged Boolean @default(false)
   // E-Rechnung (W17): erkanntes Format + Prüfergebnis + XML für die Visualisierung
   docFormat        String? // ZUGFERD | XRECHNUNG_CII | XRECHNUNG_UBL | PDF | OTHER
   xmlData          String? // eingebettetes/originales Rechnungs-XML

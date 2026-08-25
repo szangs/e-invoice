@@ -88,6 +88,7 @@ export function TokenManager() {
                 </td>
                 <td className="dp-td">
                   <button className="btn-secondary !px-2 !py-1 text-xs" disabled={busy}
+                    title="Token sofort ungültig machen — das Plugin dieser Installation kann danach nicht mehr hochladen"
                     onClick={() => remove(t.id, t.label)}>
                     Widerrufen
                   </button>

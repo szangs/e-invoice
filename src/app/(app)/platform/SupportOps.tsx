@@ -31,16 +31,19 @@ export function SupportOps({
   return (
     <span className="flex gap-1.5">
       {status === 'REQUESTED' && initiatedBy === 'TENANT' && (
-        <button className="btn-primary !px-2 !py-1 text-xs" disabled={busy} onClick={() => act('accept')}>
+        <button className="btn-primary !px-2 !py-1 text-xs" disabled={busy} onClick={() => act('accept')}
+          title="Fernwartungs-Anfrage des Mandanten annehmen und die Sitzung starten">
           Annehmen
         </button>
       )}
       {status === 'ACTIVE' && (
-        <Link className="btn-primary !px-2 !py-1 text-xs" href={`/platform/support/${sessionId}`}>
+        <Link className="btn-primary !px-2 !py-1 text-xs" href={`/platform/support/${sessionId}`}
+          title="Gespiegelten Bildschirm der aktiven Fernwartungs-Sitzung ansehen">
           Ansehen
         </Link>
       )}
-      <button className="btn-secondary !px-2 !py-1 text-xs" disabled={busy} onClick={() => act('end')}>
+      <button className="btn-secondary !px-2 !py-1 text-xs" disabled={busy} onClick={() => act('end')}
+        title="Fernwartungs-Sitzung sofort beenden">
         Beenden
       </button>
     </span>

@@ -60,7 +60,7 @@ export default function SupportViewerPage() {
             </span>
           )}
         </p>
-        <button className="btn-danger" onClick={end}>Sitzung beenden</button>
+        <button className="btn-danger" onClick={end} title="Fernwartungs-Sitzung sofort beenden — der Bildschirmspiegel stoppt">Sitzung beenden</button>
       </div>
       <div className="dp-card overflow-hidden p-0" style={{ height: '75vh' }}>
         {snapshot ? (

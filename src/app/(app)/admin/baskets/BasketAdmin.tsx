@@ -13,7 +13,7 @@ type RightRow = { userId: string; email: string; right: string }
 type BasketRow = {
   id: string
   name: string
-  kind: 'INBOX' | 'HANDOVER' | 'CUSTOM' | 'ARCHIVE'
+  kind: 'INBOX' | 'HANDOVER' | 'CUSTOM' | 'ARCHIVE' | 'QUARANTINE'
   fourEyesEnabled: boolean
   notificationEnabled: boolean
   notificationIntervalHours: number | null
@@ -45,6 +45,7 @@ const KIND_LABEL: Record<BasketRow['kind'], string> = {
   HANDOVER: 'Übergabekorb (fest)',
   CUSTOM: 'Eigener Korb',
   ARCHIVE: 'Ablage (fest, nach Übergabe)',
+  QUARANTINE: 'Spam-Verdacht (fest, Mail-Eingang-Klassifikation)',
 }
 
 const KIND_STYLE: Record<BasketRow['kind'], { ring: string; iconBg: string; iconFg: string }> = {
@@ -52,6 +53,7 @@ const KIND_STYLE: Record<BasketRow['kind'], { ring: string; iconBg: string; icon
   HANDOVER: { ring: 'border-[var(--warn-strong)]', iconBg: 'bg-[var(--warn)]', iconFg: 'text-white' },
   CUSTOM: { ring: 'border-[var(--accent-soft)]', iconBg: 'bg-[var(--accent-bg)]', iconFg: 'text-[var(--accent)]' },
   ARCHIVE: { ring: 'border-gray-400', iconBg: 'bg-gray-500', iconFg: 'text-white' },
+  QUARANTINE: { ring: 'border-[var(--danger)]', iconBg: 'bg-[var(--danger)]', iconFg: 'text-white' },
 }
 
 // Ablage (Stefan 2026-07-09): Verschieben und alles darüber lässt sich dort
@@ -197,6 +199,7 @@ export function BasketAdmin({
                     <span className="ml-2 text-xs text-gray-400">gelöscht am {new Date(b.deletedAt).toLocaleDateString('de-DE')}</span>
                   </span>
                   <button className="btn-secondary !px-2 !py-1 text-xs" disabled={busy}
+                    title="Korb wiederherstellen — erscheint wieder in der Körbe-Liste mit allen Rechten und Mitgliedern"
                     onClick={() => call(`/api/admin/baskets/${b.id}`, 'PATCH', { restore: true })}>
                     Wiederherstellen
                   </button>
@@ -217,6 +220,7 @@ export function BasketAdmin({
             </div>
             {active.kind === 'CUSTOM' && (
               <button className="btn-secondary !px-2 !py-1 text-xs" disabled={busy}
+                title="Nur leere Körbe können gelöscht werden — landet im Papierkorb für Körbe und lässt sich dort wiederherstellen"
                 onClick={async () => {
                   if (active.invoiceCount > 0) {
                     window.alert(`Korb enthält noch ${active.invoiceCount} Rechnung(en) — bitte zuerst verschieben.`)
@@ -232,7 +236,8 @@ export function BasketAdmin({
           </div>
 
           <div className="flex flex-wrap items-center gap-6 text-sm">
-            <label className="flex items-center gap-2">
+            <label className="flex items-center gap-2"
+              title="Ein Beleg wird erst aus diesem Korb verschoben, wenn mindestens zwei verschiedene Mitarbeiter zugestimmt haben">
               <input type="checkbox" className="accent-[var(--accent)]" checked={active.fourEyesEnabled}
                 disabled={busy || active.kind !== 'CUSTOM'}
                 onChange={(e) => call(`/api/admin/baskets/${active.id}`, 'PATCH', { fourEyesEnabled: e.target.checked })} />
@@ -256,6 +261,7 @@ export function BasketAdmin({
                       className="dp-input !w-auto !py-1 text-xs"
                       value={r.right}
                       disabled={busy}
+                      title="Zugriffsrecht dieses Mitarbeiters in diesem Korb ändern"
                       onChange={(e) =>
                         call(`/api/admin/baskets/${active.id}/rights`, 'PUT', {
                           userId: r.userId,
@@ -311,7 +317,8 @@ export function BasketAdmin({
                 nur als Empfängerliste für genau diese Mail (Stefan 2026-07-09). */}
             {active.kind !== 'ARCHIVE' && (
               <div>
-                <label className="dp-label mb-1 flex items-center gap-2">
+                <label className="dp-label mb-1 flex items-center gap-2"
+                  title="Schickt den unten ausgewählten Mitarbeitern eine Sammel-E-Mail über unbearbeitete Belege in diesem Korb">
                   <input type="checkbox" className="accent-[var(--accent)]" checked={active.notificationEnabled}
                     disabled={busy}
                     onChange={(e) => call(`/api/admin/baskets/${active.id}`, 'PATCH', {
@@ -338,6 +345,7 @@ export function BasketAdmin({
                     <span key={m.id} className="flex items-center gap-1 rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs text-[var(--accent)]">
                       {m.email}
                       <button className="ml-1 text-[var(--danger)]" disabled={busy}
+                        title="Aus der Benachrichtigungsliste dieses Korbs entfernen"
                         onClick={() => call(`/api/admin/baskets/${active.id}/members`, 'DELETE', { userId: m.id })}>
                         ×
                       </button>

@@ -6,15 +6,20 @@
 import type { DocFormat, ParsedInvoiceData, Validation } from '@/lib/erechnung'
 import { FORMAT_LABELS } from '@/lib/erechnung'
 import { formatAmount } from '@/lib/invoices'
+import { BuyerNameMismatchWarning } from './BuyerNameMismatchWarning'
 
 export function ERechnungView({
   format,
   data,
   validation,
+  buyerNameCheck,
 }: {
   format: DocFormat
   data: ParsedInvoiceData | null
   validation: Validation | null
+  // Firmenbezeichnung-Abgleich (Stefan 2026-08-25) — null wenn Mandant keine
+  // exakte Firmenbezeichnung hinterlegt hat oder keine Abweichung vorliegt.
+  buyerNameCheck?: { invoiceId: string; expected: string; actual: string; acknowledged: boolean; locked: boolean } | null
 }) {
   const currency = data?.currency ?? 'EUR'
   return (
@@ -37,8 +42,19 @@ export function ERechnungView({
 
       {validation && !validation.valid && (
         <p className="rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-strong)]">
-          Fehlend (EN 16931-Kern / §14 UStG): {validation.missing.join(', ')}
+          Fehlend (EN 16931-Kern / §14 UStG): {validation.missing.join(', ')} — Übergabe an die Buchhaltung
+          erst nach Behebung möglich.
         </p>
+      )}
+
+      {buyerNameCheck && (
+        <BuyerNameMismatchWarning
+          invoiceId={buyerNameCheck.invoiceId}
+          expected={buyerNameCheck.expected}
+          actual={buyerNameCheck.actual}
+          acknowledged={buyerNameCheck.acknowledged}
+          locked={buyerNameCheck.locked}
+        />
       )}
 
       {data && (
@@ -47,6 +63,13 @@ export function ERechnungView({
             <Field label="Rechnungsnummer" value={data.number} mono />
             <Field label="Rechnungsdatum" value={data.issueDate} />
             <Field label="Fällig am" value={data.dueDate} />
+            {data.deliveryDate ? (
+              <Field label="Liefer-/Leistungsdatum" value={data.deliveryDate} />
+            ) : data.deliveryPeriodStart && data.deliveryPeriodEnd ? (
+              <Field label="Abrechnungszeitraum" value={`${data.deliveryPeriodStart} – ${data.deliveryPeriodEnd}`} />
+            ) : (
+              <Field label="Liefer-/Leistungsdatum" value={null} />
+            )}
             <Field label="Währung" value={data.currency} />
             <Field label="Rechnungssteller" value={data.sellerName} />
             <Field label="USt-ID/Steuernummer" value={data.sellerVatId} mono />
@@ -59,6 +82,7 @@ export function ERechnungView({
                 <tr className="dp-tr">
                   <th className="dp-th">Position</th>
                   <th className="dp-th">Menge</th>
+                  <th className="dp-th text-right">Rabatt</th>
                   <th className="dp-th text-right">Betrag</th>
                 </tr>
               </thead>
@@ -67,6 +91,7 @@ export function ERechnungView({
                   <tr key={i} className="dp-tr">
                     <td className="dp-td">{l.name}</td>
                     <td className="dp-td text-xs">{l.quantity ?? '—'}</td>
+                    <td className="dp-td text-right text-xs">{l.discount ? `− ${formatAmount(l.discount, currency)}` : '—'}</td>
                     <td className="dp-td text-right">{formatAmount(l.lineTotal, currency)}</td>
                   </tr>
                 ))}
@@ -75,12 +100,37 @@ export function ERechnungView({
           )}
 
           <div className="ml-auto max-w-xs space-y-1 text-sm">
+            {data.documentAllowance !== null && (
+              <Total label="Rabatt (Rechnungsebene)" value={`− ${formatAmount(data.documentAllowance, currency)}`} />
+            )}
             <Total label="Netto" value={formatAmount(data.net, currency)} />
-            <Total label="Umsatzsteuer" value={formatAmount(data.tax, currency)} />
+            {data.taxRates.length > 0 ? (
+              data.taxRates.map((t, i) => (
+                <Total
+                  key={i}
+                  label={`Umsatzsteuer${t.ratePercent !== null ? ` (${t.ratePercent}%)` : ''}`}
+                  value={formatAmount(t.taxAmount, currency)}
+                />
+              ))
+            ) : (
+              <Total label="Umsatzsteuer" value={formatAmount(data.tax, currency)} />
+            )}
             <div className="border-t border-[var(--line)] pt-1">
               <Total label="Gesamtbetrag" value={formatAmount(data.gross, currency)} strong />
             </div>
           </div>
+
+          {data.discountDueDate && (
+            <p className="rounded-lg bg-[var(--accent-bg)] px-3 py-2 text-xs text-[var(--accent)]">
+              💰 Skonto: {data.discountPercent !== null ? `${data.discountPercent}% ` : ''}
+              bei Zahlung bis {data.discountDueDate} (statt Fälligkeit {data.dueDate ?? '—'} netto)
+            </p>
+          )}
+          {data.paymentTerms && (
+            <p className="text-xs text-gray-500">
+              <span className="font-semibold text-gray-600">Zahlungsbedingungen:</span> {data.paymentTerms}
+            </p>
+          )}
         </>
       )}
     </div>
