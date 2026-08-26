@@ -7,12 +7,16 @@ import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
-import { generatePassword } from '@/lib/password'
 
 const schema = z.object({
   role: z.enum(['TENANT_ADMIN', 'EDITOR', 'AREA_MANAGER', 'AUDITOR', 'USER']).optional(),
   active: z.boolean().optional(),
-  resetPassword: z.boolean().optional(),
+  // Admin gibt das neue Passwort direkt ein (Stefan 2026-08-26, "Passwort
+  // neu ist nicht logisch") — vorher wurde IMMER serverseitig zufällig
+  // erzeugt, ohne dass der Admin je ein bestimmtes Passwort setzen konnte;
+  // "Generieren" bleibt als Option im UI erhalten, füllt dort aber nur das
+  // Eingabefeld, das dann hier ganz normal ankommt.
+  newPassword: z.string().min(10, 'Mindestens 10 Zeichen').max(200).optional(),
 })
 
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
@@ -28,16 +32,14 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       throw new ApiError(400, 'Das eigene Konto kann nicht deaktiviert werden.')
     }
 
-    let password: string | undefined
     const update: Record<string, unknown> = {}
     if (data.role) update.role = data.role
     if (data.active !== undefined) {
       update.active = data.active
       if (!data.active) update.forcedLogoutAt = new Date()
     }
-    if (data.resetPassword) {
-      password = generatePassword()
-      update.passwordHash = await bcrypt.hash(password, 10)
+    if (data.newPassword) {
+      update.passwordHash = await bcrypt.hash(data.newPassword, 10)
       update.forcedLogoutAt = new Date()
     }
     await prisma.user.update({ where: { id: user.id }, data: update })
@@ -45,7 +47,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     const actions: string[] = []
     if (data.role) actions.push(`Rolle → ${data.role}`)
     if (data.active !== undefined) actions.push(data.active ? 'aktiviert' : 'deaktiviert')
-    if (data.resetPassword) actions.push('Passwort zurückgesetzt')
+    if (data.newPassword) actions.push('Passwort neu gesetzt')
     await audit({
       tenantId,
       actorId: ctx.userId,
@@ -53,7 +55,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       action: 'USER_UPDATE',
       details: `${user.email}: ${actions.join(', ')}`,
     })
-    return NextResponse.json(password ? { credentials: { email: user.email, password } } : { ok: true })
+    return NextResponse.json({ ok: true })
   } catch (e) {
     return jsonError(e)
   }

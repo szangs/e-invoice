@@ -54,6 +54,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     if (await isInvoiceLockedByClosure(invoice.createdAt)) {
       throw new ApiError(423, `Diese Rechnung gehört zum abgeschlossenen Prüfungszeitraum ${invoice.createdAt.getFullYear()} und ist schreibgeschützt.`)
     }
+    if (invoice.supersededAt) {
+      throw new ApiError(423, 'Diese Rechnung wurde durch eine neuere Version ersetzt und ist schreibgeschützt.')
+    }
 
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { encryptionEnabled: true } })
     if (tenant?.encryptionEnabled) {

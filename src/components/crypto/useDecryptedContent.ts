@@ -20,6 +20,9 @@ export type InvoiceContentFields = {
   currency?: string | null
   tags?: string | null
   notes?: string | null
+  sellerAddress?: string | null
+  sellerVatId?: string | null
+  sellerTaxNumber?: string | null
 }
 
 export const DEK_UNLOCKED_EVENT = 'einvoice:dek-unlocked'

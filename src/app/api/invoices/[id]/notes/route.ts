@@ -6,12 +6,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
-import { requireInvoiceContentAccess } from '@/lib/basketRights'
+import { alwaysFullAccess, requireInvoiceContentAccess } from '@/lib/basketRights'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 
 const schema = z.object({
-  text: z.string().min(1, 'Text fehlt').max(2000),
+  subject: z.string().max(200).optional(),
+  text: z.string().min(1, 'Text fehlt').max(4000),
   toUserId: z.string().optional(),
 })
 
@@ -27,6 +28,16 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
     const invoice = await prisma.invoice.findFirst({ where: { id: params.id, tenantId } })
     if (!invoice) throw new ApiError(404, 'Rechnung nicht gefunden.')
     await requireInvoiceContentAccess(ctx, invoice.basketId)
+    // Vor dem Als-gelesen-Markieren merken, welche adressierten Nachrichten
+    // gerade JETZT ungelesen waren (Stefan 2026-08-26) — Grundlage dafür, ob
+    // die Detailseite die Nachricht automatisch aufklappen soll
+    // (InvoiceNotes.tsx). Nach dem Update wäre das nicht mehr
+    // unterscheidbar, da readAt dann schon gesetzt ist.
+    const justUnread = await prisma.invoiceNote.findMany({
+      where: { invoiceId: invoice.id, toUserId: ctx.userId, readAt: null },
+      select: { id: true },
+    })
+    const justUnreadIds = new Set(justUnread.map((n) => n.id))
     // Öffnen der Rechnung durch den adressierten Mitarbeiter markiert dessen
     // offene Nachrichten hier automatisch als gelesen.
     await prisma.invoiceNote.updateMany({
@@ -42,15 +53,30 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
       },
     })
     return NextResponse.json({
-      notes: notes.map((n) => ({
-        id: n.id,
-        text: n.text,
-        createdAt: n.createdAt,
-        readAt: n.readAt,
-        authorName: displayName(n.author) ?? '—',
-        toUserId: n.toUserId,
-        toUserName: displayName(n.toUser),
-      })),
+      notes: notes.map((n) => {
+        // Inhalt nur für Autor, Adressat, "an alle"-Nachrichten und Admins/
+        // Betreiber sichtbar (Stefan 2026-08-26, "die anderen sehen nur einen
+        // stilisierten text") — jeder mit Korb-Zugriff sieht, DASS es eine
+        // gerichtete Nachricht gibt (von wem, an wen, wann, erledigt-Status),
+        // aber nicht ihren Inhalt, wenn er nicht der Adressat ist.
+        const visible = n.authorId === ctx.userId || n.toUserId === ctx.userId || n.toUserId === null || alwaysFullAccess(ctx.role)
+        return {
+          id: n.id,
+          subject: visible ? n.subject : null,
+          text: visible ? n.text : 'Nur für den Adressaten sichtbar.',
+          masked: !visible,
+          createdAt: n.createdAt,
+          readAt: n.readAt,
+          doneAt: n.doneAt,
+          doneBy: n.doneBy,
+          authorName: displayName(n.author) ?? '—',
+          toUserId: n.toUserId,
+          toUserName: displayName(n.toUser),
+          // Stefan 2026-08-26: war bei DIESEM Aufruf gerade eben ungelesen und
+          // an mich adressiert — siehe InvoiceNotes.tsx.
+          wasUnreadForMe: justUnreadIds.has(n.id),
+        }
+      }),
     })
   } catch (e) {
     return jsonError(e)
@@ -64,7 +90,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     const invoice = await prisma.invoice.findFirst({ where: { id: params.id, tenantId } })
     if (!invoice) throw new ApiError(404, 'Rechnung nicht gefunden.')
     await requireInvoiceContentAccess(ctx, invoice.basketId)
-    const { text, toUserId } = schema.parse(await req.json())
+    const { subject, text, toUserId } = schema.parse(await req.json())
 
     if (toUserId) {
       const recipient = await prisma.user.findFirst({ where: { id: toUserId, tenantId, active: true } })
@@ -77,6 +103,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         tenantId,
         authorId: ctx.userId,
         toUserId: toUserId || null,
+        subject: subject || null,
         text,
       },
       include: {
@@ -94,9 +121,12 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({
       note: {
         id: note.id,
+        subject: note.subject,
         text: note.text,
         createdAt: note.createdAt,
         readAt: note.readAt,
+        doneAt: note.doneAt,
+        doneBy: note.doneBy,
         authorName: displayName(note.author) ?? '—',
         toUserId: note.toUserId,
         toUserName: displayName(note.toUser),

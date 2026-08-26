@@ -9,6 +9,7 @@ import { de } from 'date-fns/locale'
 import { redirect } from 'next/navigation'
 import { getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { MailinHistoryPanel } from './MailinHistoryPanel'
 
 export const dynamic = 'force-dynamic'
 
@@ -59,6 +60,8 @@ export default async function TenantAuditPage({
 
   return (
     <div className="space-y-4">
+      <MailinHistoryPanel />
+
       <form className="dp-card flex flex-wrap items-end gap-3" method="get">
         <div className="min-w-[260px] flex-1">
           <label className="dp-label" htmlFor="q">Suche</label>
@@ -84,8 +87,13 @@ export default async function TenantAuditPage({
           </h2>
           <p className="text-xs text-gray-400">Seite {page} / {pages}</p>
         </div>
+        {/* Höhe begrenzt + scrollbar (Stefan 2026-08-25) — bis zu 50 Einträge
+            je Seite würden sonst sehr lang werden; Kopfzeile bleibt beim
+            Scrollen innerhalb der Tabelle sichtbar. Seitenweise Blättern
+            unten bleibt unverändert. */}
+        <div className="max-h-96 overflow-y-auto">
         <table className="w-full min-w-[800px]">
-          <thead>
+          <thead className="sticky top-0 bg-[var(--surface)]">
             <tr className="dp-tr">
               <th className="dp-th">Zeit</th>
               <th className="dp-th">Aktion</th>
@@ -119,6 +127,7 @@ export default async function TenantAuditPage({
             )}
           </tbody>
         </table>
+        </div>
         <div className="flex gap-2 px-6 py-4">
           {page > 1 && <a className="btn-secondary" href={pageHref(page - 1)}>← Neuer</a>}
           {page < pages && <a className="btn-secondary" href={pageHref(page + 1)}>Älter →</a>}

@@ -35,7 +35,7 @@ export function InvoiceVendorCell({
         {vendor}
       </Link>
       {hasUnreadNote && (
-        <span className="ml-1.5" title="Ungelesene Nachricht an Sie — Rechnung öffnen zum Lesen">💬</span>
+        <span className="ml-1.5" title="Offene Nachricht zu diesem Beleg — Rechnung öffnen zum Lesen/Erledigen">💬</span>
       )}
       {pendingApprovalTitle && (
         <span

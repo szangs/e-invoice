@@ -16,6 +16,6 @@ export const FORMAT_LABELS: Record<DocFormat, string> = {
   ZUGFERD: 'ZUGFeRD / Factur-X',
   XRECHNUNG_CII: 'XRechnung (CII)',
   XRECHNUNG_UBL: 'XRechnung (UBL)',
-  PDF: 'PDF (ohne strukturierte Daten)',
+  PDF: 'PDF (KI-/manuell erfasst)',
   OTHER: 'Unbekanntes Format',
 }

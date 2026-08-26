@@ -6,7 +6,7 @@
 // externen KI-Anbieter gehen (Zero-Knowledge). Siehe /api/ai/config und
 // /api/invoices/ai-extract, die diese Prüfung serverseitig erzwingen.
 import { ApiError } from '@/lib/context'
-import { getSettings } from '@/lib/settings'
+import { addAiTokenUsage, getSettings } from '@/lib/settings'
 
 export type AiExtractedInvoice = {
   vendor: string | null
@@ -33,11 +33,16 @@ export type AiExtractedInvoice = {
   // Dokument überhaupt eine Rechnung ist — vermeidet einen zweiten,
   // separaten API-Call nur für die Klassifikation. Siehe lib/mailin.ts.
   documentType: 'invoice' | 'not_invoice' | 'unsure'
+  // Sicherheit dieser Einstufung in Prozent (Stefan 2026-08-25, 0-100) — wie
+  // sicher sich das Modell ist, dass documentType korrekt ist. Landet im
+  // Spam/Fehlleitung-Korb sichtbar in der Rechnungsliste (InvoiceRows.tsx),
+  // damit ein Mensch nicht blind vertrauen muss.
+  documentTypeConfidence: number | null
   // Positionszeilen (Stefan 2026-08-25): bei nackten PDFs/Scans ohne
   // strukturiertes XML war bisher nur die Gesamtsumme sichtbar — bei
   // Rechnungen mit vielen Posten fehlte die Aufschlüsselung komplett.
   // Best-effort, kann leer bleiben (z. B. bei schlecht lesbarem Beleg).
-  lines: { name: string; qty: string | null; unitPrice: number | null; total: number | null }[]
+  lines: { name: string; qty: string | null; unitPrice: number | null; discount: number | null; total: number | null }[]
   // Skonto (Stefan 2026-08-25): dueDate oben ist IMMER das eigentliche
   // Zahlungsziel (netto, ohne Abzug) — vorher konnte die KI hier
   // versehentlich die kürzere Skonto-Frist statt des Zahlungsziels
@@ -46,10 +51,24 @@ export type AiExtractedInvoice = {
   // jetzt separat, damit beide Angaben erhalten bleiben statt verwechselt zu werden.
   discountDueDate: string | null
   discountPercent: number | null
+  // Anschrift/Steuerkennung des Lieferanten (Stefan 2026-08-25, §14 Abs. 4
+  // Nr. 1+2 UStG) — bei E-Rechnung strukturiert aus dem XML, bei PDF/Scan
+  // vorher gar nicht erfasst. Best-effort: steht oft klein im Briefkopf/
+  // Footer, die KI liest es mit, wenn erkennbar, sonst null (von Hand nachtragbar).
+  sellerAddress: string | null
+  sellerVatId: string | null
+  sellerTaxNumber: string | null
+  // Land des Lieferanten (Stefan 2026-08-25, ISO 3166-1 alpha-2, z. B. "DE",
+  // "FR", "US") — Grundlage für die Inland/EU/Drittland-Einordnung
+  // (lib/erechnung.ts classifyTaxRegion), die wiederum bestimmt, welche
+  // Pflichtangaben-Regel gilt. Nur wenn erkennbar, sonst null (dann fragt die
+  // Anzeige den Menschen statt zu raten).
+  sellerCountryCode: string | null
 }
 
 const KNOWN_FIELDS = [
   'vendor', 'invoiceNumber', 'invoiceDate', 'dueDate',
+  'sellerAddress', 'sellerVatId', 'sellerTaxNumber', 'sellerCountryCode',
   'amountNet', 'amountTax', 'amountGross', 'currency', 'tags', 'directDebitByVendor',
 ]
 
@@ -81,7 +100,16 @@ export async function isAiConfigured(): Promise<boolean> {
 }
 
 /** Liest die Rechnungsdaten aus einem Foto/Scan per KI-Anbieter aus. */
-export async function extractInvoiceFromImage(base64: string, mimeType: string): Promise<AiExtractedInvoice> {
+export async function extractInvoiceFromImage(
+  base64: string,
+  mimeType: string,
+  // Lieferanten-Gedächtnis (Stefan 2026-08-25, lib/vendorMemory.ts): Hinweis
+  // auf eine frühere, bereits geprüfte Rechnung DESSELBEN Absenders — macht
+  // die Erkennung konsistenter (z. B. immer dieselbe Lieferanten-Schreibweise),
+  // ohne dass Beträge/Datum/Rechnungsnummer aus der Vergangenheit übernommen
+  // werden (die liest die KI weiterhin eigenständig aus DIESEM Beleg).
+  vendorHint?: string,
+): Promise<AiExtractedInvoice> {
   const s = await getSettings()
   if (!s.AI_BASE_URL || !s.AI_MODEL) {
     throw new ApiError(400, 'Kein KI-Anbieter konfiguriert (Systemeinstellungen).')
@@ -126,6 +154,22 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
                   'demselben Beispiel das 7-Tage-Datum, nur wenn ein Skonto-Rabatt für vorzeitige ' +
                   'Zahlung ausdrücklich genannt ist, sonst null), ' +
                   'discountPercent (Zahl oder null — der Skonto-Prozentsatz, z. B. 2 für "2 % Skonto"), ' +
+                  'sellerAddress (vollständige Anschrift des Rechnungsstellers als ein String, ' +
+                  'z. B. "Musterstraße 12, 12345 Musterstadt" — nur wenn auf der Rechnung erkennbar, ' +
+                  'sonst null, NICHT raten), ' +
+                  'sellerVatId (Umsatzsteuer-Identifikationsnummer des Rechnungsstellers, Format ' +
+                  'meist "DE123456789" o. ä. — nur wenn ausdrücklich als USt-IdNr./VAT-ID/Ust-Id ' +
+                  'bezeichnet, sonst null), ' +
+                  'sellerTaxNumber (Steuernummer des Rechnungsstellers, z. B. "123/456/78901" — nur ' +
+                  'wenn ausdrücklich als Steuernummer/Steuer-Nr. bezeichnet, NICHT dieselbe wie eine ' +
+                  'USt-IdNr., sonst null), ' +
+                  'sellerCountryCode (Land des Rechnungsstellers als ISO-3166-1-alpha-2-Code, z. B. ' +
+                  '"DE", "FR", "US", "CH" — leite ihn aus JEDEM eindeutigen Hinweis ab: der Anschrift, ' +
+                  'dem Länder-Präfix der USt-IdNr./Steuernummer (z. B. "CHE-..." → CH), ODER einem ' +
+                  'ausgeschriebenen Ländernamen irgendwo auf dem Beleg (z. B. steht dort wörtlich ' +
+                  '"Switzerland", "Schweiz", "United States", "France" → den passenden Code verwenden, ' +
+                  'das ist KEIN Raten, sondern Übersetzen eines klar erkennbaren Ländernamens in seinen ' +
+                  'Code). Nur wenn WIRKLICH nirgends ein Land erkennbar ist: null), ' +
                   'amountNet (Zahl, Punkt als Dezimaltrennzeichen), ' +
                   'amountTax (Zahl), amountGross (Zahl), currency (ISO-Code, z. B. EUR), ' +
                   'tags (1 bis 3 kurze, kommagetrennte Kategorie-Schlagworte passend zur Rechnung, ' +
@@ -140,13 +184,20 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
                   '"invoice" wenn das Bild eindeutig eine Rechnung/einen Zahlungsbeleg zeigt, ' +
                   '"not_invoice" wenn es eindeutig KEINE Rechnung ist — z. B. Newsletter, Werbung, ' +
                   'Vertrag, Bewerbungsschreiben, Spam, Screenshot ohne Rechnungsbezug — oder ' +
-                  '"unsure" wenn nicht eindeutig erkennbar), lines (Array der einzelnen ' +
+                  '"unsure" wenn nicht eindeutig erkennbar), documentTypeConfidence (ganze Zahl 0-100 — ' +
+                  'wie sicher du dir bei documentType bist, 100 = völlig eindeutig, 50 = reine Vermutung), ' +
+                  'lines (Array der einzelnen ' +
                   'Rechnungspositionen/Posten, falls als Tabelle/Liste erkennbar — je Position ein ' +
                   'Objekt mit name (Bezeichnung), qty (Menge als Text, z. B. "3" oder "2 Stück", ' +
-                  'oder null), unitPrice (Einzelpreis als Zahl oder null), total (Zeilensumme als ' +
-                  'Zahl oder null) — leeres Array wenn keine einzelnen Positionen erkennbar sind, z. B. ' +
+                  'oder null), unitPrice (Einzelpreis als Zahl oder null — falls nicht separat ' +
+                  'aufgeführt, aus Menge/Rabatt/Betrag zurückrechnen), discount (Rabatt/Nachlass ' +
+                  'DIESER Position als positive Zahl, falls in einer eigenen Spalte ausgewiesen, ' +
+                  'sonst null — NICHT mit dem allgemeinen Skonto der Gesamtrechnung verwechseln), ' +
+                  'total (Zeilensumme NACH Abzug des Rabatts als Zahl oder null) — leeres Array wenn ' +
+                  'keine einzelnen Positionen erkennbar sind, z. B. ' +
                   'bei einer Pauschalrechnung ohne Aufschlüsselung). ' +
-                  'Unbekannte Felder als null. Keine weiteren Felder, kein Zusatztext.',
+                  'Unbekannte Felder als null. Keine weiteren Felder, kein Zusatztext.' +
+                  (vendorHint ? `\n\n${vendorHint}` : ''),
               },
               { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
             ],
@@ -186,6 +237,9 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
     throw new ApiError(res.status, `KI-Anbieter antwortete mit Fehler ${res.status}${detail ? `: ${detail.slice(0, 300)}` : '.'}${hint}`)
   }
   const data = await res.json()
+  // Tokenverbrauch aufaddieren (Stefan 2026-08-25, Systemeinstellungen) —
+  // best effort, kein harter Fehler falls der Anbieter keine usage liefert.
+  addAiTokenUsage(Number(data?.usage?.total_tokens) || 0).catch(() => undefined)
   const content: string = data?.choices?.[0]?.message?.content ?? ''
   const cleaned = content.trim().replace(/^```(json)?/i, '').replace(/```$/, '').trim()
   let parsed: Record<string, unknown>
@@ -200,6 +254,10 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
   const dueDate = str(parsed.dueDate)
   const discountDueDate = str(parsed.discountDueDate)
   const discountPercent = num(parsed.discountPercent)
+  const sellerAddress = str(parsed.sellerAddress)
+  const sellerVatId = str(parsed.sellerVatId)
+  const sellerTaxNumber = str(parsed.sellerTaxNumber)
+  const sellerCountryCode = str(parsed.sellerCountryCode)
   const amountNet = num(parsed.amountNet)
   const amountTax = num(parsed.amountTax)
   const amountGross = num(parsed.amountGross)
@@ -258,6 +316,8 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
       : rawDocType === 'invoice' && (amountGross !== null || vendor)
         ? 'invoice'
         : 'unsure'
+  const rawConfidence = Number(parsed.documentTypeConfidence)
+  const documentTypeConfidence = Number.isFinite(rawConfidence) ? Math.max(0, Math.min(100, Math.round(rawConfidence))) : null
 
   const lines: AiExtractedInvoice['lines'] = Array.isArray(parsed.lines)
     ? parsed.lines
@@ -266,6 +326,7 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
           name: str(l.name) ?? '(ohne Bezeichnung)',
           qty: str(l.qty),
           unitPrice: num(l.unitPrice),
+          discount: num(l.discount),
           total: num(l.total),
         }))
     : []
@@ -277,6 +338,10 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
     dueDate,
     discountDueDate,
     discountPercent,
+    sellerAddress,
+    sellerVatId,
+    sellerTaxNumber,
+    sellerCountryCode,
     amountNet,
     amountTax,
     amountGross,
@@ -286,6 +351,7 @@ export async function extractInvoiceFromImage(base64: string, mimeType: string):
     uncertainFields: Array.from(flagged),
     warnings,
     documentType,
+    documentTypeConfidence,
     lines,
   }
 }

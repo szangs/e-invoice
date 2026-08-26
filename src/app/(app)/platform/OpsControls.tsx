@@ -9,14 +9,17 @@ export function OpsControls({
   maintenanceLock,
   serviceStatusText,
   supportTimeoutMin,
+  sessionTimeoutHours,
 }: {
   maintenanceLock: boolean
   serviceStatusText: string
   supportTimeoutMin: string
+  sessionTimeoutHours: string
 }) {
   const router = useRouter()
   const [text, setText] = useState(serviceStatusText)
   const [timeout_, setTimeout_] = useState(supportTimeoutMin)
+  const [sessionTimeout, setSessionTimeout] = useState(sessionTimeoutHours)
   const [busy, setBusy] = useState(false)
 
   async function save(body: Record<string, unknown>) {
@@ -65,6 +68,18 @@ export function OpsControls({
             <button disabled={busy} className="btn-secondary"
               title="Speichert die Minutenzahl, nach der Fernwartungs-Sitzungen automatisch enden"
               onClick={() => save({ supportTimeoutMin: timeout_ })}>
+              OK
+            </button>
+          </div>
+        </div>
+        <div>
+          <label className="dp-label" htmlFor="sessionTimeout">Sitzungsdauer (Stunden)</label>
+          <div className="mt-1 flex gap-2">
+            <input id="sessionTimeout" type="number" min={1} max={168} className="dp-input !w-24"
+              value={sessionTimeout} onChange={(e) => setSessionTimeout(e.target.value)} />
+            <button disabled={busy} className="btn-secondary"
+              title="Speichert, nach wie vielen Stunden seit der Anmeldung eine Sitzung abläuft (für alle Mandanten und den Betreiber)"
+              onClick={() => save({ sessionTimeoutHours: sessionTimeout })}>
               OK
             </button>
           </div>

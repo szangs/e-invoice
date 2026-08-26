@@ -27,7 +27,8 @@ const EMPTY = {
 type ScanPage = { id: string; file: File; kind: 'image' | 'pdf'; previewUrl: string | null }
 
 function toInput(n: number | null): string {
-  return n === null ? '' : String(n).replace('.', ',')
+  // Immer 2 Nachkommastellen (Stefan 2026-08-25, Bugfix — siehe InvoiceEditForm.tsx).
+  return n === null ? '' : n.toFixed(2).replace('.', ',')
 }
 
 const CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP']
@@ -416,7 +417,8 @@ export default function ScanInvoicePage() {
             </button>
             <p className="text-[11px] text-gray-500">
               Liest die erste fotografierte Seite und befüllt die Felder unten inkl. Verschlagwortung
-              (Tags) — bitte prüfen und korrigieren.
+              (Tags). KI-generierte oder -verarbeitete Inhalte können fehlerhaft sein — bitte vor der
+              Übernahme immer gegenprüfen.
               {encEnabled && (
                 <span className="block text-[var(--warn-strong)]">
                   ⚠ Der Beleg wird für diese Erkennung an den externen KI-Anbieter gesendet — eine

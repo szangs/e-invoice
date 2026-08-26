@@ -2,14 +2,15 @@
 
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { FileLink } from '@/components/crypto/FileLink'
 import { DEK_UNLOCKED_EVENT, notifyDekUnlocked, useDecryptedContent } from '@/components/crypto/useDecryptedContent'
 import { decryptBytes, encryptJson } from '@/lib/clientCrypto'
-import { EINVOICE_FORMATS } from '@/lib/docFormat'
+import { EINVOICE_FORMATS, FORMAT_LABELS } from '@/lib/docFormat'
+import { TAX_REGION_LABELS } from '@/lib/erechnung'
+import type { DocFormat, ParsedInvoiceData, TaxRegion, Validation } from '@/lib/erechnung'
 import { getCachedDek, unlockWithPassphrase } from '@/lib/keyStore'
 import { formatAmount, type InvoiceDTO, type InvoiceLineItem } from '@/lib/invoices'
-import { BasketMoveSelect } from '../BasketMoveSelect'
-import { InvoiceNotesPanel } from './InvoiceNotesPanel'
+import { BasketMoveButton } from './BasketMoveButton'
+import { ERechnungView, type EditBundle } from './ERechnungView'
 import { RequestCorrectionForm } from './RequestCorrectionForm'
 
 const AI_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp']
@@ -21,17 +22,6 @@ const CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP']
 type ReviewField = 'vendor' | 'invoiceNumber' | 'invoiceDate' | 'dueDate' | 'amountNet' | 'amountTax' | 'amountGross'
 const REVIEW_FIELD_ORDER: ReviewField[] = ['vendor', 'invoiceNumber', 'invoiceDate', 'dueDate', 'amountNet', 'amountTax', 'amountGross']
 type ReviewStatus = 'pending' | 'confirmed' | 'flagged'
-
-// Steuerlich relevante Felder bei ZUGFeRD/XRechnung sind gesperrt (Stefan
-// 2026-07-08): das XML ist das rechtsverbindliche Original — würde man
-// Lieferant, Nummer, Datum oder Beträge hier überschreiben, würde die Anzeige
-// vom Original abweichen (GoBD-Unveränderbarkeit/Nachvollziehbarkeit). Bei
-// Papierrechnungen/Scans (keine strukturierte Quelle) gilt diese Sperre NICHT.
-// Notizen, Tags, Status, Zahlungsart und Korb bleiben immer frei editierbar —
-// das ist unsere eigene Workflow-Metadaten-Ebene, keine Rechnungsdaten.
-const LOCK_REASON =
-  'Aus der elektronischen Rechnung (ZUGFeRD/XRechnung) automatisch übernommen — laut GoBD nicht änderbar, ' +
-  'da die Anzeige sonst vom rechtsverbindlichen Original abweichen würde.'
 
 // Bearbeitungskette (Stefan 2026-08-25): Herkunft der Rechnung lesbar
 // beschriften — "wurde über E-Invoice/E-Mail-Eingang verarbeitet" statt nur
@@ -52,7 +42,11 @@ const STATUS_OPTIONS = [
 ]
 
 function toInput(n: number | null): string {
-  return n === null ? '' : String(n).replace('.', ',')
+  // Immer 2 Nachkommastellen (Stefan 2026-08-25, Bugfix) — vorher zeigte
+  // String(n) z. B. bei 1200 nur "1200" statt "1200,00" und bei 1200.5 nur
+  // "1200,5" statt "1200,50", weil JavaScript nachgestellte Nullen nicht
+  // in der Zahl selbst speichert.
+  return n === null ? '' : n.toFixed(2).replace('.', ',')
 }
 function toNumber(v: string): number | null {
   if (!v.trim()) return null
@@ -65,24 +59,48 @@ export function InvoiceEditForm({
   baskets,
   pendingApproval,
   encryptionEnabled,
-  costCentersEnabled,
+  costCenterEnabled,
+  costCarrierEnabled,
   colleagues,
   locked,
   validationMissing,
   suggestedVendorEmail,
+  supersededByInvoiceId,
+  format,
+  erechnungData,
+  validation,
+  effectiveRegion,
+  buyerNameCheck,
+  canApprove,
+  canHandover,
 }: {
   invoice: InvoiceDTO
   baskets: { id: string; name: string }[]
   pendingApproval: { targetName: string; approvedBy: string[]; needed: number } | null
   encryptionEnabled: boolean
-  costCentersEnabled: boolean
+  costCenterEnabled: boolean
+  costCarrierEnabled: boolean
   colleagues: { id: string; name: string }[]
-  /** Beleg-Eingang fällt in ein abgeschlossenes Audit-Jahr (§18, Stefan 2026-08-25) — vollständig schreibgeschützt (serverseitig ebenfalls erzwungen, siehe api/invoices/[id]/route.ts). */
+  /** Beleg-Eingang fällt in ein abgeschlossenes Audit-Jahr (§18, Stefan 2026-08-25) ODER wurde durch eine neuere Version ersetzt — vollständig schreibgeschützt (serverseitig ebenfalls erzwungen, siehe api/invoices/[id]/route.ts). */
   locked: boolean
   /** Fehlende Pflichtangaben (EN 16931/§14 UStG) — null wenn keine E-Rechnung oder vollständig, siehe lib/erechnung.ts validateData. */
   validationMissing: string[] | null
   /** Aus dem Notiztext vorgeschlagene Absenderadresse für "Korrektur anfordern" — nur ein Vorschlag, siehe page.tsx. */
   suggestedVendorEmail: string | null
+  /** Rechnungsversionierung (Stefan 2026-08-25) — gesetzt, wenn diese Rechnung eine ältere, überholte Version ist; unterscheidet die Banner-Meldung von der Perioden-Sperre. */
+  supersededByInvoiceId: string | null
+  /** Ruhige Kopfzeile oben (Stefan 2026-08-25) — bei E-Rechnung rein lesend aus dem XML,
+   * sonst editierbar direkt hier statt eines zweiten Formulars weiter unten, siehe ERechnungView.tsx. */
+  format: DocFormat | null
+  erechnungData: ParsedInvoiceData | null
+  validation: Validation | null
+  /** Inland/EU/Drittland (Stefan 2026-08-25) — vom Server ermittelt (Invoice.taxRegion, sonst aus dem Länder-Code abgeleitet), siehe page.tsx. */
+  effectiveRegion: TaxRegion | null
+  buyerNameCheck: { invoiceId: string; expected: string; actual: string; acknowledged: boolean; locked: boolean } | null
+  /** Korb-Recht APPROVE ("Sachlich freigeben") auf dem aktuellen Korb — Freigeben jetzt auch hier möglich, nicht nur in der Rechnungsliste (Stefan 2026-08-25), siehe page.tsx. */
+  canApprove: boolean
+  /** Korb-Recht HANDOVER ("An Buchhaltung übergeben"), nur relevant im Übergabekorb. */
+  canHandover: boolean
 }) {
   const router = useRouter()
   const [f, setF] = useState({
@@ -92,6 +110,10 @@ export function InvoiceEditForm({
     dueDate: invoice.dueDate ?? '',
     discountDueDate: invoice.discountDueDate ?? '',
     discountPercent: toInput(invoice.discountPercent),
+    sellerAddress: invoice.sellerAddress ?? '',
+    sellerVatId: invoice.sellerVatId ?? '',
+    sellerTaxNumber: invoice.sellerTaxNumber ?? '',
+    sellerCountryCode: invoice.sellerCountryCode ?? '',
     amountNet: toInput(invoice.amountNet),
     amountTax: toInput(invoice.amountTax),
     amountGross: toInput(invoice.amountGross),
@@ -117,10 +139,13 @@ export function InvoiceEditForm({
   const [costCenters, setCostCenters] = useState<{ id: string; code: string; name: string }[]>([])
   const [costCarriers, setCostCarriers] = useState<{ id: string; code: string; name: string }[]>([])
   useEffect(() => {
-    if (!costCentersEnabled) return
+    if (!costCenterEnabled) return
     fetch('/api/admin/cost-codes?kind=KOSTENSTELLE').then((r) => r.json()).then((d) => setCostCenters(d.codes ?? [])).catch(() => undefined)
+  }, [costCenterEnabled])
+  useEffect(() => {
+    if (!costCarrierEnabled) return
     fetch('/api/admin/cost-codes?kind=KOSTENTRAEGER').then((r) => r.json()).then((d) => setCostCarriers(d.codes ?? [])).catch(() => undefined)
-  }, [costCentersEnabled])
+  }, [costCarrierEnabled])
 
   // Inhalts-Verschlüsselung (Stefan 2026-07-09): vendor/invoiceNumber/
   // amount*/tags/notes oben sind bei contentEnc nur Platzhalter/leer — hier
@@ -139,6 +164,9 @@ export function InvoiceEditForm({
       currency: decryptedContent.currency ?? p.currency,
       tags: decryptedContent.tags ?? '',
       notes: decryptedContent.notes ?? '',
+      sellerAddress: decryptedContent.sellerAddress ?? '',
+      sellerVatId: decryptedContent.sellerVatId ?? '',
+      sellerTaxNumber: decryptedContent.sellerTaxNumber ?? '',
     }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [decryptedContent])
@@ -217,11 +245,184 @@ export function InvoiceEditForm({
   const activeReviewFields = REVIEW_FIELD_ORDER.filter((k) => k !== 'dueDate' || !invoice.directDebitByVendor)
   const reviewedCount = activeReviewFields.filter((k) => reviewStatus[k] !== 'pending').length
   const allReviewed = needsAiConfirm && reviewedCount === activeReviewFields.length
+
+  // Annahmeempfehlung + Prüfbericht (Stefan 2026-08-26): fasst die schon
+  // vorhandenen Signale (Pflichtangaben, Dublette, Spam-Klassifikation,
+  // Empfänger-Abweichung, unbestätigte/unsichere KI-Werte) zu EINER Ampel
+  // zusammen, statt dass der Bearbeiter jedes einzeln selbst zusammenzählen
+  // muss. Jeder EINZELNE Punkt bleibt als eigene Zeile im Prüfbericht
+  // erhalten (auch die unauffälligen, als "✓ ok") — Grundlage für den
+  // Workflow-Wunsch "Annahmeempfehlung (oder Ablehnung, je nach Schwere)".
+  // Reine Anzeige, setzt nichts automatisch — die eigentliche Entscheidung
+  // (Status "Abgelehnt", "Prüfung ignorieren" etc.) bleibt Handarbeit.
+  type CheckStatus = 'ok' | 'warn' | 'fail'
+  type CheckRow = { label: string; status: CheckStatus; detail: string; subItems?: { label: string; ok: boolean }[] }
+  // E-Rechnungsvalidierung im Detail (Stefan 2026-08-26): welches Format,
+  // welche Steuerregion wurde zugrunde gelegt und warum, und — statt nur der
+  // Sammel-Meldung "X Pflichtangabe(n) fehlen" — jede einzelne geprüfte
+  // Pflichtangabe mit ok/fehlt (siehe validateData()-Rückgabefeld `checks`,
+  // lib/erechnung.ts).
+  const isStructuredFormat = format !== null && (EINVOICE_FORMATS as string[]).includes(format)
+  const eInvoiceInfo = {
+    formatLabel: format ? FORMAT_LABELS[format] : '—',
+    structured: isStructuredFormat,
+    // Stefan 2026-08-26 ("welcher Validator wurde benutzt"): ehrlich
+    // ausweisen, DASS und WIE geprüft wurde — die App macht keine
+    // vollständige Schema-/Schematron-Prüfung gegen das offizielle
+    // XRechnung-/ZUGFeRD-Regelwerk (z. B. KoSIT-Validator), sondern eine
+    // eigene, einfachere Vollständigkeitsprüfung der Pflichtangaben.
+    validatorLabel: 'Interne Pflichtangaben-Prüfung (validateData, lib/erechnung.ts)',
+    validatorDetail:
+      'Prüft die Vollständigkeit der Pflichtangaben nach §14 UStG / EN 16931 Kernelementen — ' +
+      'KEINE vollständige Schema-/Schematron-Validierung gegen das offizielle XRechnung-/ZUGFeRD-Regelwerk ' +
+      '(z. B. den KoSIT-Validator). Für eine rechtsverbindliche Konformitätsprüfung ggf. zusätzlich extern validieren.',
+    electronic: invoice.checkElectronicAt
+      ? { ok: true, detail: `${invoice.checkElectronicBy ?? '—'} am ${new Date(invoice.checkElectronicAt).toLocaleString('de-DE')}` }
+      : { ok: false, detail: 'Noch offen' },
+    regionLabel: effectiveRegion ? TAX_REGION_LABELS[effectiveRegion] : 'nicht ermittelbar (kein Länder-Code erkannt)',
+    pflichtangabenChecks: validation?.checks ?? null,
+  }
+  const checks: CheckRow[] = [
+    invoice.invoiceClass === 'NOT_INVOICE'
+      ? { label: 'Spam/Fehlleitung-Klassifikation', status: 'fail', detail: `Mail-Eingang stuft dies als vermutlich keine Rechnung ein${invoice.invoiceClassConfidence !== null ? ` (${invoice.invoiceClassConfidence}% Sicherheit)` : ''}.` }
+      : invoice.invoiceClass === 'UNCERTAIN'
+        ? { label: 'Spam/Fehlleitung-Klassifikation', status: 'warn', detail: `Mail-Eingang ist sich nicht sicher, ob es sich um eine Rechnung handelt${invoice.invoiceClassConfidence !== null ? ` (${invoice.invoiceClassConfidence}% Sicherheit)` : ''}.` }
+        : { label: 'Spam/Fehlleitung-Klassifikation', status: 'ok', detail: 'Eindeutig als Rechnung erkannt.' },
+    invoice.duplicateOfId
+      ? { label: 'Dubletten-Prüfung', status: 'fail', detail: 'Mögliche Dublette einer bereits vorhandenen Rechnung.' }
+      : { label: 'Dubletten-Prüfung', status: 'ok', detail: 'Keine Dublette erkannt.' },
+    validationMissing && validationMissing.length > 0 && !invoice.pflichtangabenIgnoredAt
+      ? { label: 'Pflichtangaben (§14 UStG / EN 16931)', status: 'fail', detail: `Fehlend: ${validationMissing.join(', ')}.`, subItems: validation?.checks }
+      : invoice.pflichtangabenIgnoredAt
+        ? { label: 'Pflichtangaben (§14 UStG / EN 16931)', status: 'warn', detail: `Prüfung ignoriert — Grund: ${invoice.pflichtangabenIgnoredReason ?? '—'}.`, subItems: validation?.checks }
+        : { label: 'Pflichtangaben (§14 UStG / EN 16931)', status: 'ok', detail: validation ? 'Vollständig.' : 'Keine strukturierten Daten zum Prüfen vorhanden.', subItems: validation?.checks },
+    buyerNameCheck
+      ? buyerNameCheck.acknowledged
+        ? { label: 'Rechnungsempfänger-Abgleich', status: 'warn', detail: `Abweichung bestätigt ("Passt trotzdem") — erwartet „${buyerNameCheck.expected}", Beleg nennt „${buyerNameCheck.actual}".` }
+        : { label: 'Rechnungsempfänger-Abgleich', status: 'fail', detail: `Weicht vom hinterlegten Firmennamen ab — erwartet „${buyerNameCheck.expected}", Beleg nennt „${buyerNameCheck.actual}".` }
+      : { label: 'Rechnungsempfänger-Abgleich', status: 'ok', detail: 'Stimmt mit hinterlegter Firmenbezeichnung überein (oder kein Abgleich hinterlegt).' },
+    needsAiConfirm
+      ? { label: 'KI-Bestätigung', status: 'warn', detail: `Von der KI erkannte Werte noch nicht bestätigt (${reviewedCount}/${activeReviewFields.length} geprüft).` }
+      : { label: 'KI-Bestätigung', status: 'ok', detail: invoice.aiAssisted ? 'Von der KI erkannte Werte wurden bestätigt.' : 'Nicht per KI erfasst.' },
+    aiFlags.length > 0
+      ? { label: 'KI-Unsicherheit einzelner Felder', status: 'warn', detail: `KI ist sich unsicher bei: ${aiFlags.join(', ')}.` }
+      : { label: 'KI-Unsicherheit einzelner Felder', status: 'ok', detail: 'Keine als unsicher markierten Felder.' },
+  ]
+  const recommendation = (() => {
+    const worst = checks.some((c) => c.status === 'fail') ? 'fail' : checks.some((c) => c.status === 'warn') ? 'warn' : 'ok'
+    const level = worst === 'fail' ? 'reject' : worst === 'warn' ? 'review' : 'accept'
+    const reasons = checks.filter((c) => c.status !== 'ok').map((c) => c.detail)
+    return { level: level as 'accept' | 'review' | 'reject', reasons }
+  })()
+  const RECOMMENDATION_STYLE = {
+    accept: { icon: '✓', label: 'Annahme', className: 'bg-[var(--accent-bg)] text-[var(--accent)]' },
+    review: { icon: '⚠', label: 'Prüfen', className: 'bg-[var(--warn-bg)] text-[var(--warn-strong)]' },
+    reject: { icon: '⛔', label: 'Klärung nötig', className: 'bg-red-50 text-[var(--danger)]' },
+  } as const
+  const CHECK_STATUS_STYLE: Record<CheckStatus, { icon: string; className: string }> = {
+    ok: { icon: '✓', className: 'text-[var(--accent)]' },
+    warn: { icon: '⚠', className: 'text-[var(--warn-strong)]' },
+    fail: { icon: '⛔', className: 'text-[var(--danger)]' },
+  }
+  const [showReport, setShowReport] = useState(false)
+  // KoSIT-Prüfung (Stefan 2026-08-26) — die offizielle Schema-/Schematron-
+  // Konformitätsprüfung der Koordinierungsstelle für IT-Standards, ergänzt
+  // die eigene, schnelle Pflichtangaben-Prüfung. Läuft inzwischen automatisch
+  // im Hintergrund direkt nach Ablage (lib/kositValidator.ts scheduleKositCheck)
+  // — das gespeicherte Ergebnis wird hier direkt vorbelegt, "Erneut prüfen"
+  // löst bei Bedarf einen frischen, ein paar Sekunden dauernden Lauf aus
+  // (Java-Start), siehe api/invoices/[id]/kosit-check.
+  const [kositBusy, setKositBusy] = useState(false)
+  const [kositResult, setKositResult] = useState<{
+    structurallyValid: boolean
+    accepted: boolean | null
+    scenarioName: string | null
+    messages: { level: string; code: string | null; text: string }[]
+  } | null>(
+    invoice.kositCheckedAt
+      ? {
+          structurallyValid: invoice.kositAccepted !== null,
+          accepted: invoice.kositAccepted,
+          scenarioName: invoice.kositScenario,
+          messages: invoice.kositMessages ?? [],
+        }
+      : null,
+  )
+  const [kositError, setKositError] = useState('')
+  async function runKositCheck() {
+    setKositBusy(true)
+    setKositError('')
+    setKositResult(null)
+    try {
+      const res = await fetch(`/api/invoices/${invoice.id}/kosit-check`, { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setKositError(data.error ?? 'KoSIT-Prüfung fehlgeschlagen.')
+        return
+      }
+      setKositResult(data.result)
+    } catch {
+      setKositError('KoSIT-Prüfung fehlgeschlagen.')
+    } finally {
+      setKositBusy(false)
+    }
+  }
+  // Prüfbericht als Text (Stefan 2026-08-26) — für die optionale Checkbox
+  // "Prüfbericht einfügen" in RequestCorrectionForm.tsx, dieselben Daten wie
+  // im Prüfbericht-Fenster, nur als Klartext statt JSX.
+  const reportText = [
+    `Prüfbericht (${RECOMMENDATION_STYLE[recommendation.level].label}):`,
+    ``,
+    `E-Rechnungsvalidierung:`,
+    `- Format: ${eInvoiceInfo.formatLabel}${eInvoiceInfo.structured ? ' (strukturiertes E-Rechnungs-Format)' : ' (kein E-Rechnungs-Format — PDF/Scan)'}`,
+    `- Elektronische Vorprüfung: ${eInvoiceInfo.electronic.ok ? '✓' : '–'} ${eInvoiceInfo.electronic.detail}`,
+    `- Zugrunde gelegte Steuerregion: ${eInvoiceInfo.regionLabel}`,
+    `- Validator: ${eInvoiceInfo.validatorLabel}`,
+    ``,
+    ...checks.flatMap((c) => [
+      `${CHECK_STATUS_STYLE[c.status].icon} ${c.label}: ${c.detail}`,
+      ...(c.subItems ?? []).map((s) => `   ${s.ok ? '✓' : '✗'} ${s.label}`),
+    ]),
+  ].join('\n')
   function reviewKeyDown(field: ReviewField) {
     return (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (e.key !== 'Tab' || !needsAiConfirm) return
       setReviewStatus((p) => ({ ...p, [field]: e.shiftKey ? 'flagged' : 'confirmed' }))
     }
+  }
+  // "Alle Punkte als validiert kennzeichnen" (Stefan 2026-08-26): bestätigt
+  // alle noch offenen KI-Felder auf einen Schlag statt einzeln per Tab —
+  // ersetzt keine echte Prüfung, deshalb Warnhinweis davor (einmalig, mit
+  // dauerhafter Abschalt-Möglichkeit in localStorage, pro Browser).
+  const BULK_CONFIRM_DISMISS_KEY = 'invoiceBulkConfirmWarningDismissed'
+  const [showBulkConfirmWarning, setShowBulkConfirmWarning] = useState(false)
+  const [bulkConfirmDontShowAgain, setBulkConfirmDontShowAgain] = useState(false)
+  function confirmAllFields() {
+    setReviewStatus(Object.fromEntries(activeReviewFields.map((k) => [k, 'confirmed'])) as Record<ReviewField, ReviewStatus>)
+  }
+  function bulkConfirmClick() {
+    let dismissed = false
+    try {
+      dismissed = localStorage.getItem(BULK_CONFIRM_DISMISS_KEY) === '1'
+    } catch {
+      // s. u. — ohne localStorage einfach jedes Mal den Hinweis zeigen
+    }
+    if (dismissed) {
+      confirmAllFields()
+    } else {
+      setShowBulkConfirmWarning(true)
+    }
+  }
+  function bulkConfirmProceed() {
+    confirmAllFields()
+    if (bulkConfirmDontShowAgain) {
+      try {
+        localStorage.setItem(BULK_CONFIRM_DISMISS_KEY, '1')
+      } catch {
+        // s. o.
+      }
+    }
+    setShowBulkConfirmWarning(false)
   }
   const [compareBusy, setCompareBusy] = useState(false)
   const [compareError, setCompareError] = useState('')
@@ -296,6 +497,8 @@ export function InvoiceEditForm({
       const d = data.data as {
         vendor: string | null; invoiceNumber: string | null; invoiceDate: string | null
         dueDate: string | null; discountDueDate: string | null; discountPercent: number | null
+        sellerAddress: string | null; sellerVatId: string | null; sellerTaxNumber: string | null
+        sellerCountryCode: string | null
         amountNet: number | null; amountTax: number | null
         amountGross: number | null; currency: string | null; tags: string | null
         directDebitByVendor: boolean | null
@@ -310,6 +513,10 @@ export function InvoiceEditForm({
         dueDate: d.dueDate ?? p.dueDate,
         discountDueDate: d.discountDueDate ?? p.discountDueDate,
         discountPercent: d.discountPercent !== null ? toInput(d.discountPercent) : p.discountPercent,
+        sellerAddress: d.sellerAddress ?? p.sellerAddress,
+        sellerVatId: d.sellerVatId ?? p.sellerVatId,
+        sellerTaxNumber: d.sellerTaxNumber ?? p.sellerTaxNumber,
+        sellerCountryCode: d.sellerCountryCode ?? p.sellerCountryCode,
         amountNet: d.amountNet !== null ? toInput(d.amountNet) : p.amountNet,
         amountTax: d.amountTax !== null ? toInput(d.amountTax) : p.amountTax,
         amountGross: d.amountGross !== null ? toInput(d.amountGross) : p.amountGross,
@@ -340,9 +547,18 @@ export function InvoiceEditForm({
       discountPercent: toNumber(f.discountPercent),
       status: f.status,
       directDebitByVendor: f.directDebitByVendor,
-      ...(costCentersEnabled ? { costCenterCode: f.costCenterCode || null, costCarrierCode: f.costCarrierCode || null } : {}),
+      // Land des Lieferanten (Stefan 2026-08-25) — technische Kennung für die
+      // Inland/EU/Drittland-Einordnung, nicht selbst identifizierend, deshalb
+      // bewusst außerhalb der Inhalts-Verschlüsselung (analog costCenterCode).
+      sellerCountryCode: f.sellerCountryCode || null,
+      ...(costCenterEnabled ? { costCenterCode: f.costCenterCode || null } : {}),
+      ...(costCarrierEnabled ? { costCarrierCode: f.costCarrierCode || null } : {}),
       ...(usedAi ? { aiAssisted: true } : {}),
       ...(allReviewed ? { confirmAi: true as const } : {}),
+      // Stefan 2026-08-26: sobald alle KI-Felder bestätigt sind, gilt die
+      // formale Prüfung als erledigt — kein zusätzlicher F-Klick nötig, sonst
+      // unverändert manuell setzbar (z. B. bei rein manuell erfassten Belegen).
+      ...(allReviewed && !invoice.checkFormalAt ? { checkFormal: true as const } : {}),
       // Positionszeilen sind Workflow-Metadaten wie Kostenstelle/-träger, keine
       // GoBD-gesperrten Rechnungsdaten — deshalb immer im Klartext, auch bei
       // aktiver Inhalts-Verschlüsselung (analog costCenterCode oben).
@@ -367,6 +583,7 @@ export function InvoiceEditForm({
         vendor: f.vendor, invoiceNumber: f.invoiceNumber, amountNet: f.amountNet,
         amountTax: f.amountTax, amountGross: f.amountGross, currency: f.currency,
         tags: f.tags, notes: f.notes,
+        sellerAddress: f.sellerAddress, sellerVatId: f.sellerVatId, sellerTaxNumber: f.sellerTaxNumber,
       })
       body = { ...base, contentEnc }
     } else {
@@ -380,6 +597,9 @@ export function InvoiceEditForm({
         currency: f.currency,
         tags: f.tags || null,
         notes: f.notes || null,
+        sellerAddress: f.sellerAddress || null,
+        sellerVatId: f.sellerVatId || null,
+        sellerTaxNumber: f.sellerTaxNumber || null,
       }
     }
     const res = await fetch(`/api/invoices/${invoice.id}`, {
@@ -393,8 +613,11 @@ export function InvoiceEditForm({
       setMsg(data.error ?? 'Speichern fehlgeschlagen.')
       return
     }
-    setMsg('Gespeichert.')
-    router.refresh()
+    // Nach dem Speichern automatisch zurück zur Liste (Stefan 2026-08-25) —
+    // vorher blieb man auf der Detailseite stehen und musste selbst "Zurück"
+    // klicken, obwohl das nach einem erfolgreichen Speichern der übliche
+    // nächste Schritt ist.
+    router.push('/invoices')
   }
 
   async function remove() {
@@ -422,6 +645,40 @@ export function InvoiceEditForm({
     else setMsg('Wiederherstellen fehlgeschlagen.')
   }
 
+  // Inland/EU/Drittland manuell überschreiben (Stefan 2026-08-25) — sofort
+  // gespeichert statt über den Haupt-Speichern-Knopf, wie die Prüf-Häkchen
+  // unten: eine gelegentliche Korrektur, kein Teil des laufenden Formulars.
+  async function setTaxRegion(region: string) {
+    setBusy(true)
+    const res = await fetch(`/api/invoices/${invoice.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taxRegion: region || null }),
+    })
+    setBusy(false)
+    if (res.ok) router.refresh()
+    else setMsg('Land/Region konnte nicht gespeichert werden.')
+  }
+
+  // "Prüfung ignorieren" (Stefan 2026-08-25) — Begründung ist Pflicht (auch
+  // clientseitig schon abgefragt, Server erzwingt es zusätzlich).
+  async function toggleIgnore(ignored: boolean) {
+    let reason: string | null = null
+    if (ignored) {
+      reason = window.prompt('Kurze Begründung, warum die Pflichtangaben-Prüfung für diese Rechnung ignoriert werden soll:')
+      if (!reason || !reason.trim()) return
+    }
+    setBusy(true)
+    const res = await fetch(`/api/invoices/${invoice.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pflichtangabenIgnored: ignored, pflichtangabenIgnoredReason: reason }),
+    })
+    setBusy(false)
+    if (res.ok) router.refresh()
+    else setMsg('Konnte nicht gespeichert werden.')
+  }
+
   async function unmarkDuplicate() {
     setBusy(true)
     const res = await fetch(`/api/invoices/${invoice.id}`, {
@@ -443,6 +700,155 @@ export function InvoiceEditForm({
     setBusy(false)
     if (res.ok) router.refresh()
     else setMsg('Prüfschritt konnte nicht gespeichert werden.')
+  }
+
+  // "Sachlich freigeben"/"An Buchhaltung übergeben" jetzt auch hier togglebar
+  // (Stefan 2026-08-25, bisher nur in der Rechnungsliste, siehe
+  // CheckBadges.tsx — dieselbe Vier-Augen-/Auto-Verschiebe-Logik hierher
+  // portiert, damit beide Stellen sich gleich verhalten).
+  async function toggleApproval(key: 'checkSubstantive' | 'checkAccounting', value: boolean) {
+    setBusy(true)
+    const res = await fetch(`/api/invoices/${invoice.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [key]: value }),
+    })
+    const data = await res.json().catch(() => ({}))
+    setBusy(false)
+    if (!res.ok) {
+      setMsg(data.error ?? 'Prüfschritt konnte nicht gespeichert werden.')
+      return
+    }
+    if (data?.autoMoveApprovalPending) {
+      window.alert(
+        `Freigabe für automatischen Wechsel in den Übergabekorb erfasst — noch ${data.autoMoveApprovalPending.approvalsNeeded} weitere Freigabe(n) durch einen anderen Mitarbeiter nötig (Vier-Augen-Korb).`,
+      )
+      router.refresh()
+      return
+    }
+    if (data?.autoMoved) {
+      setMsg(`✓ Vollständig geprüft → automatisch in „${data.autoMoved.targetBasketName}" verschoben`)
+      setTimeout(() => router.refresh(), 1200)
+      return
+    }
+    router.refresh()
+  }
+
+  // Ein-Klick-Freigabe (Stefan 2026-08-26): bündelt so viele Prüfschritte in
+  // EINEM PATCH, wie der Bearbeiter laut seinen Korb-Rechten (canApprove/
+  // canHandover) überhaupt setzen darf — die API akzeptiert mehrere check*-
+  // Flags im selben Aufruf und wendet die automatische Übergabekorb-/Fibu-
+  // Weiterleitung dann direkt mit an (siehe api/invoices/[id]/route.ts
+  // effectiveSubstantive/effectiveAccounting). Die einzelnen E/F/S/B-Chips
+  // bleiben daneben bestehen — als Prüfnachweis und für den Fall, dass jemand
+  // gezielt nur EINEN Schritt setzen/zurücknehmen will.
+  function primaryAction(): { label: string; title: string; body: Record<string, boolean> } | null {
+    if (invoice.checkAccountingAt) return null
+    if (!invoice.checkFormalAt) {
+      return canApprove
+        ? { label: 'Prüfen & freigeben', title: 'Formal und sachlich prüfen, bei entsprechendem Recht direkt weiterleiten', body: { checkFormal: true, checkSubstantive: true } }
+        : { label: 'Formal geprüft', title: 'Nur formale Prüfung — für die sachliche Prüfung fehlt dir das Recht', body: { checkFormal: true } }
+    }
+    if (!invoice.checkSubstantiveAt) {
+      return canApprove
+        ? { label: 'Freigeben', title: 'Sachlich richtig — Rechnung damit vollständig geprüft', body: { checkSubstantive: true } }
+        : null
+    }
+    if (canHandover) {
+      return { label: 'An Buchhaltung übergeben', title: 'Vollständig geprüfte Rechnung an die Fibu übergeben', body: { checkAccounting: true } }
+    }
+    return null
+  }
+  const primary = primaryAction()
+  // Kleine Belohnungs-Animation nach "Prüfen & freigeben" (Stefan 2026-08-26)
+  // — ein großer, transparenter grüner Haken über dem Gesamtbetrag, klingt
+  // nach 1,8s wieder ab. Nur bei echtem Erfolg, nicht bei einer noch
+  // ausstehenden Vier-Augen-Freigabe.
+  const [showPrimarySuccess, setShowPrimarySuccess] = useState(false)
+  function celebrate() {
+    setShowPrimarySuccess(true)
+    setTimeout(() => setShowPrimarySuccess(false), 1800)
+  }
+  async function runPrimaryAction() {
+    if (!primary) return
+    setBusy(true)
+    const res = await fetch(`/api/invoices/${invoice.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(primary.body),
+    })
+    const data = await res.json().catch(() => ({}))
+    setBusy(false)
+    if (!res.ok) {
+      setMsg(data.error ?? 'Konnte nicht gespeichert werden.')
+      return
+    }
+    if (data?.autoMoveApprovalPending) {
+      window.alert(
+        `Freigabe für automatischen Wechsel in den Übergabekorb erfasst — noch ${data.autoMoveApprovalPending.approvalsNeeded} weitere Freigabe(n) durch einen anderen Mitarbeiter nötig (Vier-Augen-Korb).`,
+      )
+      router.refresh()
+      return
+    }
+    celebrate()
+    if (data?.autoMoved) {
+      setMsg(`✓ Vollständig geprüft → automatisch in „${data.autoMoved.targetBasketName}" verschoben`)
+      setTimeout(() => router.refresh(), 1200)
+      return
+    }
+    router.refresh()
+  }
+
+  // Editierbare Kopfzeile (Stefan 2026-08-25) — nur bei Nicht-E-Rechnungen: die
+  // Rechnungsdaten werden direkt hier oben eingegeben statt in einem zweiten
+  // Formular weiter unten (siehe ERechnungView.tsx, Feldgruppe unten dafür
+  // entsprechend ausgeblendet).
+  const edit: EditBundle | undefined = isEInvoice ? undefined : {
+    vendor: {
+      value: f.vendor, onChange: (v) => set('vendor', v), required: true,
+      warn: aiFlags.includes('vendor'), reviewStatus: needsAiConfirm ? reviewStatus.vendor : undefined,
+      onKeyDown: reviewKeyDown('vendor'),
+    },
+    number: {
+      value: f.invoiceNumber, onChange: (v) => set('invoiceNumber', v),
+      warn: aiFlags.includes('invoiceNumber'), reviewStatus: needsAiConfirm ? reviewStatus.invoiceNumber : undefined,
+      onKeyDown: reviewKeyDown('invoiceNumber'),
+    },
+    issueDate: {
+      value: f.invoiceDate, onChange: (v) => set('invoiceDate', v),
+      warn: aiFlags.includes('invoiceDate'), reviewStatus: needsAiConfirm ? reviewStatus.invoiceDate : undefined,
+      onKeyDown: reviewKeyDown('invoiceDate'),
+    },
+    dueDate: {
+      value: f.dueDate, onChange: (v) => set('dueDate', v),
+      warn: aiFlags.includes('dueDate'), reviewStatus: needsAiConfirm ? reviewStatus.dueDate : undefined,
+      onKeyDown: reviewKeyDown('dueDate'),
+    },
+    discountDueDate: { value: f.discountDueDate, onChange: (v) => set('discountDueDate', v), optional: true },
+    discountPercent: { value: f.discountPercent, onChange: (v) => set('discountPercent', v), optional: true },
+    sellerAddress: { value: f.sellerAddress, onChange: (v) => set('sellerAddress', v), warn: aiFlags.includes('sellerAddress') },
+    // Stefan 2026-08-26: keine Pflichtangabe mehr bei Nicht-E-Rechnung — die
+    // Lieferanten-Zuordnung in der Fibu läuft in der Praxis über die
+    // Kontonummer (siehe VendorAccount), USt-IdNr./Steuernummer sind eher
+    // Fibu-Stammdaten. Siehe missingEditFields() in ERechnungView.tsx.
+    sellerVatId: { value: f.sellerVatId, onChange: (v) => set('sellerVatId', v), warn: aiFlags.includes('sellerVatId'), optional: true },
+    sellerTaxNumber: { value: f.sellerTaxNumber, onChange: (v) => set('sellerTaxNumber', v), warn: aiFlags.includes('sellerTaxNumber'), optional: true },
+    net: {
+      value: f.amountNet, onChange: (v) => set('amountNet', v),
+      warn: aiFlags.includes('amountNet'), reviewStatus: needsAiConfirm ? reviewStatus.amountNet : undefined,
+      onKeyDown: reviewKeyDown('amountNet'),
+    },
+    tax: {
+      value: f.amountTax, onChange: (v) => set('amountTax', v),
+      warn: aiFlags.includes('amountTax'), reviewStatus: needsAiConfirm ? reviewStatus.amountTax : undefined,
+      onKeyDown: reviewKeyDown('amountTax'),
+    },
+    gross: {
+      value: f.amountGross, onChange: (v) => set('amountGross', v),
+      warn: aiFlags.includes('amountGross'), reviewStatus: needsAiConfirm ? reviewStatus.amountGross : undefined,
+      onKeyDown: reviewKeyDown('amountGross'),
+    },
+    currency: { value: f.currency, onChange: (v) => set('currency', v) },
   }
 
   if (invoice.deletedAt) {
@@ -469,19 +875,430 @@ export function InvoiceEditForm({
   // Notizen, Prüfung, Anhänge, Nachrichten) — bessere Übersicht, gleiche Logik.
   return (
     <form onSubmit={save} className="space-y-4">
-      {locked && (
+      {locked && supersededByInvoiceId && (
+        <div className="dp-card border-2 border-gray-300 bg-[var(--surface-muted)] text-sm text-gray-600">
+          🕓 Diese Rechnung wurde durch eine neuere, gleichlautende Version (gleiche Rechnungsnummer + Lieferant)
+          {' '}ersetzt und ist schreibgeschützt — keine Änderungen, kein Verschieben, kein Löschen mehr möglich.{' '}
+          <a className="font-semibold text-[var(--accent)] underline" href={`/invoices/${supersededByInvoiceId}`}>
+            Aktuelle Version ansehen →
+          </a>
+        </div>
+      )}
+      {locked && !supersededByInvoiceId && (
         <div className="dp-card border-2 border-gray-300 bg-[var(--surface-muted)] text-sm text-gray-600">
           🔒 Diese Rechnung gehört zum abgeschlossenen Prüfungszeitraum {new Date(invoice.createdAt).getFullYear()}
           {' '}und ist schreibgeschützt — keine Änderungen, kein Verschieben, kein Löschen mehr möglich.
         </div>
       )}
       <fieldset disabled={locked} className="contents border-0 p-0">
-      <div className="dp-card space-y-2.5">
-        {invoice.docId && (
-          <p className="font-mono text-[11px] text-gray-400" title="Eindeutige Dokumenten-ID (GoBD-Referenzierung)">
-            {invoice.docId}
-          </p>
+      <ERechnungView
+        format={format ?? 'OTHER'}
+        data={erechnungData}
+        validation={validation}
+        docId={invoice.docId}
+        receivedInfo={`📥 ${SOURCE_LABELS[invoice.source] ?? invoice.source} am ${new Date(invoice.createdAt).toLocaleString('de-DE')}`}
+        celebrate={showPrimarySuccess}
+        buyerNameCheck={buyerNameCheck}
+        edit={edit}
+        region={{ effective: effectiveRegion, onOverride: setTaxRegion, busy }}
+        ignore={{
+          ignored: Boolean(invoice.pflichtangabenIgnoredAt),
+          reason: invoice.pflichtangabenIgnoredReason,
+          by: invoice.pflichtangabenIgnoredBy,
+          at: invoice.pflichtangabenIgnoredAt,
+          onToggle: toggleIgnore,
+          busy,
+        }}
+        directDebit={{
+          checked: f.directDebitByVendor,
+          onChange: (v) => setF((p) => ({ ...p, directDebitByVendor: v })),
+          warn: aiFlags.includes('directDebitByVendor'),
+        }}
+      />
+      {/* Positionszeilen (Stefan 2026-08-25): direkt nach den Kopfdaten, wie
+          man es von Rechnungen gewohnt ist — nicht erst nach KI-Werkzeugen
+          und Status weiter unten. Nur bei nackten PDFs/Scans; bei ZUGFeRD/
+          XRechnung zeigt ERechnungView oben bereits die Positionen live aus
+          dem Original-XML, keine doppelte Tabelle nötig. Reine Anzeige,
+          nicht editierbar — von der KI gelesen, nicht von Hand erfasst. */}
+      {!isEInvoice && lineItems.length > 0 && (() => {
+        // Rabatt-Spalte nur einblenden, wenn mindestens eine Position einen
+        // Rabatt hat (Stefan 2026-08-26) — sonst wirkt "Einzelpreis × Menge ≠
+        // Betrag" wie ein Rechenfehler der KI, obwohl nur der Rabatt fehlte.
+        const hasDiscount = lineItems.some((l) => l.discount)
+        return (
+        <div>
+          <h3 className="mb-1.5 px-1 text-xs font-bold uppercase tracking-wide text-gray-500">
+            Positionszeilen ({lineItems.length})
+          </h3>
+          <div className="dp-card">
+            <p className="mb-1.5 text-xs text-gray-500">Von der KI gelesen, bitte gegenprüfen — nicht editierbar.</p>
+            <div className="max-h-72 overflow-y-auto rounded-lg border border-[var(--line)]">
+              <table className="w-full">
+                <thead className="sticky top-0 bg-[var(--surface)]">
+                  <tr className="dp-tr">
+                    <th className="dp-th">Bezeichnung</th>
+                    <th className="dp-th">Menge</th>
+                    <th className="dp-th text-right">Einzelpreis</th>
+                    {hasDiscount && <th className="dp-th text-right">Rabatt</th>}
+                    <th className="dp-th text-right">Betrag</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lineItems.map((l, i) => (
+                    <tr key={i} className="dp-tr">
+                      <td className="dp-td">{l.name}</td>
+                      <td className="dp-td text-xs">{l.qty ?? '—'}</td>
+                      <td className="dp-td text-right text-xs">{l.unitPrice !== null ? formatAmount(l.unitPrice, f.currency) : '—'}</td>
+                      {hasDiscount && (
+                        <td className="dp-td text-right text-xs text-gray-500">{l.discount ? `− ${formatAmount(l.discount, f.currency)}` : '—'}</td>
+                      )}
+                      <td className="dp-td text-right">{l.total !== null ? formatAmount(l.total, f.currency) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        )
+      })()}
+      {/* KI-Rückmeldungen (Stefan 2026-08-25): direkt nach den Positionszeilen,
+          weil sie sich auf die Felder in der Kopfzeile oben beziehen — vorher
+          weiter unten in der "Rechnungsdaten"-Karte versteckt. */}
+      {(aiError || aiWarnings.length > 0 || needsAiConfirm) && (
+        <div className="dp-card space-y-2">
+          {aiError && <p className="text-sm text-[var(--danger)]">{aiError}</p>}
+          {aiWarnings.length > 0 && (
+            <p className="rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-strong)]">
+              ⚠ Bitte besonders prüfen — {aiWarnings.join(' ')}
+            </p>
+          )}
+          {/* Verschwindet, sobald der letzte Pflichtwert geprüft wurde (Stefan
+              2026-08-25) — bis dahin wird noch nicht in der DB bestätigt
+              (erst beim Speichern), aber die Erinnerung ist dann nicht mehr
+              nötig, der Haken darunter reicht als Rückmeldung. */}
+          {needsAiConfirm && !allReviewed && (
+            <div className="rounded-lg border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2">
+              <p className="text-xs font-semibold text-[var(--warn-strong)]">
+                🤖 Diese Werte wurden beim Mail-Eingang automatisch per KI erkannt und noch NICHT bestätigt
+                ({reviewedCount}/{activeReviewFields.length} Feld{activeReviewFields.length === 1 ? '' : 'er'} geprüft).
+                Die Rechnung lässt sich erst danach in einen anderen Korb verschieben. KI-generierte oder
+                -verarbeitete Inhalte können fehlerhaft sein — bitte jeden Wert gegen den Beleg rechts prüfen,
+                nicht blind übernehmen.
+              </p>
+              <p className="mt-1 text-[11px] text-[var(--warn-strong)]">
+                Mit <kbd className="rounded border px-1 font-mono">Tab</kbd> durch die Felder gehen (übernimmt den
+                vorgeschlagenen Wert), bei einem falschen Wert stattdessen{' '}
+                <kbd className="rounded border px-1 font-mono">Shift+Tab</kbd> drücken, um ihn zu markieren, und den
+                richtigen Wert eintragen.
+              </p>
+              <button type="button" className="btn-secondary mt-2 !px-2 !py-1 text-[11px]" onClick={bulkConfirmClick}
+                title="Alle noch offenen Felder auf einmal bestätigen, statt einzeln per Tab durchzugehen">
+                Alle Punkte als validiert kennzeichnen
+              </button>
+            </div>
+          )}
+          {needsAiConfirm && allReviewed && (
+            <p className="rounded-lg bg-[var(--accent-bg)] px-3 py-2 text-xs text-[var(--accent)]">
+              ✓ Alle Felder geprüft — bitte unten „Speichern", um die Bestätigung zu übernehmen.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Kontierung (Stefan 2026-08-25): direkt über der Status-Leiste statt in
+          "Weitere Angaben" versteckt — wird für die Buchhaltung/den
+          DATEV-Export gebraucht, kein gelegentliches Zusatzfeld. */}
+      {(costCenterEnabled || costCarrierEnabled) && (
+        <div className="dp-card grid gap-4 sm:grid-cols-2">
+          {costCenterEnabled && (
+            <div>
+              <label className="dp-label" title="Buchungsdimension — Liste in den Mandanten-Einstellungen unter DATEV-Export pflegbar">
+                Kostenstelle
+              </label>
+              <select className="dp-input mt-1" value={f.costCenterCode}
+                onChange={(e) => setF((p) => ({ ...p, costCenterCode: e.target.value }))}>
+                <option value="">— keine —</option>
+                {costCenters.map((c) => (
+                  <option key={c.id} value={c.code}>{c.code} — {c.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {costCarrierEnabled && (
+            <div>
+              <label className="dp-label" title="Buchungsdimension — Liste in den Mandanten-Einstellungen unter DATEV-Export pflegbar">
+                Kostenträger
+              </label>
+              <select className="dp-input mt-1" value={f.costCarrierCode}
+                onChange={(e) => setF((p) => ({ ...p, costCarrierCode: e.target.value }))}>
+                <option value="">— keiner —</option>
+                {costCarriers.map((c) => (
+                  <option key={c.id} value={c.code}>{c.code} — {c.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Status & Aktionen (Stefan 2026-08-25): bündelt Status, die vierteilige
+          Prüfkette (jetzt inkl. "Sachlich freigeben"/"An Buchhaltung
+          übergeben" auch hier klickbar, nicht mehr nur in der Rechnungsliste),
+          Korb und die Haupt-Aktionen an einer Stelle statt verteilt über
+          mehrere Karten — bleibt beim Scrollen oben sichtbar. */}
+      <div className="sticky top-4 z-10 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-[var(--accent-border)] bg-[var(--accent-bg)] px-4 py-3 shadow-sm">
+        <div>
+          <label className="mb-1 block text-[9.5px] font-bold uppercase tracking-wide text-[var(--accent-soft)]">Empfehlung</label>
+          <div className="flex items-center gap-1.5">
+            <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${RECOMMENDATION_STYLE[recommendation.level].className}`}
+              title={recommendation.reasons.length > 0 ? recommendation.reasons.join(' · ') : 'Keine Auffälligkeiten erkannt'}>
+              {RECOMMENDATION_STYLE[recommendation.level].icon} {RECOMMENDATION_STYLE[recommendation.level].label}
+            </span>
+            <button type="button" className="btn-secondary !px-2 !py-1 text-[11px]" onClick={() => setShowReport(true)}
+              title="Alle einzelnen Prüfpunkte im Detail anzeigen">
+              📋 Prüfbericht
+            </button>
+            {/* Stefan 2026-08-26: von "Weitere Angaben" ganz unten nach oben
+                neben den Prüfbericht geholt — inhaltlich zusammengehörig
+                (Korrektur wird ja meist wegen eines Prüfbericht-Punkts
+                angefordert), jetzt auch direkt sichtbar statt versteckt. */}
+            <RequestCorrectionForm
+              invoiceId={invoice.id}
+              vendor={f.vendor}
+              invoiceNumber={f.invoiceNumber || null}
+              missing={validationMissing}
+              suggestedEmail={suggestedVendorEmail}
+              locked={locked}
+              reportText={reportText}
+            />
+          </div>
+        </div>
+        <div className="h-8 w-px bg-[var(--accent-border)]" />
+        <div>
+          <label className="text-[9.5px] font-bold uppercase tracking-wide text-[var(--accent-soft)]">Status</label>
+          <select className="block bg-transparent text-sm font-semibold text-[var(--accent)] outline-none" value={f.status}
+            onChange={(e) => set('status', e.target.value)} title="Bearbeitungsstatus für den internen Workflow — jederzeit frei änderbar">
+            {STATUS_OPTIONS.map((s) => (
+              <option key={s.value} value={s.value}>{s.label}</option>
+            ))}
+          </select>
+        </div>
+        <div className="h-8 w-px bg-[var(--accent-border)]" />
+        <div>
+          <label className="mb-1 block text-[9.5px] font-bold uppercase tracking-wide text-[var(--accent-soft)]">Prüfkette</label>
+          <div className="flex items-center gap-1">
+            <CheckChip letter="E" done={invoice.checkElectronicAt !== null}
+              notApplicable={Boolean(invoice.checkElectronicAt && invoice.checkElectronicBy?.startsWith('System (entfällt'))}
+              title={`Elektronische Vorprüfung — ${invoice.checkElectronicAt ? `${invoice.checkElectronicBy} am ${new Date(invoice.checkElectronicAt).toLocaleString('de-DE')}` : 'offen'}`}
+              disabled={busy} onToggle={() => toggleCheck('checkElectronic', invoice.checkElectronicAt === null)} />
+            <CheckChip letter="F" done={invoice.checkFormalAt !== null}
+              title={`Formal richtig — ${invoice.checkFormalAt ? `${invoice.checkFormalBy} am ${new Date(invoice.checkFormalAt).toLocaleString('de-DE')}` : 'offen'}`}
+              disabled={busy} onToggle={() => toggleCheck('checkFormal', invoice.checkFormalAt === null)} />
+            <CheckChip letter="S" done={invoice.checkSubstantiveAt !== null}
+              title={canApprove
+                ? `Sachlich richtig — ${invoice.checkSubstantiveAt ? `${invoice.checkSubstantiveBy} am ${new Date(invoice.checkSubstantiveAt).toLocaleString('de-DE')}` : 'offen'} (klicken zum Umschalten)`
+                : 'Kein Recht, „Sachlich richtig" freizugeben'}
+              disabled={busy || !canApprove} onToggle={() => toggleApproval('checkSubstantive', invoice.checkSubstantiveAt === null)} />
+            <CheckChip letter="B" done={invoice.checkAccountingAt !== null}
+              title={canHandover
+                ? `An Buchhaltung übergeben — ${invoice.checkAccountingAt ? `${invoice.checkAccountingBy} am ${new Date(invoice.checkAccountingAt).toLocaleString('de-DE')}` : 'offen'} (klicken zum Umschalten)`
+                : 'Nur im Übergabekorb möglich (und nur mit dem passenden Recht)'}
+              disabled={busy || !canHandover} onToggle={() => toggleApproval('checkAccounting', invoice.checkAccountingAt === null)} />
+          </div>
+        </div>
+        {baskets.length > 0 && (
+          <>
+            <div className="h-8 w-px bg-[var(--accent-border)]" />
+            <div>
+              <label className="text-[9.5px] font-bold uppercase tracking-wide text-[var(--accent-soft)]">Korb</label>
+              <p className="text-sm font-semibold text-[var(--accent)]">{baskets.find((b) => b.id === invoice.basketId)?.name ?? '—'}</p>
+            </div>
+          </>
         )}
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {primary && (
+            <button type="button" className="btn-primary" disabled={busy || needsAiConfirm}
+              title={needsAiConfirm ? 'Von der KI erkannte Werte müssen erst geprüft und bestätigt werden (siehe oben).' : primary.title}
+              onClick={runPrimaryAction}>
+              {busy ? 'Speichere …' : primary.label}
+            </button>
+          )}
+          {baskets.length > 0 && (
+            <BasketMoveButton
+              invoiceId={invoice.id}
+              currentBasketId={invoice.basketId}
+              baskets={baskets}
+              pending={pendingApproval}
+              disabled={needsAiConfirm}
+              disabledReason="Von der KI erkannte Werte müssen erst geprüft und bestätigt werden (siehe oben)."
+              colleagues={colleagues}
+            />
+          )}
+          <button type="submit" className={primary ? 'btn-secondary' : 'btn-primary'} disabled={busy} title="Änderungen speichern">
+            {busy ? 'Speichere …' : 'Speichern'}
+          </button>
+          <button type="button" className="btn-secondary" onClick={() => router.push('/invoices')} title="Ohne Speichern zurück zur Liste">
+            Zurück
+          </button>
+          <button type="button" className="btn-danger" onClick={remove} disabled={busy}
+            title="Rechnung als gelöscht markieren — Beleg bleibt erhalten, im Papierkorb wiederherstellbar">
+            Löschen
+          </button>
+        </div>
+        {msg && (
+          <p className={`w-full text-sm ${msg.startsWith('✓') || msg === 'Gespeichert.' ? 'text-[var(--accent)]' : 'text-[var(--danger)]'}`}>{msg}</p>
+        )}
+      </div>
+
+      {showBulkConfirmWarning && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setShowBulkConfirmWarning(false)}>
+          <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h2 className="font-serif text-lg font-semibold text-gray-800">Wirklich alle auf einmal bestätigen?</h2>
+            <p className="mt-2 text-sm text-gray-600">
+              Damit gelten alle noch offenen, von der KI erkannten Werte als geprüft — ohne dass du sie einzeln
+              gegen den Beleg kontrolliert hast. KI-generierte Inhalte können fehlerhaft sein. Nur nutzen, wenn du dir
+              wirklich sicher bist.
+            </p>
+            <label className="mt-3 flex items-center gap-2 text-xs text-gray-600">
+              <input type="checkbox" checked={bulkConfirmDontShowAgain}
+                onChange={(e) => setBulkConfirmDontShowAgain(e.target.checked)} />
+              Diesen Hinweis nicht mehr anzeigen
+            </label>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" className="btn-secondary" onClick={() => setShowBulkConfirmWarning(false)}>Abbrechen</button>
+              <button type="button" className="btn-primary" onClick={bulkConfirmProceed}>Fortfahren</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showReport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setShowReport(false)}>
+          <div className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="font-serif text-lg font-semibold text-gray-800">Prüfbericht</h2>
+              <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${RECOMMENDATION_STYLE[recommendation.level].className}`}>
+                {RECOMMENDATION_STYLE[recommendation.level].icon} {RECOMMENDATION_STYLE[recommendation.level].label}
+              </span>
+            </div>
+
+            {/* E-Rechnungsvalidierung im Detail (Stefan 2026-08-26): welches
+                Format/welche Steuerregion wurde der Prüfung zugrunde gelegt —
+                bisher stand nur die Sammel-Zeile "Pflichtangaben" da, ohne
+                erkennbar zu machen, WELCHE Regel angewendet wurde. */}
+            <div className="mt-3 rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] p-3 text-xs">
+              <p className="mb-1.5 font-bold uppercase tracking-wide text-gray-400">E-Rechnungsvalidierung</p>
+              <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-gray-600">
+                <span className="text-gray-400">Format</span>
+                <span>{eInvoiceInfo.formatLabel}{eInvoiceInfo.structured ? ' (strukturiertes E-Rechnungs-Format)' : ' (kein E-Rechnungs-Format — PDF/Scan)'}</span>
+                <span className="text-gray-400">Elektronische Vorprüfung</span>
+                <span className={eInvoiceInfo.electronic.ok ? 'text-[var(--accent)]' : 'text-[var(--warn-strong)]'}>
+                  {eInvoiceInfo.electronic.ok ? '✓ ' : '– '}{eInvoiceInfo.electronic.detail}
+                </span>
+                <span className="text-gray-400">Zugrunde gelegte Steuerregion</span>
+                <span>{eInvoiceInfo.regionLabel}</span>
+                <span className="text-gray-400">Validator</span>
+                <span title={eInvoiceInfo.validatorDetail}>{eInvoiceInfo.validatorLabel}</span>
+              </div>
+              <p className="mt-1.5 text-[10px] leading-relaxed text-gray-400">{eInvoiceInfo.validatorDetail}</p>
+            </div>
+
+            {/* Offizielle KoSIT-Prüfung, auf Knopfdruck (Stefan 2026-08-26) —
+                ergänzt die interne Prüfung oben um die rechtsverbindliche
+                Schema-/Schematron-Konformitätsprüfung. Nur bei echter
+                E-Rechnung sinnvoll, dauert ein paar Sekunden (Java-Start). */}
+            {isEInvoice && (
+              <div className="mt-3 rounded-lg border border-[var(--line)] p-3 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-bold uppercase tracking-wide text-gray-400">KoSIT-Prüfung (offiziell)</p>
+                  <button type="button" className="btn-secondary !px-2 !py-1 text-[11px]" onClick={runKositCheck} disabled={kositBusy}>
+                    {kositBusy ? 'Prüfe …' : kositResult || kositError ? 'Erneut prüfen' : 'Jetzt prüfen'}
+                  </button>
+                </div>
+                {/* Stefan 2026-08-26: läuft jetzt automatisch im Hintergrund
+                    direkt nach Ablage — Zeitstempel macht sichtbar, dass das
+                    Ergebnis unten nicht erst durch einen Klick entstanden ist. */}
+                {invoice.kositCheckedAt && !kositBusy && (
+                  <p className="mt-1 text-[10px] text-gray-400">
+                    Automatisch geprüft am {new Date(invoice.kositCheckedAt).toLocaleString('de-DE')}
+                  </p>
+                )}
+                {kositError && <p className="mt-2 text-[var(--danger)]">{kositError}</p>}
+                {kositResult && (
+                  <div className="mt-2 space-y-1.5">
+                    <p className={`font-semibold ${
+                      kositResult.accepted === true ? 'text-[var(--accent)]'
+                        : kositResult.accepted === false ? 'text-[var(--danger)]'
+                          : 'text-[var(--warn-strong)]'
+                    }`}>
+                      {kositResult.accepted === true ? '✓ Akzeptabel' : kositResult.accepted === false ? '⛔ Zurückgewiesen' : '? Ergebnis unklar'}
+                      {kositResult.scenarioName ? ` — ${kositResult.scenarioName}` : ''}
+                    </p>
+                    {/* Stefan 2026-08-26 ("Zurückgewiesen und keine Beanstandungen"):
+                        eine leere Meldungsliste bei "nicht akzeptiert" NIE als
+                        "Keine Beanstandungen" zeigen — das klingt positiv, ist
+                        hier aber das Gegenteil. Meist bedeutet es, dass gar
+                        kein Szenario erkannt wurde (das Dokument entspricht
+                        keinem der bekannten Formate). */}
+                    {kositResult.messages.length === 0 ? (
+                      <p className="text-gray-500">
+                        {kositResult.accepted !== true
+                          ? kositResult.scenarioName === null
+                            ? 'Kein passendes E-Rechnungs-Szenario erkannt — das Dokument entspricht keinem der bekannten XRechnung-/EN16931-Formate.'
+                            : 'Zurückgewiesen, aber keine Einzelmeldungen im Bericht gefunden — bitte das Dokument prüfen.'
+                          : 'Keine Beanstandungen.'}
+                      </p>
+                    ) : (
+                      <ul className="space-y-1">
+                        {kositResult.messages.map((m, i) => (
+                          <li key={i} className={
+                            m.level === 'error' || m.level === 'fatal' ? 'text-[var(--danger)]'
+                              : m.level === 'warning' ? 'text-[var(--warn-strong)]'
+                                : 'text-gray-500'
+                          }>
+                            {m.code ? `[${m.code}] ` : ''}{m.text}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <ul className="mt-3 space-y-2.5">
+              {checks.map((c) => (
+                <li key={c.label} className="flex items-start gap-2 text-sm">
+                  <span className={`shrink-0 font-bold ${CHECK_STATUS_STYLE[c.status].className}`}>{CHECK_STATUS_STYLE[c.status].icon}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-semibold text-gray-700">{c.label}</span>
+                    <span className="block text-xs text-gray-500">{c.detail}</span>
+                    {/* Einzelposten der Pflichtangaben-Prüfung (Stefan 2026-08-26) —
+                        jede Regel aus validateData() einzeln statt nur der Summe. */}
+                    {c.subItems && c.subItems.length > 0 && (
+                      <ul className="mt-1.5 space-y-0.5 border-l border-[var(--line)] pl-2.5">
+                        {c.subItems.map((s) => (
+                          <li key={s.label} className={`flex items-center gap-1.5 text-[11px] ${s.ok ? 'text-gray-500' : 'text-[var(--danger)]'}`}>
+                            <span className="font-bold">{s.ok ? '✓' : '✗'}</span>
+                            {s.label}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-4 flex justify-end">
+              <button type="button" className="btn-secondary" onClick={() => setShowReport(false)}>Schließen</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="dp-card space-y-2.5">
         {(shouldEncryptContent || invoice.contentEnc) && !dekAvailable && (
           <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--accent-soft)] bg-[var(--accent-bg)] px-3 py-2">
             <span className="text-[11px] font-medium text-[var(--accent)]">
@@ -496,404 +1313,138 @@ export function InvoiceEditForm({
             {unlockError && <span className="w-full text-xs text-[var(--danger)]">{unlockError}</span>}
           </div>
         )}
-        {baskets.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2">
-            <span className="dp-label">Korb:</span>
-            <span className="text-sm">{baskets.find((b) => b.id === invoice.basketId)?.name ?? '—'}</span>
-            <BasketMoveSelect
-              invoiceId={invoice.id}
-              currentBasketId={invoice.basketId}
-              baskets={baskets}
-              pending={pendingApproval}
-              disabled={needsAiConfirm}
-              disabledReason="Von der KI erkannte Werte müssen erst geprüft und bestätigt werden (siehe oben)."
-            />
-          </div>
-        )}
         {invoice.duplicateOfId && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2">
             <p className="text-xs font-semibold text-[var(--warn-strong)]">
               Als Dublette erkannt —{' '}
               <a className="underline" href={`/invoices/${invoice.duplicateOfId}`}>Original öffnen</a>
             </p>
-            <button type="button" className="btn-secondary !px-2 !py-1 text-xs" onClick={unmarkDuplicate} disabled={busy}
-              title="Dubletten-Markierung aufheben — diese Rechnung wird als eigenständig behandelt">
-              Keine Dublette
-            </button>
+            <div className="flex gap-1.5">
+              <button type="button" className="btn-secondary !px-2 !py-1 text-xs" onClick={unmarkDuplicate} disabled={busy}
+                title="Dubletten-Markierung aufheben — diese Rechnung wird als eigenständig behandelt">
+                Keine Dublette
+              </button>
+              <button type="button" className="btn-danger !px-2 !py-1 text-xs" onClick={remove} disabled={busy}
+                title="Diese (doppelte) Rechnung löschen — landet im Papierkorb, kann von dort wiederhergestellt werden">
+                Löschen
+              </button>
+            </div>
           </div>
-        )}
-        {invoice.hasFile && (
-          <p className="text-sm">
-            Beleg:{' '}
-            <FileLink
-              invoiceId={invoice.id}
-              encrypted={invoice.encrypted}
-              origMime={invoice.origMime}
-              label={invoice.originalName ?? 'öffnen'}
-            />
-            <span className="ml-1 text-[11px] text-gray-400">(Vorschau rechts)</span>
-          </p>
         )}
       </div>
 
-      <div className="dp-card space-y-3">
-        <h3 className="text-xs font-bold uppercase tracking-wide text-gray-500">Rechnungsdaten</h3>
-        {canUseAi && aiAvailable && (
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] px-3 py-2">
-            <button type="button" className="btn-secondary" onClick={fillWithAi} disabled={aiBusy}
-              title="Beleg per KI auslesen und Felder unten vorschlagen — Ergebnis bitte immer gegenprüfen">
-              {aiBusy ? 'KI liest die Rechnung …' : '✨ Mit KI erkennen'}
-            </button>
-            <p className="text-[11px] text-gray-500">
-              Liest den Beleg nachträglich per KI aus und befüllt die Felder unten (auch
-              Verschlagwortung) — bitte prüfen und speichern.
-              {invoice.encrypted && (
-                <span className="block text-[var(--warn-strong)]">
-                  ⚠ Der Beleg wird für diese Erkennung entschlüsselt und an den externen KI-Anbieter
-                  gesendet — dieser Schritt ist eine bewusste Ausnahme vom Zero-Knowledge-Grundsatz,
-                  unser Server speichert den Klartext dabei nicht.
-                </span>
-              )}
+      {/* Weitere Angaben (Stefan 2026-08-25): alles Gelegentliche gebündelt und
+          zurückhaltender dargestellt als das Tagesgeschäft oben — KI-Werkzeuge,
+          Tags, Notizen, Korrektur anfordern (Kontierung/Zahlungsart stehen
+          bewusst NICHT hier, siehe oben). Standardmäßig aufgeklappt (nichts
+          wird versteckt), aber sichtbar zweitrangig. */}
+      <details className="group dp-card open:pb-4" open>
+        <summary className="-mx-1 flex cursor-pointer list-none items-center gap-2 rounded-lg px-1 py-0.5 text-xs font-bold uppercase tracking-wide text-gray-500 hover:text-gray-700">
+          <span className="inline-block transition-transform group-open:rotate-90">▸</span>
+          Weitere Angaben
+        </summary>
+        <div className="mt-3 space-y-4 border-t border-[var(--line)] pt-3">
+          {(canUseAi || canCompareXml) && aiAvailable && (
+            <p className="text-[11px] text-gray-400">
+              ⚠ KI-generierte oder -verarbeitete Inhalte können fehlerhaft sein — bitte vor der
+              Übernahme immer gegenprüfen.
             </p>
-          </div>
-        )}
-        {canUseAi && !aiAvailable && aiReason && (
-          <p className="text-[11px] text-gray-400">KI-Erkennung nicht verfügbar: {aiReason}</p>
-        )}
-        {aiError && <p className="text-sm text-[var(--danger)]">{aiError}</p>}
-        {aiWarnings.length > 0 && (
-          <p className="rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-strong)]">
-            ⚠ Bitte besonders prüfen — {aiWarnings.join(' ')}
-          </p>
-        )}
-        {needsAiConfirm && (
-          <div className="rounded-lg border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2">
-            <p className="text-xs font-semibold text-[var(--warn-strong)]">
-              🤖 Diese Werte wurden beim Mail-Eingang automatisch per KI erkannt und noch NICHT bestätigt
-              ({reviewedCount}/{activeReviewFields.length} Feld{activeReviewFields.length === 1 ? '' : 'er'} geprüft).
-              Die Rechnung lässt sich erst danach in einen anderen Korb verschieben.
-            </p>
-            <p className="mt-1 text-[11px] text-[var(--warn-strong)]">
-              Mit <kbd className="rounded border px-1 font-mono">Tab</kbd> durch die Felder gehen (übernimmt den
-              vorgeschlagenen Wert), bei einem falschen Wert stattdessen{' '}
-              <kbd className="rounded border px-1 font-mono">Shift+Tab</kbd> drücken, um ihn zu markieren, und den
-              richtigen Wert eintragen. Danach unten „Speichern".
-            </p>
-          </div>
-        )}
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Lieferant *" value={f.vendor} onChange={(v) => set('vendor', v)} required
-            warn={aiFlags.includes('vendor')} locked={isEInvoice} lockReason={LOCK_REASON}
-            onKeyDown={reviewKeyDown('vendor')} reviewStatus={needsAiConfirm ? reviewStatus.vendor : undefined} />
-          <Field label="Rechnungsnummer" value={f.invoiceNumber} onChange={(v) => set('invoiceNumber', v)}
-            warn={aiFlags.includes('invoiceNumber')} locked={isEInvoice} lockReason={LOCK_REASON}
-            onKeyDown={reviewKeyDown('invoiceNumber')} reviewStatus={needsAiConfirm ? reviewStatus.invoiceNumber : undefined} />
-          <Field label="Rechnungsdatum" type="date" value={f.invoiceDate} onChange={(v) => set('invoiceDate', v)}
-            warn={aiFlags.includes('invoiceDate')} locked={isEInvoice} lockReason={LOCK_REASON}
-            onKeyDown={reviewKeyDown('invoiceDate')} reviewStatus={needsAiConfirm ? reviewStatus.invoiceDate : undefined} />
-          {f.directDebitByVendor ? (
-            <div>
-              <label className="dp-label">Fälligkeit</label>
-              <p className="dp-input mt-1 flex items-center text-gray-500" title="Lieferant bucht per Lastschrift/Abbuchung selbst ab">
-                wird abgebucht
-              </p>
-            </div>
-          ) : (
-            <Field label="Fälligkeit" type="date" value={f.dueDate} onChange={(v) => set('dueDate', v)}
-              warn={aiFlags.includes('dueDate')} locked={isEInvoice} lockReason={LOCK_REASON}
-              onKeyDown={reviewKeyDown('dueDate')} reviewStatus={needsAiConfirm ? reviewStatus.dueDate : undefined} />
           )}
-          {/* Skonto (Stefan 2026-08-25): eigene Felder, getrennt von der
-              Fälligkeit oben — die ist IMMER das Zahlungsziel netto, Skonto
-              ist die kürzere Frist mit Rabatt bei vorzeitiger Zahlung. Nur
-              sichtbar, wenn erkannt/eingetragen ODER frei editierbar (keine
-              E-Rechnung), sonst unnötig leeres, gesperrtes Feldpaar. */}
-          {(f.discountDueDate || f.discountPercent || !isEInvoice) && (
-            <>
-              <Field label="Skonto-Frist" type="date" value={f.discountDueDate} onChange={(v) => set('discountDueDate', v)}
-                locked={isEInvoice} lockReason={LOCK_REASON} />
-              <Field label="Skonto (%)" value={f.discountPercent} onChange={(v) => set('discountPercent', v)}
-                locked={isEInvoice} lockReason={LOCK_REASON} />
-            </>
-          )}
-          <Field label="Netto" value={f.amountNet} onChange={(v) => set('amountNet', v)}
-            warn={aiFlags.includes('amountNet')} locked={isEInvoice} lockReason={LOCK_REASON}
-            onKeyDown={reviewKeyDown('amountNet')} reviewStatus={needsAiConfirm ? reviewStatus.amountNet : undefined} />
-          <Field label="Steuer" value={f.amountTax} onChange={(v) => set('amountTax', v)}
-            warn={aiFlags.includes('amountTax')} locked={isEInvoice} lockReason={LOCK_REASON}
-            onKeyDown={reviewKeyDown('amountTax')} reviewStatus={needsAiConfirm ? reviewStatus.amountTax : undefined} />
-          <Field label="Brutto" value={f.amountGross} onChange={(v) => set('amountGross', v)}
-            warn={aiFlags.includes('amountGross')} locked={isEInvoice} lockReason={LOCK_REASON}
-            onKeyDown={reviewKeyDown('amountGross')} reviewStatus={needsAiConfirm ? reviewStatus.amountGross : undefined} />
-          <div>
-            <label className="dp-label">
-              Währung
-              {isEInvoice && <span className="ml-1 text-gray-400" title={LOCK_REASON}>🔒</span>}
-            </label>
-            {isEInvoice ? (
-              <p className="dp-input mt-1 flex items-center bg-[var(--surface-muted)] text-gray-500" title={LOCK_REASON}>
-                {f.currency}
-              </p>
-            ) : (
-              <select className="dp-input mt-1" value={f.currency} onChange={(e) => set('currency', e.target.value)}
-                title="Rechnungswährung">
-                <option>EUR</option><option>USD</option><option>CHF</option><option>GBP</option>
-              </select>
-            )}
-          </div>
-          <div>
-            <label className="dp-label">Status</label>
-            <select className="dp-input mt-1" value={f.status} onChange={(e) => set('status', e.target.value)}
-              title="Bearbeitungsstatus für den internen Workflow — jederzeit frei änderbar">
-              {STATUS_OPTIONS.map((s) => (
-                <option key={s.value} value={s.value}>{s.label}</option>
-              ))}
-            </select>
-          </div>
-          <Field label="Tags" value={f.tags} onChange={(v) => set('tags', v)} />
-        </div>
-        {isEInvoice && (
-          <p className="text-[11px] text-gray-400">
-            🔒 Gesperrte Felder stammen aus der elektronischen Rechnung und sind laut GoBD nicht änderbar.
-            Notizen, Tags, Status, Zahlungsart und Korb sind davon nicht betroffen und bleiben frei editierbar.
-          </p>
-        )}
-        {/* Positionszeilen (Stefan 2026-08-25): nur bei nackten PDFs/Scans — bei
-            ZUGFeRD/XRechnung zeigt ERechnungView oben bereits die Positionen
-            live aus dem Original-XML, keine doppelte Tabelle nötig. Reine
-            Anzeige, nicht editierbar — von der KI gelesen, nicht von Hand erfasst. */}
-        {!isEInvoice && lineItems.length > 0 && (
-          <div>
-            <p className="dp-label mb-1">Positionszeilen ({lineItems.length}) — von der KI gelesen, bitte gegenprüfen</p>
-            <div className="max-h-72 overflow-y-auto rounded-lg border border-[var(--line)]">
-              <table className="w-full">
-                <thead className="sticky top-0 bg-[var(--surface)]">
-                  <tr className="dp-tr">
-                    <th className="dp-th">Bezeichnung</th>
-                    <th className="dp-th">Menge</th>
-                    <th className="dp-th text-right">Einzelpreis</th>
-                    <th className="dp-th text-right">Betrag</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {lineItems.map((l, i) => (
-                    <tr key={i} className="dp-tr">
-                      <td className="dp-td">{l.name}</td>
-                      <td className="dp-td text-xs">{l.qty ?? '—'}</td>
-                      <td className="dp-td text-right text-xs">{l.unitPrice !== null ? formatAmount(l.unitPrice, f.currency) : '—'}</td>
-                      <td className="dp-td text-right">{l.total !== null ? formatAmount(l.total, f.currency) : '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-        {canCompareXml && aiAvailable && (
-          <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] px-3 py-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <button type="button" className="btn-secondary" onClick={compareXml} disabled={compareBusy}
-                title="Liest das PDF-Bild per KI und vergleicht es mit den aus dem XML übernommenen Feldern oben — reine Plausibilitätsprüfung, ändert nichts an den gespeicherten Daten">
-                {compareBusy ? 'Vergleiche Bild mit XML …' : '🔍 Bild mit XML abgleichen'}
+          {canUseAi && aiAvailable && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] px-3 py-2">
+              <button type="button" className="btn-secondary" onClick={fillWithAi} disabled={aiBusy}
+                title="Beleg per KI auslesen und Felder in der Kopfzeile oben vorschlagen — Ergebnis bitte immer gegenprüfen">
+                {aiBusy ? 'KI liest die Rechnung …' : '✨ Mit KI erkennen'}
               </button>
               <p className="text-[11px] text-gray-500">
-                Prüft per KI-Bilderkennung, ob das sichtbare PDF-Bild von den oben gesperrten XML-Werten abweicht.
+                Liest den Beleg nachträglich per KI aus und befüllt die Felder oben (auch
+                Verschlagwortung) — bitte prüfen und speichern.
+                {invoice.encrypted && (
+                  <span className="block text-[var(--warn-strong)]">
+                    ⚠ Der Beleg wird für diese Erkennung entschlüsselt und an den externen KI-Anbieter
+                    gesendet — dieser Schritt ist eine bewusste Ausnahme vom Zero-Knowledge-Grundsatz,
+                    unser Server speichert den Klartext dabei nicht.
+                  </span>
+                )}
               </p>
             </div>
-            {compareError && <p className="mt-1.5 text-sm text-[var(--danger)]">{compareError}</p>}
-            {compareResult && compareResult.length === 0 && (
-              <p className="mt-1.5 text-xs font-medium text-[var(--accent)]">✓ Keine Abweichungen gefunden — Bild und XML stimmen überein.</p>
-            )}
-            {compareResult && compareResult.length > 0 && (
-              <div className="mt-1.5 rounded-lg bg-[var(--warn-bg)] px-2.5 py-2">
-                <p className="text-xs font-semibold text-[var(--warn-strong)]">
-                  ⚠ {compareResult.length} Abweichung{compareResult.length === 1 ? '' : 'en'} zwischen Bild und XML — bitte prüfen:
-                </p>
-                <ul className="mt-1 space-y-0.5 text-xs text-[var(--warn-strong)]">
-                  {compareResult.map((d) => (
-                    <li key={d.field}>
-                      <span className="font-medium">{d.label}:</span> XML „{d.xmlValue}" vs. Bild „{d.aiValue}"
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
-        {canCompareXml && !aiAvailable && aiReason && (
-          <p className="text-[11px] text-gray-400">Bild-Abgleich nicht verfügbar: {aiReason}</p>
-        )}
-        <label className="flex items-center gap-2 text-sm text-gray-700"
-          title="Zahlungsart ist keine steuerlich relevante Angabe der Rechnung — immer frei änderbar">
-          <input type="checkbox" checked={f.directDebitByVendor}
-            onChange={(e) => setF((p) => ({ ...p, directDebitByVendor: e.target.checked }))} />
-          Lieferant bucht per Lastschrift/Abbuchung selbst ab (statt Überweisung)
-          {aiFlags.includes('directDebitByVendor') && (
-            <span className="text-[var(--warn-strong)]" title="KI ist sich hier unsicher — bitte prüfen">⚠</span>
           )}
-        </label>
-        {costCentersEnabled && (
+          {canUseAi && !aiAvailable && aiReason && (
+            <p className="text-[11px] text-gray-400">KI-Erkennung nicht verfügbar: {aiReason}</p>
+          )}
+          {canCompareXml && aiAvailable && (
+            <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] px-3 py-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <button type="button" className="btn-secondary" onClick={compareXml} disabled={compareBusy}
+                  title="Liest das PDF-Bild per KI und vergleicht es mit den aus dem XML übernommenen Feldern oben — reine Plausibilitätsprüfung, ändert nichts an den gespeicherten Daten">
+                  {compareBusy ? 'Vergleiche Bild mit XML …' : '🔍 Bild mit XML abgleichen'}
+                </button>
+                <p className="text-[11px] text-gray-500">
+                  Prüft per KI-Bilderkennung, ob das sichtbare PDF-Bild von den oben gesperrten XML-Werten abweicht.
+                </p>
+              </div>
+              {compareError && <p className="mt-1.5 text-sm text-[var(--danger)]">{compareError}</p>}
+              {compareResult && compareResult.length === 0 && (
+                <p className="mt-1.5 text-xs font-medium text-[var(--accent)]">✓ Keine Abweichungen gefunden — Bild und XML stimmen überein.</p>
+              )}
+              {compareResult && compareResult.length > 0 && (
+                <div className="mt-1.5 rounded-lg bg-[var(--warn-bg)] px-2.5 py-2">
+                  <p className="text-xs font-semibold text-[var(--warn-strong)]">
+                    ⚠ {compareResult.length} Abweichung{compareResult.length === 1 ? '' : 'en'} zwischen Bild und XML — bitte prüfen:
+                  </p>
+                  <ul className="mt-1 space-y-0.5 text-xs text-[var(--warn-strong)]">
+                    {compareResult.map((d) => (
+                      <li key={d.field}>
+                        <span className="font-medium">{d.label}:</span> XML „{d.xmlValue}" vs. Bild „{d.aiValue}"
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+          {canCompareXml && !aiAvailable && aiReason && (
+            <p className="text-[11px] text-gray-400">Bild-Abgleich nicht verfügbar: {aiReason}</p>
+          )}
           <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="dp-label" title="Buchungsdimension — Liste in den Mandanten-Einstellungen unter DATEV-Export pflegbar">
-                Kostenstelle
-              </label>
-              <select className="dp-input mt-1" value={f.costCenterCode}
-                onChange={(e) => setF((p) => ({ ...p, costCenterCode: e.target.value }))}>
-                <option value="">— keine —</option>
-                {costCenters.map((c) => (
-                  <option key={c.id} value={c.code}>{c.code} — {c.name}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="dp-label" title="Buchungsdimension — Liste in den Mandanten-Einstellungen unter DATEV-Export pflegbar">
-                Kostenträger
-              </label>
-              <select className="dp-input mt-1" value={f.costCarrierCode}
-                onChange={(e) => setF((p) => ({ ...p, costCarrierCode: e.target.value }))}>
-                <option value="">— keiner —</option>
-                {costCarriers.map((c) => (
-                  <option key={c.id} value={c.code}>{c.code} — {c.name}</option>
-                ))}
-              </select>
-            </div>
+            <Field label="Tags" value={f.tags} onChange={(v) => set('tags', v)} />
           </div>
-        )}
-      </div>
-
-      <div className="dp-card">
-        <label className="dp-label" title="Interne Notiz, Kontierung oder ergänzende Information — nicht Teil der Rechnung selbst, immer frei editierbar">
-          Notizen (z. B. Kontierung, interne Vermerke)
-        </label>
-        <textarea className="dp-input mt-1" rows={3} value={f.notes}
-          title="Interne Notiz, Kontierung oder ergänzende Information — nicht Teil der Rechnung selbst, immer frei editierbar"
-          onChange={(e) => set('notes', e.target.value)} />
-      </div>
-
-      <div className="dp-card">
-        <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">Bearbeitungskette</h3>
-        <p className="mb-2 flex items-center gap-2 text-sm text-gray-700">
-          <span className="text-gray-400">📥</span>
-          Eingang: {SOURCE_LABELS[invoice.source] ?? invoice.source}
-          <span className="text-[11px] text-gray-400">am {new Date(invoice.createdAt).toLocaleString('de-DE')}</span>
-        </p>
-        <div className="space-y-1.5">
-          <CheckRow
-            label="Elektronische Vorprüfung"
-            hint="Wird bei gültigem ZUGFeRD/XRechnung-Format automatisch gesetzt — hier auch manuell änderbar"
-            at={invoice.checkElectronicAt} by={invoice.checkElectronicBy}
-            busy={busy} onToggle={(v) => toggleCheck('checkElectronic', v)}
-          />
-          <CheckRow
-            label="Formal richtig"
-            hint="Rechnung enthält alle formal nötigen Pflichtangaben"
-            at={invoice.checkFormalAt} by={invoice.checkFormalBy}
-            busy={busy} onToggle={(v) => toggleCheck('checkFormal', v)}
-          />
-          {/* Sachlich richtig / An Buchhaltung übergeben werden weiterhin nur in
-              der Rechnungsliste abgehakt (Korb-Recht APPROVE/HANDOVER, dort per
-              CheckBadges.tsx togglebar) — hier nur lesend, damit die komplette
-              Bearbeitungskette (wer hat wann was freigegeben) an einer Stelle
-              sichtbar ist, ohne die Rechte-Logik dieser Seite zu duplizieren. */}
-          <CheckRow
-            label="Sachlich richtig"
-            hint="Vier-Augen-Freigabe — togglebar in der Rechnungsliste (Korb-Recht „Sachlich freigeben“)"
-            at={invoice.checkSubstantiveAt} by={invoice.checkSubstantiveBy}
-            readOnly
-          />
-          <CheckRow
-            label="An Buchhaltung übergeben"
-            hint="Togglebar in der Rechnungsliste, nur im Übergabekorb (Korb-Recht HANDOVER)"
-            at={invoice.checkAccountingAt} by={invoice.checkAccountingBy}
-            readOnly
-          />
+          <div>
+            <label className="dp-label" title="Interne Notiz, Kontierung oder ergänzende Information — nicht Teil der Rechnung selbst, immer frei editierbar">
+              Notizen (z. B. Kontierung, interne Vermerke)
+            </label>
+            <textarea className="dp-input mt-1" rows={3} value={f.notes}
+              title="Interne Notiz, Kontierung oder ergänzende Information — nicht Teil der Rechnung selbst, immer frei editierbar"
+              onChange={(e) => set('notes', e.target.value)} />
+          </div>
         </div>
-        {/* "Korrektur anfordern" (Stefan 2026-08-25): Mensch löst den Versand
-            bewusst aus, kein Automatismus — siehe RequestCorrectionForm.tsx. */}
-        <div className="mt-3 border-t border-[var(--line)] pt-3">
-          <RequestCorrectionForm
-            invoiceId={invoice.id}
-            vendor={f.vendor}
-            invoiceNumber={f.invoiceNumber || null}
-            missing={validationMissing}
-            suggestedEmail={suggestedVendorEmail}
-            locked={locked}
-          />
-        </div>
-      </div>
+      </details>
 
-      <InvoiceNotesPanel invoiceId={invoice.id} colleagues={colleagues} />
-
-      <div className="dp-card flex flex-wrap items-center gap-2">
-        <button type="submit" className="btn-primary" disabled={busy} title="Änderungen speichern">
-          {busy ? 'Speichere …' : 'Speichern'}
-        </button>
-        <button type="button" className="btn-secondary" onClick={() => router.push('/invoices')} title="Ohne Speichern zurück zur Liste">
-          Zurück
-        </button>
-        <button type="button" className="btn-danger ml-auto" onClick={remove} disabled={busy}
-          title="Rechnung als gelöscht markieren — Beleg bleibt erhalten, im Papierkorb wiederherstellbar">
-          Löschen
-        </button>
-        {msg && (
-          <p className={`w-full text-sm ${msg === 'Gespeichert.' ? 'text-[var(--accent)]' : 'text-[var(--danger)]'}`}>{msg}</p>
-        )}
-      </div>
       </fieldset>
     </form>
   )
 }
 
-function CheckRow({
-  label, hint, at, by, busy, onToggle, readOnly,
+function CheckChip({
+  letter, done, notApplicable, title, disabled, onToggle,
 }: {
-  label: string; hint?: string; at: string | null; by: string | null
-  busy?: boolean; onToggle?: (v: boolean) => void; readOnly?: boolean
+  letter: string; done: boolean; notApplicable?: boolean; title: string; disabled?: boolean; onToggle: () => void
 }) {
-  const checked = at !== null
-  // Stefan 2026-08-25: bei Nicht-E-Rechnungen (nackte PDF, Scan, aus
-  // Dokumenten-Text) ist "Elektronische Vorprüfung" gar nicht anwendbar —
-  // System markiert das automatisch (siehe lib/erechnung.ts
-  // autoElectronicCheck), erkennbar am "System (entfällt"-Präfix. Statt
-  // eines togglebaren Häkchens (das nichts zu prüfen hätte) ein neutraler,
-  // nicht interaktiver Hinweis.
-  if (checked && by?.startsWith('System (entfällt')) {
-    return (
-      <p className="flex flex-wrap items-center gap-2 text-sm text-gray-400" title={`${hint ?? ''} — kein E-Rechnungs-Format, daher nichts maschinell zu prüfen.`}>
-        <span className="text-gray-300">–</span>
-        {label}
-        <span className="text-[11px] text-gray-400">entfällt (kein E-Rechnungs-Format)</span>
-      </p>
-    )
-  }
-  // Nur-Lese-Darstellung (Stefan 2026-08-25): "Sachlich richtig"/"An
-  // Buchhaltung übergeben" sind hier nicht togglebar (Rechte-Prüfung bleibt
-  // in der Liste, siehe CheckBadges.tsx) — trotzdem als Teil der
-  // Bearbeitungskette sichtbar, wer wann freigegeben hat bzw. dass es noch offen ist.
-  if (readOnly) {
-    return (
-      <p className="flex flex-wrap items-center gap-2 text-sm text-gray-700" title={hint}>
-        <span className={checked ? 'text-green-600' : 'text-gray-300'}>{checked ? '✓' : '○'}</span>
-        {label}
-        <span className="text-[11px] text-gray-400">
-          {checked ? `— ${by} am ${new Date(at as string).toLocaleString('de-DE')}` : '— noch offen'}
-        </span>
-      </p>
-    )
+  const base = 'flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-bold border transition-colors'
+  // Stefan 2026-08-26: Prüfkette grün statt in der (blauen) Akzentfarbe —
+  // dieselbe Farbgebung wie CheckBadges.tsx in der Rechnungsliste, damit
+  // beide Stellen einheitlich aussehen. "Entfällt" bekommt dieselbe positive
+  // Farbe wie "erledigt" (nur mit "–" statt Haken), "offen" bleibt neutral grau.
+  if (notApplicable) {
+    return <span className={`${base} border-green-600 bg-green-600 text-white`} title={title}>–</span>
   }
   return (
-    <label className="flex flex-wrap items-center gap-2 text-sm text-gray-700" title={hint}>
-      <input type="checkbox" checked={checked} disabled={busy} className="accent-green-600"
-        onChange={(e) => onToggle?.(e.target.checked)} />
-      {checked && <span className="text-green-600">✓</span>}
-      {label}
-      {checked && (
-        <span className="text-[11px] text-gray-400">
-          — {by} am {new Date(at as string).toLocaleString('de-DE')}
-        </span>
-      )}
-    </label>
+    <button type="button" disabled={disabled} onClick={onToggle} title={title}
+      className={`${base} ${
+        done ? 'border-green-600 bg-green-600 text-white' : 'border-gray-300 bg-white text-gray-400'
+      } ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:opacity-80'}`}>
+      {done ? '✓' : letter}
+    </button>
   )
 }
 

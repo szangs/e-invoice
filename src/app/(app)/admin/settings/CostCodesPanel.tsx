@@ -2,8 +2,9 @@
 
 // Kostenstellen/Kostenträger (Stefan 2026-07-09, #114): per CSV-Import
 // gepflegte Liste, genau wie die Lieferanten-Konten (DatevAccountsPanel) —
-// eine Instanz je "kind" (Kostenstelle/Kostenträger), beide nur sichtbar,
-// wenn Tenant.costCentersEnabled aktiv ist (siehe SettingsHub.tsx).
+// eine Instanz je "kind" (Kostenstelle/Kostenträger), jede unabhängig
+// sichtbar je nach Tenant.costCenterEnabled/costCarrierEnabled (Stefan
+// 2026-08-26, vorher ein gemeinsamer Schalter — siehe SettingsHub.tsx).
 import { useEffect, useState } from 'react'
 
 type CostCode = { id: string; code: string; name: string }

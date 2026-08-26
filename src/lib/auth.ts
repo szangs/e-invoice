@@ -8,8 +8,15 @@ import { audit } from '@/lib/audit'
 import { prisma } from '@/lib/db'
 import { getSetting } from '@/lib/settings'
 
+// Sitzungs-Timeout (Stefan 2026-08-25, §5): maxAge unten ist die technische
+// JWT-Obergrenze (weit genug gefasst, damit die einstellbare, kürzere Dauer
+// unten im session()-Callback greifen kann) — die eigentliche, im
+// Betreiber-Cockpit einstellbare Sitzungsdauer wird bei jedem Session-Check
+// gegen token.loginAt geprüft, siehe unten.
+const MAX_SESSION_HOURS_CEILING = 24 * 60 * 60
+
 export const authOptions: NextAuthOptions = {
-  session: { strategy: 'jwt', maxAge: 12 * 60 * 60 },
+  session: { strategy: 'jwt', maxAge: MAX_SESSION_HOURS_CEILING },
   secret: process.env.NEXTAUTH_SECRET,
   pages: { signIn: '/auth/login' },
   providers: [
@@ -81,7 +88,7 @@ export const authOptions: NextAuthOptions = {
         }
         await prisma.user.update({
           where: { id: user.id },
-          data: { lastLoginAt: new Date(), lastSeenAt: new Date() },
+          data: { lastLoginAt: new Date(), lastSeenAt: new Date(), aiNoticeLoginCount: { increment: 1 } },
         })
         await audit({
           tenantId: user.tenantId,
@@ -119,8 +126,16 @@ export const authOptions: NextAuthOptions = {
       return token
     },
     async session({ session, token }) {
+      // Einstellbarer Sitzungs-Timeout (Stefan 2026-08-25, §5, Betreiber-
+      // Cockpit) — bei jedem Session-Check gegen den Login-Zeitpunkt geprüft,
+      // statt eines fest verdrahteten JWT-maxAge (der nur eine großzügige
+      // technische Obergrenze ist, siehe MAX_SESSION_HOURS_CEILING oben).
+      // Leere user.id lässt getContext() wie "nicht angemeldet" behandeln —
+      // dieselbe Prüfung, die es für eine fehlende Sitzung ohnehin schon gibt.
+      const timeoutHours = Number(await getSetting('SESSION_TIMEOUT_HOURS')) || 12
+      const expired = Date.now() - token.loginAt > timeoutHours * 60 * 60 * 1000
       session.user = {
-        id: token.uid,
+        id: expired ? '' : token.uid,
         name: (token.name as string) ?? '',
         email: (token.email as string) ?? '',
         role: token.role,

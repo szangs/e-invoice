@@ -15,10 +15,23 @@ export default async function UsersPage() {
   if (!ctx.tenantId) redirect('/platform')
   if (ctx.role !== Role.TENANT_ADMIN && ctx.role !== Role.OPERATOR_ADMIN) redirect('/dashboard')
   const tenantId = ctx.tenantId
-  const [users, tenant] = await Promise.all([
+  const [users, tenant, groupsRaw] = await Promise.all([
     prisma.user.findMany({ where: { tenantId }, orderBy: { createdAt: 'asc' } }),
     prisma.tenant.findUnique({ where: { id: tenantId } }),
+    // Mitarbeiter-Gruppen (Stefan 2026-08-26, hierher verschoben von /admin/
+    // baskets — Gruppen sind eine Mitarbeiter-Eigenschaft, Korb-Rechte für
+    // Gruppen bleiben weiterhin in der Körbe-Verwaltung).
+    prisma.employeeGroup.findMany({
+      where: { tenantId },
+      orderBy: { name: 'asc' },
+      include: { members: { include: { user: { select: { id: true, email: true } } } } },
+    }),
   ])
+  const groups = groupsRaw.map((g) => ({
+    id: g.id,
+    name: g.name,
+    members: g.members.map((m) => ({ id: m.user.id, email: m.user.email })),
+  }))
 
   return (
     <div className="space-y-6">
@@ -38,6 +51,7 @@ export default async function UsersPage() {
           active: u.active,
           lastLogin: u.lastLoginAt ? format(u.lastLoginAt, 'dd.MM.yyyy HH:mm', { locale: de }) : '—',
         }))}
+        groups={groups}
       />
     </div>
   )

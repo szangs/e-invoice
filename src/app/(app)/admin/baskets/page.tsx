@@ -17,13 +17,15 @@ export default async function BasketsPage() {
 
   await ensureSystemBaskets(tenantId)
 
-  const [basketsRaw, deletedBasketsRaw, users] = await Promise.all([
+  const [basketsRaw, deletedBasketsRaw, users, groupsRaw] = await Promise.all([
     prisma.basket.findMany({
       where: { tenantId, deletedAt: null },
       include: {
         members: { include: { user: { select: { id: true, email: true, username: true } } } },
         userRights: { select: { userId: true, right: true, user: { select: { email: true } } } },
+        groupRights: { select: { groupId: true, right: true, group: { select: { name: true } } } },
         _count: { select: { invoices: { where: { deletedAt: null } } } },
+        transitionsFrom: { select: { toBasketId: true } },
       },
     }),
     // Papierkorb für Körbe (Stefan 2026-07-08) — nur leere Körbe können
@@ -38,8 +40,19 @@ export default async function BasketsPage() {
       orderBy: { email: 'asc' },
       select: { id: true, email: true, username: true, role: true },
     }),
+    // Mitarbeiter-Gruppen (Stefan 2026-08-26) — für Korb-Rechte je Gruppe statt je Einzelperson.
+    prisma.employeeGroup.findMany({
+      where: { tenantId },
+      orderBy: { name: 'asc' },
+      include: { members: { include: { user: { select: { id: true, email: true } } } } },
+    }),
   ])
   const baskets = sortBaskets(basketsRaw)
+  const groups = groupsRaw.map((g) => ({
+    id: g.id,
+    name: g.name,
+    members: g.members.map((m) => ({ id: m.user.id, email: m.user.email })),
+  }))
 
   return (
     <div className="space-y-6">
@@ -63,6 +76,8 @@ export default async function BasketsPage() {
           invoiceCount: b._count.invoices,
           members: b.members.map((m) => ({ id: m.user.id, email: m.user.email, username: m.user.username })),
           rights: b.userRights.map((r) => ({ userId: r.userId, email: r.user.email, right: r.right })),
+          groupRights: b.groupRights.map((r) => ({ groupId: r.groupId, name: r.group.name, right: r.right })),
+          allowedTargetIds: b.transitionsFrom.map((t) => t.toBasketId),
         }))}
         allUsers={users}
         rightsUsers={users.filter((u) => u.role !== Role.TENANT_ADMIN && u.role !== Role.OPERATOR_ADMIN)}
@@ -72,6 +87,7 @@ export default async function BasketsPage() {
           kind: b.kind,
           deletedAt: b.deletedAt!.toISOString(),
         }))}
+        groups={groups}
       />
     </div>
   )

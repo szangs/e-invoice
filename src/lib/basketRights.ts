@@ -41,21 +41,50 @@ export async function getBasketRightMap(tenantId: string, userId: string, role: 
     const baskets = await prisma.basket.findMany({ where: { tenantId, deletedAt: null }, select: { id: true } })
     return Object.fromEntries(baskets.map((b) => [b.id, RIGHT_RANK.FIBU]))
   }
-  const rows = await prisma.basketUserRight.findMany({
-    where: { userId, basket: { tenantId } },
-    select: { basketId: true, right: true },
-  })
-  return Object.fromEntries(rows.map((r) => [r.basketId, RIGHT_RANK[r.right]]))
+  // Wirksames Recht (Stefan 2026-08-26, "Gruppenrechte werden von
+  // Mitarbeiterrechten überschrieben"): ein explizit für den Mitarbeiter
+  // gesetztes individuelles Recht (BasketUserRight) ist auf diesem Korb
+  // ALLEIN maßgeblich — Gruppenrechte gelten für ihn dort dann gar nicht
+  // mehr, auch nicht ergänzend. Nur wenn KEIN individuelles Recht auf einem
+  // Korb existiert, zählt das höchste Gruppenrecht (über alle Gruppen, in
+  // denen er Mitglied ist) — vorher wurde immer das jeweils höhere von
+  // beidem genommen, was eine gezielte Einschränkung unter das Gruppenrecht
+  // unmöglich machte.
+  const [userRows, groupRows] = await Promise.all([
+    prisma.basketUserRight.findMany({
+      where: { userId, basket: { tenantId } },
+      select: { basketId: true, right: true },
+    }),
+    prisma.basketGroupRight.findMany({
+      where: { group: { tenantId, members: { some: { userId } } } },
+      select: { basketId: true, right: true },
+    }),
+  ])
+  const map: Record<string, number> = {}
+  for (const r of groupRows) {
+    const rank = RIGHT_RANK[r.right]
+    if (!map[r.basketId] || rank > map[r.basketId]) map[r.basketId] = rank
+  }
+  // Individuelle Rechte überschreiben etwaige Gruppenrechte auf demselben Korb komplett.
+  for (const r of userRows) {
+    map[r.basketId] = RIGHT_RANK[r.right]
+  }
+  return map
 }
 
 /** Prüft, ob ein Nutzer mindestens `min` auf dem angegebenen Korb hat. */
 export async function hasBasketRight(userId: string, role: Role, basketId: string, min: BasketRight): Promise<boolean> {
   if (alwaysFullAccess(role)) return true
-  const row = await prisma.basketUserRight.findUnique({
-    where: { basketId_userId: { basketId, userId } },
+  const userRow = await prisma.basketUserRight.findUnique({ where: { basketId_userId: { basketId, userId } } })
+  // Individuelles Recht vorhanden → allein maßgeblich, Gruppenrechte werden
+  // dafür gar nicht erst abgefragt (siehe Kommentar in getBasketRightMap).
+  if (userRow) return RIGHT_RANK[userRow.right] >= RIGHT_RANK[min]
+  const groupRows = await prisma.basketGroupRight.findMany({
+    where: { basketId, group: { members: { some: { userId } } } },
+    select: { right: true },
   })
-  if (!row) return false
-  return RIGHT_RANK[row.right] >= RIGHT_RANK[min]
+  const best = Math.max(...groupRows.map((r) => RIGHT_RANK[r.right]), 0)
+  return best >= RIGHT_RANK[min]
 }
 
 /**

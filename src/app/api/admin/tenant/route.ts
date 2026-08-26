@@ -9,6 +9,10 @@ import { prisma } from '@/lib/db'
 import { hasFeature } from '@/lib/license'
 
 const schema = z.object({
+  // Firmenbezeichnung + Abweichungs-Verhalten (Stefan 2026-08-25) — Grundlage
+  // für den Rechnungsempfänger-Abgleich (lib/erechnung.ts buyerNameMismatch).
+  legalName: z.string().max(300).optional(),
+  buyerNameMismatchBlocksHandover: z.boolean().optional(),
   aiAllowed: z.boolean().optional(),
   ipLoggingAllowed: z.boolean().optional(),
   defaultLanguage: z.string().optional(),
@@ -19,6 +23,8 @@ const schema = z.object({
   mailInGraphFolder: z.string().max(300).optional(),
   mailInGraphMoveToFolder: z.string().max(300).optional(),
   spamReplyEnabled: z.boolean().optional(),
+  autoDeleteExactDuplicates: z.boolean().optional(),
+  autoSupersedeInvoiceVersions: z.boolean().optional(),
   mailInGraphTenantId: z.string().max(200).optional(),
   mailInGraphClientId: z.string().max(200).optional(),
   mailInGraphClientSecret: z.string().max(500).optional(),
@@ -41,7 +47,8 @@ const schema = z.object({
   datevGegenkonto: z.string().max(20).optional(),
   datevWjBeginn: z.string().regex(/^\d{4}$/).optional().or(z.literal('')),
   datevFibuEmail: z.string().email().optional().or(z.literal('')),
-  costCentersEnabled: z.boolean().optional(),
+  costCenterEnabled: z.boolean().optional(),
+  costCarrierEnabled: z.boolean().optional(),
   // Fälligkeits-Benachrichtigung (Stefan 2026-08-24): leerer String = aus (null in der DB)
   dueReminderDaysAfterReceipt: z.number().int().min(1).max(365).nullable().optional(),
   dueReminderDaysBeforeDue: z.number().int().min(1).max(365).nullable().optional(),
@@ -52,7 +59,7 @@ export async function PATCH(req: NextRequest) {
     const ctx = await getContext({ roles: [Role.TENANT_ADMIN] })
     const tenantId = requireTenant(ctx)
     const data = schema.parse(await req.json())
-    if (data.costCentersEnabled) {
+    if (data.costCenterEnabled || data.costCarrierEnabled) {
       const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } })
       if (!tenant || !hasFeature(tenant, 'COST_CENTERS')) {
         throw new ApiError(403, 'Kostenstellen/Kostenträger sind im aktuellen Tarif nicht enthalten.')
@@ -62,6 +69,7 @@ export async function PATCH(req: NextRequest) {
       where: { id: tenantId },
       data: {
         ...data,
+        legalName: data.legalName === '' ? null : data.legalName,
         mailInGraphMailbox: data.mailInGraphMailbox === '' ? null : data.mailInGraphMailbox,
         mailInGraphFolder: data.mailInGraphFolder === '' ? null : data.mailInGraphFolder,
         mailInGraphMoveToFolder: data.mailInGraphMoveToFolder === '' ? null : data.mailInGraphMoveToFolder,

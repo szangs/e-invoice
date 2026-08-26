@@ -21,33 +21,32 @@ export default async function TenantSettingsPage() {
   const mailInAddress = mailInDomain
     ? `${globalSettings.MAIL_IN_PREFIX || ''}${tenant.slug}@${mailInDomain}`
     : null
+  // E-Mail-Eingang (Stefan 2026-08-25): Adresse + Erklärtext hierher verschoben
+  // von der bisherigen eigenständigen /mailin-Seite (der Verlauf steht jetzt
+  // im Audit-Protokoll) — gehört inhaltlich zu den Mandanten-Einstellungen,
+  // nicht in einen eigenen Menüpunkt.
+  const mailInGraphActive =
+    globalSettings.MAIL_IN_GRAPH_ENABLED === '1' && tenant.mailInGraphEnabled && !!tenant.mailInGraphMailbox
+  const mailInSmtpEnabled = globalSettings.MAIL_SMTP_ENABLED === '1'
 
   return (
     <div className="max-w-xl space-y-6">
-      <section className="dp-card">
-        <h2 className="mb-2 text-sm font-bold uppercase tracking-wide text-gray-500">Ihr Mandant</h2>
-        <p className="text-sm text-gray-700">{tenant.name}</p>
-        <p className="text-xs text-gray-400">
-          Kurzname: <span className="font-mono">{tenant.slug}</span> · Lizenz:{' '}
-          {tenant.licensePlan ?? '—'} ·{' '}
-          {tenant.licenseExpiresAt
-            ? `bis ${tenant.licenseExpiresAt.toLocaleDateString('de-DE')}`
-            : 'unbegrenzt'}
-        </p>
-        <p className="mt-2 text-xs text-gray-400">
-          E-Mail-Eingang:{' '}
-          {mailInAddress ? (
-            <>
-              <span className="font-mono text-gray-700">{mailInAddress}</span> (beliebiger Lokalteil
-              möglich, z. B. auch <span className="font-mono">irgendwas@{tenant.slug}.{mailInDomain}</span>)
-            </>
-          ) : (
-            'noch nicht eingerichtet — der Betreiber muss unter Systemeinstellungen → Mail-Eingang eine Basis-Domain hinterlegen'
-          )}
-        </p>
-      </section>
       <SettingsHub
+        tenant={{
+          name: tenant.name,
+          slug: tenant.slug,
+          licensePlan: tenant.licensePlan,
+          licenseExpiresAt: tenant.licenseExpiresAt ? tenant.licenseExpiresAt.toISOString() : null,
+          mailInAddress,
+          mailInDomain,
+          mailInSmtpEnabled,
+          mailInGraphActive,
+          mailInGraphMailbox: tenant.mailInGraphMailbox,
+          mailInGraphFolder: tenant.mailInGraphFolder,
+        }}
         initial={{
+          legalName: tenant.legalName ?? '',
+          buyerNameMismatchBlocksHandover: tenant.buyerNameMismatchBlocksHandover,
           aiAllowed: tenant.aiAllowed,
           ipLoggingAllowed: tenant.ipLoggingAllowed,
           backupEnabled: tenant.backupEnabled,
@@ -58,6 +57,8 @@ export default async function TenantSettingsPage() {
           mailInGraphFolder: tenant.mailInGraphFolder ?? '',
           mailInGraphMoveToFolder: tenant.mailInGraphMoveToFolder ?? '',
           spamReplyEnabled: tenant.spamReplyEnabled,
+          autoDeleteExactDuplicates: tenant.autoDeleteExactDuplicates,
+          autoSupersedeInvoiceVersions: tenant.autoSupersedeInvoiceVersions,
           mailInGraphTenantId: tenant.mailInGraphTenantId ?? '',
           mailInGraphClientId: tenant.mailInGraphClientId ?? '',
           mailInGraphClientSecret: tenant.mailInGraphClientSecret ?? '',
@@ -78,7 +79,8 @@ export default async function TenantSettingsPage() {
           datevGegenkonto: tenant.datevGegenkonto ?? '',
           datevWjBeginn: tenant.datevWjBeginn ?? '0101',
           datevFibuEmail: tenant.datevFibuEmail ?? '',
-          costCentersEnabled: tenant.costCentersEnabled,
+          costCenterEnabled: tenant.costCenterEnabled,
+          costCarrierEnabled: tenant.costCarrierEnabled,
           dueReminderDaysAfterReceipt: tenant.dueReminderDaysAfterReceipt,
           dueReminderDaysBeforeDue: tenant.dueReminderDaysBeforeDue,
         }}

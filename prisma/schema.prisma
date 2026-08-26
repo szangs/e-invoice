@@ -40,6 +40,12 @@ model Tenant {
   // oder gefälschten Rechnung. Leer = keine Prüfung (Mandant hat es noch
   // nicht gepflegt).
   legalName        String?
+  // Übergabe sperren bei Abweichung (Stefan 2026-08-25) — solange die
+  // Abweichung nicht per "Passt trotzdem" akzeptiert wurde, verhindert das
+  // den Wechsel in den Übergabekorb (manuell wie automatisch, siehe
+  // lib/baskets.ts requestMove). Standard aus — reine Warnung bleibt das
+  // bisherige, unveränderte Verhalten.
+  buyerNameMismatchBlocksHandover Boolean @default(false)
   contactName      String?
   contactEmail     String?
   contactPhone     String?
@@ -94,6 +100,26 @@ model Tenant {
   // Greift NIE im Entwicklermodus (Stefan 2026-08-25) — dort laufen Test-/
   // Demo-Läufe, oft mit echten Absenderadressen (siehe lib/mailin.ts sendSpamNotice).
   spamReplyEnabled Boolean @default(false)
+  // Automatisches Löschen bei 100%-sicher erkannten Dubletten (Stefan
+  // 2026-08-25): NUR bei identischer Beleg-Datei (SHA-256-Hash-Treffer,
+  // siehe lib/duplicates.ts hashBuffer) — der schwächere Abgleich über
+  // Rechnungsnummer+Lieferant bleibt IMMER nur eine Markierung mit
+  // Nachprüfung durch einen Menschen (Vier-Augen-relevant, keine
+  // hundertprozentige Sicherheit). Betrifft nur den automatischen
+  // Mail-Eingang (lib/mailin.ts) — beim manuellen Upload warnt die Oberfläche
+  // stattdessen VOR dem Speichern (Dubletten-Bestätigung). Soft-Delete wie
+  // beim regulären Löschen-Button, nichts wird endgültig entfernt.
+  autoDeleteExactDuplicates Boolean @default(false)
+  // Rechnungsversionierung (Stefan 2026-08-25) — EIGENES Konzept, KEINE
+  // Dublette: derselbe Lieferant schickt dieselbe Rechnungsnummer mehrfach,
+  // aber mit UNTERSCHIEDLICHEM Dateiinhalt (sonst wäre es eine Dublette,
+  // siehe autoDeleteExactDuplicates oben) — z. B. eine korrigierte/erneut
+  // gesendete Fassung. Bei aktivem Schalter wird automatisch die neueste
+  // Version aktiv gehalten, ältere Versionen werden schreibgeschützt
+  // ("ausgegraut", Invoice.supersededAt) statt als Dublette zur manuellen
+  // Entscheidung markiert — nichts wird gelöscht, alle Versionen bleiben
+  // nachvollziehbar sichtbar. Betrifft nur den automatischen Mail-Eingang.
+  autoSupersedeInvoiceVersions Boolean @default(false)
   // Fälligkeits-Benachrichtigung ("Bearbeitungswarnung"), pro Mandant
   // einstellbar, null = jeweils aus. Läuft im Scheduler wie die
   // Korb-Benachrichtigung (lib/dueReminders.ts runDueReminders, aufgerufen
@@ -159,8 +185,11 @@ model Tenant {
   // aus der beim Bearbeiten einer Rechnung ausgewählt werden kann (siehe
   // CostCode/Invoice.costCenterCode/costCarrierCode). Bei "aus" bleibt die
   // Auswahl in der Rechnung ausgeblendet, bereits gesetzte Werte gehen dabei
-  // nicht verloren.
-  costCentersEnabled Boolean @default(false)
+  // nicht verloren. Stefan 2026-08-26: vorher EIN gemeinsamer Schalter für
+  // beide — in der Praxis nutzt aber nicht jeder Mandant beides zusammen,
+  // deshalb jetzt zwei unabhängige Schalter.
+  costCenterEnabled  Boolean @default(false)
+  costCarrierEnabled Boolean @default(false)
   costCodes          CostCode[]
   // Zähler für eindeutige Dokumenten-IDs (<Slug>-<laufende Nummer>, siehe
   // lib/docId.ts und Invoice.docId) — atomar hochgezählt, damit auch bei
@@ -173,6 +202,8 @@ model Tenant {
   apiTokens        ApiToken[]
   baskets          Basket[]
   vendorAccounts   VendorAccount[]
+  vendorAddresses  VendorAddress[]
+  employeeGroups   EmployeeGroup[]
 }
 
 // ── Optionale Verknüpfung vorhandener Fibu-Konten zu Lieferanten (Stefan
@@ -188,6 +219,26 @@ model VendorAccount {
   vendorName String // Abgleich mit Invoice.vendor, case-insensitiv/exakt
   konto      String // DATEV-Kontonummer für diesen Lieferanten
   createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([tenantId, vendorName])
+}
+
+// Lieferanten-Adressregister (Stefan 2026-08-26): anders als VendorAccount
+// oben (manuell per CSV gepflegte Fibu-Kontenzuordnung) wird diese Tabelle
+// AUTOMATISCH bei jeder Rechnung mit lesbarer Anschrift aktualisiert (siehe
+// lib/vendorMemory.ts upsertVendorAddress) — "immer die zuletzt übermittelte
+// Anschrift je Lieferant", als Grundlage für einen eigenständigen Adress-
+// Export an die Fibu (api/invoices/export/vendor-addresses). Nur die
+// Anschrift, KEINE Rechnungsdaten — deshalb auch bei aktiver
+// Inhalts-Verschlüsselung unproblematisch (der Server sieht die Anschrift
+// dort ohnehin nie im Klartext, also wird hier auch nichts aktualisiert).
+model VendorAddress {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  vendorName String // Abgleich mit Invoice.vendor, case-insensitiv/exakt
+  address    String
   updatedAt  DateTime @updatedAt
 
   @@unique([tenantId, vendorName])
@@ -281,10 +332,19 @@ model User {
   lastLoginAt     DateTime?
   lastSeenAt      DateTime?
   forcedLogoutAt  DateTime? // Zwangsabmeldung-ab (§10)
+  // KI-/Sicherungs-Hinweis beim Login (Stefan 2026-08-26): zählt echte
+  // Passwort-Logins seit der letzten Bestätigung — ab 10 wird der Hinweis
+  // (KI-Daten können fehlerhaft sein + regelmäßige Sicherung) erneut gezeigt,
+  // siehe api/session/ai-notice/route.ts. Nur relevant bei Mandanten mit
+  // aktivierter KI (Tenant.aiAllowed).
+  aiNoticeLoginCount Int       @default(0)
+  aiNoticeAckedAt    DateTime?
   invoices        Invoice[]
   basketMemberships BasketMember[]
   basketApprovals   BasketApproval[]
   basketRights      BasketUserRight[]
+  // Mitarbeiter-Gruppen (Stefan 2026-08-26) — siehe EmployeeGroup unten.
+  groupMemberships  EmployeeGroupMember[]
   uploadedAttachments   InvoiceAttachment[]
   notesAuthored         InvoiceNote[]       @relation("InvoiceNoteAuthor")
   notesReceived         InvoiceNote[]       @relation("InvoiceNoteRecipient")
@@ -442,8 +502,33 @@ model Basket {
   invoices  Invoice[]
   approvals BasketApproval[]
   userRights BasketUserRight[]
+  // Gruppen-Rechte (Stefan 2026-08-26) — siehe BasketGroupRight unten.
+  groupRights BasketGroupRight[]
+  transitionsFrom BasketTransition[] @relation("TransitionFrom")
+  transitionsTo   BasketTransition[] @relation("TransitionTo")
 
   @@index([tenantId, kind])
+}
+
+// Belegfluss (Stefan 2026-08-25): erlaubte Verschiebe-Richtungen zwischen
+// Körben, je Korb OPT-IN — solange für einen Korb (als Quelle) KEIN
+// Eintrag existiert, darf weiterhin uneingeschränkt verschoben werden (wie
+// bisher, kein Bruch für bestehende Mandanten). Sobald mindestens ein
+// Eintrag mit fromBasketId = dieser Korb existiert, ist das Verschieben AUS
+// diesem Korb auf genau die eingetragenen Ziele beschränkt (siehe
+// lib/baskets.ts requestMove). "Beide Richtungen" ergibt sich einfach aus
+// zwei Einträgen (A→B und B→A), kein eigenes Richtungs-Feld nötig.
+model BasketTransition {
+  id           String   @id @default(cuid())
+  tenantId     String
+  fromBasketId String
+  toBasketId   String
+  fromBasket   Basket   @relation("TransitionFrom", fields: [fromBasketId], references: [id], onDelete: Cascade)
+  toBasket     Basket   @relation("TransitionTo", fields: [toBasketId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+
+  @@unique([fromBasketId, toBasketId])
+  @@index([tenantId])
 }
 
 // ── Korb-Rechte je Rolle (Stefan 2026-07-08) ── Nur der Mandanten-Admin
@@ -477,6 +562,50 @@ model BasketUserRight {
   updatedAt DateTime    @updatedAt
 
   @@unique([basketId, userId])
+}
+
+// Mitarbeiter-Gruppen (Stefan 2026-08-26): statt Korb-Rechte immer einzeln
+// pro Mitarbeiter zu vergeben, lassen sich Mitarbeiter zu einer Gruppe
+// zusammenfassen (z. B. "Einkauf", "Buchhaltung") und die Gruppe bekommt EIN
+// Recht auf einen Korb — gilt dann für alle Mitglieder. Ergänzt die
+// bestehende Einzel-Zuweisung (BasketUserRight), ersetzt sie nicht: die
+// wirksame Berechtigung eines Mitarbeiters ist das höhere der beiden Rechte
+// (siehe lib/basketRights.ts getBasketRightMap/hasBasketRight).
+model EmployeeGroup {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  members      EmployeeGroupMember[]
+  basketRights BasketGroupRight[]
+
+  @@unique([tenantId, name])
+}
+
+model EmployeeGroupMember {
+  id        String        @id @default(cuid())
+  groupId   String
+  group     EmployeeGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime      @default(now())
+
+  @@unique([groupId, userId])
+}
+
+model BasketGroupRight {
+  id        String        @id @default(cuid())
+  basketId  String
+  basket    Basket        @relation(fields: [basketId], references: [id], onDelete: Cascade)
+  groupId   String
+  group     EmployeeGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  right     BasketRight
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@unique([basketId, groupId])
 }
 
 // Mitarbeiter-Zuordnung zu einem Korb (wer ist zuständig / wird benachrichtigt)
@@ -548,6 +677,36 @@ model Invoice {
   // vorher wurde diese Unterscheidung gar nicht getroffen.
   discountDueDate DateTime?
   discountPercent Decimal?      @db.Decimal(5, 2)
+  // Anschrift/Steuerkennung des Lieferanten (Stefan 2026-08-25) — bei
+  // E-Rechnung (ZUGFeRD/XRechnung) steht das strukturiert im XML (siehe
+  // lib/erechnung.ts ParsedInvoiceData), bei PDF/KI/manuell erfasster
+  // Rechnung gab es dafür bisher gar kein Feld, obwohl §14 Abs. 4 Nr. 1+2
+  // UStG beides zwingend vorschreibt — jetzt per KI-Bestenfalls-Erkennung
+  // (lib/aiExtract.ts) oder von Hand nachtragbar (siehe ERechnungView.tsx
+  // Eingabe-Modus, nur bei Nicht-E-Rechnung sichtbar).
+  sellerAddress   String?
+  sellerVatId     String?
+  sellerTaxNumber String?
+  // Land des Lieferanten (Stefan 2026-08-25, ISO 3166-1 alpha-2) — nur bei
+  // Nicht-E-Rechnung gespeichert (KI-Bestenfalls-Erkennung), bei E-Rechnung
+  // wird es live aus dem XML gelesen (lib/erechnung.ts). Grundlage für die
+  // Inland/EU/Drittland-Einordnung unten.
+  sellerCountryCode String?
+  // Inland/EU/Drittland (Stefan 2026-08-25, lib/erechnung.ts classifyTaxRegion)
+  // — bleibt NULL solange automatisch aus sellerCountryCode abgeleitet wird;
+  // wird nur gesetzt, wenn ein Mensch die automatische Einordnung manuell
+  // überschreibt (z. B. bei Sonderfällen, die die einfache Länder-Zuordnung
+  // nicht abbildet). Bestimmt, welche Pflichtangaben-Regel bei der
+  // Vollständigkeitsprüfung gilt.
+  taxRegion String?
+  // "Prüfung ignorieren" (Stefan 2026-08-25) — bewusste, begründungspflichtige
+  // Ausnahme von der Pflichtangaben-Vollständigkeitsprüfung (z. B. wenn eine
+  // Angabe nachweislich nicht zutrifft/nicht erhältlich ist). Nur Anzeige
+  // betroffen, keine Sperre wird dadurch aufgehoben — GoBD-Nachvollziehbarkeit
+  // über Grund/wer/wann sichergestellt.
+  pflichtangabenIgnoredAt     DateTime?
+  pflichtangabenIgnoredBy     String?
+  pflichtangabenIgnoredReason String?
   amountNet     Decimal?      @db.Decimal(12, 2)
   amountTax     Decimal?      @db.Decimal(12, 2)
   amountGross   Decimal?      @db.Decimal(12, 2)
@@ -612,6 +771,11 @@ model Invoice {
   // (Scan/manueller Upload/Bestand vor Einführung — dort hat ein Mensch die
   // Auswahl schon bewusst getroffen, keine Klassifikation nötig).
   invoiceClass      String?
+  // Sicherheit der obigen Einstufung in Prozent (Stefan 2026-08-25, 0-100) —
+  // von der KI selbst geschätzt (aiExtract.ts notInvoiceConfidence) oder bei
+  // der Stichwort-Rückfallebene grob aus der Regel abgeleitet (mailin.ts).
+  // Null = keine Einstufung (siehe invoiceClass oben).
+  invoiceClassConfidence Int?
   // Beleg-PDF wurde serverseitig aus dem HTML-Mailtext gerendert, ist also
   // KEIN vom Lieferanten mitgeschicktes Original-PDF (Stefan 2026-08-25,
   // HTML-Auslandsrechnung ohne Anhang — siehe lib/htmlToPdf.ts). Anzeige als
@@ -624,6 +788,30 @@ model Invoice {
   // Rechnung ersetzt die vorherige"). Nur beim Mail-Eingang gesetzt, auf
   // 5000 Zeichen gedeckelt (siehe lib/mailin.ts).
   mailBodyText      String?
+  // Graph-Nachrichten-ID der Quell-Mail (Stefan 2026-08-25) — analog
+  // MailIntake.sourceMessageId oben, aber HIER auf der Rechnung selbst, damit
+  // mehrere Rechnungen aus derselben Sammel-Mail (mehrere PDF-Anhänge, je
+  // eine eigene Rechnung, siehe lib/mailin.ts processInboundAttachments)
+  // gegenseitig verlinkt werden können ("weitere Rechnungen aus dieser
+  // E-Mail" auf der Detailseite) — sonst sieht man nach dem automatischen
+  // Aufteilen in einzelne Vorgänge nicht mehr, dass sie zusammengehören.
+  // Nur bei Graph-Mail-Eingang gesetzt (SMTP hat keine stabile Message-ID).
+  sourceMessageId   String?
+  // Absenderadresse der Quell-Mail (Stefan 2026-08-25, nur bei source=EMAIL
+  // gesetzt) — stabilerer Lieferanten-Schlüssel als der oft leicht
+  // unterschiedlich geschriebene Firmenname aus der KI-/XML-Erkennung.
+  // Grundlage für das Lieferanten-Gedächtnis (siehe lib/vendorMemory.ts):
+  // einmal von einem Menschen bestätigte Angaben desselben Absenders werden
+  // bei der nächsten Rechnung als Vorschlag/KI-Referenz wiederverwendet.
+  senderEmail       String?
+  // Rechnungsversionierung (Stefan 2026-08-25, Tenant.autoSupersedeInvoiceVersions)
+  // — gesetzt, wenn eine NEUERE Version derselben Rechnung (gleiche
+  // Rechnungsnummer + Lieferant, anderer Dateiinhalt) eingegangen ist. Macht
+  // diese Rechnung schreibgeschützt (wie ein abgeschlossener Prüfungszeitraum,
+  // siehe isInvoiceLockedByClosure) — bleibt aber vollständig einsehbar,
+  // nichts wird gelöscht.
+  supersededAt           DateTime?
+  supersededByInvoiceId  String?
   // Fälligkeits-Benachrichtigung (lib/dueReminders.ts): wann zuletzt eine
   // Bearbeitungswarnung für diese Rechnung verschickt wurde — verhindert
   // Mehrfachversand, wird einmalig gesetzt (keine wiederholte Eskalation).
@@ -648,6 +836,15 @@ model Invoice {
   xmlData          String? // eingebettetes/originales Rechnungs-XML
   validationOk     Boolean? // Pflichtfeld-Prüfung (EN 16931-Kern) bestanden?
   validationIssues String? // fehlende Pflichtangaben (kommagetrennt)
+  // Offizielle KoSIT-Prüfung (Stefan 2026-08-26, lib/kositValidator.ts) —
+  // läuft automatisch im Hintergrund direkt nach Ablage jeder E-Rechnung mit
+  // xmlData, zusätzlich jederzeit manuell im Prüfbericht erneut auslösbar.
+  // kositCheckedAt null = noch nicht geprüft (z. B. keine E-Rechnung oder
+  // Validator zum Ablagezeitpunkt nicht installiert) — KEIN Fehlerzustand.
+  kositCheckedAt DateTime?
+  kositAccepted  Boolean? // null = Bericht ohne eindeutiges Verdict (selten)
+  kositScenario  String?
+  kositMessages  Json?
   // Rechnungsprüfung (klassischer 4-Augen-Workflow): je Schritt wer + wann
   // geprüft hat — gesetzt = erledigt, null = offen. Vom Server gestempelt
   // (angemeldeter Nutzer), nicht vom Client frei setzbar.
@@ -680,6 +877,8 @@ model Invoice {
   @@index([tenantId, invoiceDate])
   @@index([tenantId, fileHash])
   @@index([tenantId, deletedAt])
+  @@index([tenantId, sourceMessageId])
+  @@index([tenantId, senderEmail])
   @@index([basketId])
 }
 
@@ -724,8 +923,16 @@ model InvoiceNote {
   author    User?     @relation("InvoiceNoteAuthor", fields: [authorId], references: [id], onDelete: SetNull)
   toUserId  String?
   toUser    User?     @relation("InvoiceNoteRecipient", fields: [toUserId], references: [id], onDelete: SetNull)
+  // Betreff (Stefan 2026-08-26, "sollte schon etwas mehr können") — optional,
+  // für den schnellen Überblick ohne den ganzen Text lesen zu müssen.
+  subject   String?
   text      String
   readAt    DateTime?
+  // "Erledigt"-Haken (Stefan 2026-08-26) — eigenständig von readAt: eine
+  // Nachricht kann gelesen, aber noch nicht abgearbeitet sein. Wer sie
+  // erledigt hat, bleibt nachvollziehbar (doneBy).
+  doneAt    DateTime?
+  doneBy    String?
   createdAt DateTime  @default(now())
 
   @@index([invoiceId])

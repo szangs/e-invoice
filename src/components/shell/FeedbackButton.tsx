@@ -12,6 +12,7 @@ export function FeedbackButton({ enabled }: { enabled: boolean }) {
   const pathname = usePathname()
   const [open, setOpen] = useState(false)
   const [message, setMessage] = useState('')
+  const [errorMessage, setErrorMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState(false)
   const [error, setError] = useState('')
@@ -26,7 +27,15 @@ export function FeedbackButton({ enabled }: { enabled: boolean }) {
       const res = await fetch('/api/support/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: message.trim(), page: pathname }),
+        body: JSON.stringify({
+          message: message.trim(),
+          page: pathname,
+          errorMessage: errorMessage.trim() || undefined,
+          // Immer automatisch mitgeschickt (Stefan 2026-08-25) — der Nutzer
+          // muss nicht daran denken, Browser/Fenstergröße selbst anzugeben.
+          userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+          viewport: typeof window !== 'undefined' ? `${window.innerWidth}×${window.innerHeight}` : undefined,
+        }),
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
@@ -35,6 +44,7 @@ export function FeedbackButton({ enabled }: { enabled: boolean }) {
       }
       setDone(true)
       setMessage('')
+      setErrorMessage('')
     } catch {
       setError('Senden fehlgeschlagen.')
     } finally {
@@ -62,7 +72,7 @@ export function FeedbackButton({ enabled }: { enabled: boolean }) {
   }
 
   return (
-    <div className="dp-card fixed bottom-5 right-5 z-30 w-72 space-y-2 shadow-xl print:hidden">
+    <div className="dp-card fixed bottom-5 right-5 z-30 w-80 space-y-2 shadow-xl print:hidden">
       <div className="flex items-center justify-between">
         <p className="text-xs font-bold uppercase tracking-wide text-gray-500">Feedback</p>
         <button type="button" className="text-xs text-gray-400 hover:text-gray-600" onClick={close}>✕</button>
@@ -79,6 +89,21 @@ export function FeedbackButton({ enabled }: { enabled: boolean }) {
             onChange={(e) => setMessage(e.target.value)}
             autoFocus
           />
+          <div>
+            <label className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+              Fehlermeldung (optional)
+            </label>
+            <textarea
+              className="dp-input mt-1 font-mono text-[11px]"
+              rows={2}
+              placeholder="Falls vorhanden: Fehlertext genau hier hineinkopieren …"
+              value={errorMessage}
+              onChange={(e) => setErrorMessage(e.target.value)}
+            />
+          </div>
+          <p className="text-[10px] text-gray-400">
+            Seite, Browser und Fenstergröße werden automatisch mitgeschickt.
+          </p>
           <div className="flex items-center gap-2">
             <button type="button" className="btn-primary !px-3 !py-1.5 text-xs" onClick={send} disabled={busy || !message.trim()}>
               {busy ? 'Sende …' : 'Senden'}

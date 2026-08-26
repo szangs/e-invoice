@@ -10,9 +10,10 @@ import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 
 const LIVE_POLL_MS = 15_000
-// Winziger Herzschlag bei JEDEM Poll (Stefan 2026-08-25) — zeigt nur "gerade
-// geprüft", unabhängig davon, ob etwas Neues dabei war. Bewusst sehr kurz.
-const HEARTBEAT_MS = 700
+// Herzschlag bei JEDEM Poll (Stefan 2026-08-25, kräftiger nach Rückmeldung) —
+// zeigt nur "gerade geprüft", unabhängig davon, ob etwas Neues dabei war.
+// Dauer an die Scan-Animation angepasst (siehe globals.css .animate-lupe-scan).
+const HEARTBEAT_MS = 900
 
 export type BasketTile = {
   id: string
@@ -67,6 +68,29 @@ export function BasketStrip({
   const [busy, setBusy] = useState(false)
   const [heartbeat, setHeartbeat] = useState(false)
   const sinceRef = useRef(new Date().toISOString())
+  // Manueller Mail-Abruf (Stefan 2026-08-25) — kleiner Knopf auf der
+  // Eingangskorb-Kachel, statt auf den nächsten planmäßigen Graph-Poll zu
+  // warten. Ohne aktiven Graph-Mail-Eingang zeigt der Server nur einen
+  // Hinweis statt eines Fehlers (SMTP-Eingang ist ohnehin schon sofort aktiv).
+  const [pollBusy, setPollBusy] = useState(false)
+  const [pollMsg, setPollMsg] = useState<string | null>(null)
+  async function pollNow(e: React.MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    setPollBusy(true)
+    setPollMsg(null)
+    try {
+      const res = await fetch('/api/mailin/poll', { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      setPollMsg(res.ok ? (data.log?.[0] ?? 'Abgerufen.') : (data.error ?? 'Abruf fehlgeschlagen.'))
+    } catch {
+      setPollMsg('Abruf fehlgeschlagen.')
+    } finally {
+      setPollBusy(false)
+      router.refresh()
+      setTimeout(() => setPollMsg(null), 5000)
+    }
+  }
 
   useEffect(() => {
     if (!livePulse) return
@@ -156,7 +180,7 @@ export function BasketStrip({
     HANDOVER: 'Fester Übergabekorb an die Finanzbuchhaltung — immer der letzte Schritt',
     CUSTOM: 'Eigener Korb',
     ARCHIVE: 'Feste Ablage — Rechnungen landen hier automatisch nach der Übergabe und bleiben hier. Nur Admin/Betreiber kann Belege wieder herausverschieben.',
-    QUARANTINE: 'Fester Spam-Verdacht-Korb — Mail-Eingang-Dokumente, die die automatische Erkennung als KEINE Rechnung einstuft, landen automatisch hier statt im Eingangskorb. Fehlklassifikation? Einfach zurückziehen.',
+    QUARANTINE: 'Fester Spam/Fehlleitung-Korb — Mail-Eingang-Dokumente, die die automatische Erkennung als KEINE Rechnung einstuft, landen automatisch hier statt im Eingangskorb. Fehlklassifikation? Einfach zurückziehen.',
   }
 
   // Kräftigere, sofort unterscheidbare Farbgebung je Korb-Art statt neutralem Grau.
@@ -192,21 +216,29 @@ export function BasketStrip({
                   : 'border-[var(--line)] hover:border-[var(--accent-soft)] hover:shadow-md'
             }`}
           >
-            {isHeartbeat && (
-              <span className="absolute right-2.5 top-2.5 flex h-2 w-2" title="Prüfe auf neue Rechnungen …">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--accent)] opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--accent)]" />
-              </span>
-            )}
             <Link href={hrefFor(b.id)} className="flex items-center gap-2.5">
-              <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${style.iconBg} ${style.iconFg}`}>
+              <span className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${style.iconBg} ${style.iconFg}`}>
                 <BasketKindIcon kind={b.kind} />
+                {/* Lupe statt Punkt-Animation (Stefan 2026-08-25): kurz über
+                    dem Korb-Icon selbst statt eines separaten Eck-Punkts —
+                    liest sich klarer als "wird gerade geprüft". */}
+                {isHeartbeat && (
+                  <span
+                    className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/25"
+                    title="Prüfe auf neue Rechnungen …"
+                  >
+                    <svg viewBox="0 0 24 24" className="h-6 w-6 origin-center text-white animate-lupe-scan" fill="none" stroke="currentColor" strokeWidth="2.75" strokeLinecap="round">
+                      <circle cx="10.5" cy="10.5" r="6.5" />
+                      <line x1="20" y1="20" x2="15.3" y2="15.3" />
+                    </svg>
+                  </span>
+                )}
               </span>
               <span className="min-w-0">
                 <span className={`block truncate text-sm font-semibold ${isActive ? 'text-[var(--accent)]' : 'text-gray-800'}`}>
                   {b.name}
                   {(b.unreadNotes ?? 0) > 0 && (
-                    <span title={`${b.unreadNotes} ungelesene Nachricht${b.unreadNotes === 1 ? '' : 'en'} an Sie in diesem Korb`} className="ml-1">💬</span>
+                    <span title={`${b.unreadNotes} offene Nachricht${b.unreadNotes === 1 ? '' : 'en'} an Sie in diesem Korb`} className="ml-1">💬</span>
                   )}
                 </span>
                 <span className="block text-[11px] text-gray-500">{total} Beleg{total === 1 ? '' : 'e'}</span>
@@ -220,6 +252,23 @@ export function BasketStrip({
                 </span>
               )}
             </Link>
+            {/* Manueller Mail-Abruf (Stefan 2026-08-25): ganz kleiner Knopf nur
+                auf der Eingangskorb-Kachel, statt auf den nächsten
+                planmäßigen Graph-Poll zu warten. */}
+            {b.kind === 'INBOX' && (
+              <button
+                type="button"
+                onClick={pollNow}
+                disabled={pollBusy}
+                title={pollMsg ?? 'Mail-Eingang jetzt manuell abrufen (statt auf den nächsten planmäßigen Abruf zu warten)'}
+                className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-white/70 text-gray-400 shadow-sm transition hover:bg-white hover:text-[var(--accent)] disabled:opacity-50"
+              >
+                <svg viewBox="0 0 24 24" className={`h-3 w-3 ${pollBusy ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 12a9 9 0 0 1 15.3-6.4M21 12a9 9 0 0 1-15.3 6.4" />
+                  <path d="M18 3v4h-4M6 21v-4h4" />
+                </svg>
+              </button>
+            )}
             {/* Ablage (Stefan 2026-07-09): offen/bearbeitet ergibt hier keinen
                 Sinn mehr — alles liegt schon vollständig geprüft und übergeben,
                 die Beleg-Anzahl oben reicht. Übergabekorb: statt offen/

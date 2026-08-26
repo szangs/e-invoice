@@ -1,11 +1,12 @@
 // Mandanten-Dashboard: Kennzahlen + letzte Rechnungen
-import { InvoiceStatus, Role } from '@prisma/client'
+import { InvoiceStatus, Prisma, Role } from '@prisma/client'
 import { format } from 'date-fns'
 import { de } from 'date-fns/locale'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { BasketStrip } from '@/components/baskets/BasketStrip'
 import { ensureSystemBaskets, getBasketCounts, sortBaskets } from '@/lib/baskets'
+import { getBasketRightMap, RIGHT_RANK } from '@/lib/basketRights'
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { formatAmount, STATUS_LABELS } from '@/lib/invoices'
@@ -19,22 +20,41 @@ export default async function DashboardPage() {
 
   await ensureSystemBaskets(tenantId)
 
-  // Weich gelöschte Rechnungen (Papierkorb) tauchen im Dashboard nicht auf
-  const [total, byStatus, recent, basketsRaw, basketCounts] = await Promise.all([
-    prisma.invoice.count({ where: { tenantId, deletedAt: null } }),
-    prisma.invoice.groupBy({ by: ['status'], where: { tenantId, deletedAt: null }, _count: true }),
-    prisma.invoice.findMany({ where: { tenantId, deletedAt: null }, orderBy: { createdAt: 'desc' }, take: 8 }),
+  // Korb-Rechte (Stefan 2026-08-26, "der Chef, der nur einen Korb sieht,
+  // sieht hier alle Körbe") — dieselbe VIEW-/CONTENT-Filterung wie auf
+  // /invoices, hier bislang komplett gefehlt: sowohl die Körbe-Kachelleiste
+  // als auch die Kennzahlen und "Zuletzt erfasst" unten zeigten bisher ALLE
+  // Rechnungen/Körbe des Mandanten, unabhängig von den Korb-Rechten des
+  // angemeldeten Nutzers — ein echtes Datenleck, nicht nur eine Kachel zu viel.
+  const [basketsRaw, rightMap] = await Promise.all([
     prisma.basket.findMany({ where: { tenantId, deletedAt: null } }),
+    getBasketRightMap(tenantId, ctx.userId, ctx.role),
+  ])
+  const baskets = sortBaskets(basketsRaw).filter((b) => (rightMap[b.id] ?? 0) >= RIGHT_RANK.VIEW)
+  const contentBasketIds = basketsRaw.filter((b) => (rightMap[b.id] ?? 0) >= RIGHT_RANK.CONTENT).map((b) => b.id)
+  // Rechnungen ohne Korb (sehr alter Bestand) bleiben unbeschränkt sichtbar —
+  // dieselbe Ausnahme wie in lib/basketRights.ts requireInvoiceContentAccess.
+  const contentWhere: Prisma.InvoiceWhereInput = { OR: [{ basketId: null }, { basketId: { in: contentBasketIds } }] }
+
+  // Weich gelöschte Rechnungen (Papierkorb) tauchen im Dashboard nicht auf
+  const [total, byStatus, recent, basketCounts] = await Promise.all([
+    prisma.invoice.count({ where: { tenantId, deletedAt: null, ...contentWhere } }),
+    prisma.invoice.groupBy({ by: ['status'], where: { tenantId, deletedAt: null, ...contentWhere }, _count: true }),
+    prisma.invoice.findMany({ where: { tenantId, deletedAt: null, ...contentWhere }, orderBy: { createdAt: 'desc' }, take: 8 }),
     getBasketCounts(tenantId, ctx.userId),
   ])
   const count = (s: InvoiceStatus) => byStatus.find((b) => b.status === s)?._count ?? 0
-  const baskets = sortBaskets(basketsRaw)
 
-  // Ungelesene, an mich adressierte Nachrichten (Stefan 2026-07-08) — dasselbe
+  // Offene (nicht erledigte), an mich adressierte oder "an alle" gerichtete
+  // Nachrichten (Stefan 2026-07-08, erweitert 2026-08-26) — dasselbe
   // 💬-Symbol wie in der Ablagekörbe-Liste, auch hier auf einen Blick sichtbar.
   const unreadNoteRows = ctx.userId
     ? await prisma.invoiceNote.findMany({
-        where: { invoiceId: { in: recent.map((i) => i.id) }, toUserId: ctx.userId, readAt: null },
+        where: {
+          invoiceId: { in: recent.map((i) => i.id) },
+          doneAt: null,
+          OR: [{ toUserId: ctx.userId }, { toUserId: null }],
+        },
         select: { invoiceId: true },
       })
     : []
@@ -101,6 +121,7 @@ export default async function DashboardPage() {
               <th className="dp-th">Lieferant</th>
               <th className="dp-th">Nummer</th>
               <th className="dp-th">Datum</th>
+              <th className="dp-th" title="Zeitpunkt des Eingangs im System (nicht das Rechnungsdatum)">Eingang</th>
               <th className="dp-th">Brutto</th>
               <th className="dp-th">Status</th>
             </tr>
@@ -118,12 +139,28 @@ export default async function DashboardPage() {
                 <td className="dp-td text-xs">
                   {i.invoiceDate ? format(i.invoiceDate, 'dd.MM.yyyy', { locale: de }) : '—'}
                 </td>
+                <td className="dp-td text-xs text-gray-500" title="Zeitpunkt des Eingangs im System">
+                  {format(i.createdAt, 'dd.MM.yyyy HH:mm', { locale: de })}
+                </td>
                 <td className="dp-td">{formatAmount(i.amountGross ? Number(i.amountGross) : null, i.currency)}</td>
-                <td className="dp-td text-xs">{STATUS_LABELS[i.status]}</td>
+                <td className="dp-td">
+                  {/* Stefan 2026-08-26 ("Status fehlt"): war nur reiner Text,
+                      fiel dadurch neben den Beträgen kaum auf — jetzt dieselbe
+                      farbige Pille wie in der Rechnungsliste (InvoiceRows.tsx). */}
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                    i.status === 'REJECTED'
+                      ? 'bg-red-50 text-[var(--danger)]'
+                      : i.status === 'NEW'
+                        ? 'bg-[var(--warn-bg)] text-[var(--warn-strong)]'
+                        : 'bg-[var(--accent-bg)] text-[var(--accent)]'
+                  }`}>
+                    {STATUS_LABELS[i.status]}
+                  </span>
+                </td>
               </tr>
             ))}
             {recent.length === 0 && (
-              <tr><td className="dp-td py-8 text-center text-gray-400" colSpan={5}>
+              <tr><td className="dp-td py-8 text-center text-gray-400" colSpan={6}>
                 Noch keine Rechnungen — starten Sie oben mit „Rechnung hinzufügen“ oder „Papierrechnung scannen“ (RE02).
               </td></tr>
             )}

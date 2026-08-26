@@ -1,6 +1,7 @@
 // Geschützter App-Bereich: AppShell (DP-Standard §4.5) + Sitzungsprüfung
 import { getServerSession } from 'next-auth'
 import { redirect } from 'next/navigation'
+import { AiBackupNotice } from '@/components/shell/AiBackupNotice'
 import { AppSidebar } from '@/components/shell/AppSidebar'
 import { AppTopbar } from '@/components/shell/AppTopbar'
 import { CommandPalette } from '@/components/shell/CommandPalette'
@@ -36,6 +37,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       </div>
       <CommandPalette />
       <FeedbackButton enabled={feedbackEnabled} />
+      <AiBackupNotice />
     </div>
   )
 }

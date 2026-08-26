@@ -28,6 +28,35 @@
   background: linear-gradient(135deg, var(--bg-from), var(--bg-via), var(--bg-to));
 }
 
+/* Lupen-Herzschlag (Stefan 2026-08-25, kräftiger nach Rückmeldung): deutlich
+   sichtbarer Scan-Ausschlag beim Poll auf den Eingangskorb — großer Schwung
+   rein, spürbares Wackeln, Leuchten statt eines dezenten Ein-/Ausblendens. */
+@keyframes lupe-scan {
+  0% { opacity: 0; transform: scale(0.4) rotate(-28deg); filter: drop-shadow(0 0 0 rgba(255,255,255,0)); }
+  20% { opacity: 1; transform: scale(1.65) rotate(20deg); filter: drop-shadow(0 0 6px rgba(255,255,255,0.9)); }
+  40% { transform: scale(0.78) rotate(-16deg); filter: drop-shadow(0 0 3px rgba(255,255,255,0.6)); }
+  58% { transform: scale(1.35) rotate(12deg); filter: drop-shadow(0 0 6px rgba(255,255,255,0.9)); }
+  75% { transform: scale(0.92) rotate(-6deg); filter: drop-shadow(0 0 2px rgba(255,255,255,0.4)); }
+  100% { opacity: 1; transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 0 rgba(255,255,255,0)); }
+}
+.animate-lupe-scan {
+  animation: lupe-scan 900ms ease-in-out;
+}
+
+/* Belohnungs-Haken nach "Prüfen & freigeben" (Stefan 2026-08-26): kurzes
+   Einspringen mit leichtem Überschwingen, kurz halten, dann ausblenden —
+   Dauer an das 1800ms-Timeout in InvoiceEditForm.tsx (celebrate()) angepasst. */
+@keyframes celebrate-check {
+  0% { opacity: 0; transform: scale(0.4); }
+  15% { opacity: 1; transform: scale(1.25); }
+  25% { transform: scale(1); }
+  75% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.1); }
+}
+.animate-celebrate-check {
+  animation: celebrate-check 1800ms ease-out;
+}
+
 /* Standard-Karte */
 .dp-card {
   background: white;

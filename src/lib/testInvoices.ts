@@ -13,7 +13,10 @@
 // mit so vielen (55) Positionen, dass sie garantiert auf eine zweite Seite
 // überläuft (buildPdf paginiert automatisch), und eine Mail mit ZWEI
 // eigenständigen Rechnungen desselben Lieferanten als separate Anhänge
-// (Sammel-Mail-Fall). Betreff aller Testrechnungen beginnt mit "[TEST!]",
+// (Sammel-Mail-Fall). Stefan 2026-08-25: außerdem eine Lastschrift-Demo
+// (normale PDF-Rechnung mit Lastschrift-Hinweis statt Zahlungsbedingung im
+// Text, testet die "wird abgebucht"-Erkennung, siehe directDebitByVendor in
+// aiExtract.ts). Betreff aller Testrechnungen beginnt mit "[TEST!]",
 // damit sie in einem echten Postfach klar erkennbar bleiben.
 // Landen als echte E-Mail im Ziel-Postfach, zum Testen von Mail-Eingang +
 // KI-Erkennung + der E-Rechnungs-Visualisierung. Genutzt von
@@ -26,15 +29,21 @@ import { sendSystemMail } from '@/lib/mail'
 
 const BUYER = 'Demo GmbH'
 
+// Dritte Spalte = Anschrift (Stefan 2026-08-26): fehlte bisher komplett auf
+// den reinen PDF-Testrechnungen (buildPdf) — dadurch schlug die §14-UStG-
+// Pflichtangaben-Prüfung bei JEDER Testrechnung mit "Anschrift fehlt" an, was
+// keine echte Lücke testete, sondern nur eine Lücke im Testdaten-Generator
+// war. XRechnung/ZUGFeRD hatten schon immer eine (feste, generische) Adresse
+// im XML, siehe buildCiiXml/buildMixedTaxRatesXml.
 const VENDORS = [
-  ['Rheinwerk Bürobedarf GmbH', 'DE123456789'],
-  ['Nordlicht IT-Systeme GmbH', 'DE234567891'],
-  ['Baumann Elektrotechnik e.K.', 'DE345678912'],
-  ['Vogel Logistik & Spedition GmbH', 'DE456789123'],
-  ['Schuster Reinigungsservice GmbH', 'DE567891234'],
-  ['Meyer Druck & Medien GmbH', 'DE678912345'],
-  ['Fischer Gartenbau GmbH', 'DE789123456'],
-  ['Krüger Sicherheitstechnik GmbH', 'DE891234567'],
+  ['Rheinwerk Bürobedarf GmbH', 'DE123456789', 'Industriestraße 14, 50823 Köln'],
+  ['Nordlicht IT-Systeme GmbH', 'DE234567891', 'Hafenallee 7, 20457 Hamburg'],
+  ['Baumann Elektrotechnik e.K.', 'DE345678912', 'Gewerbering 22, 70565 Stuttgart'],
+  ['Vogel Logistik & Spedition GmbH', 'DE456789123', 'Speditionsweg 3, 44139 Dortmund'],
+  ['Schuster Reinigungsservice GmbH', 'DE567891234', 'Reinigungsstraße 9, 04109 Leipzig'],
+  ['Meyer Druck & Medien GmbH', 'DE678912345', 'Druckereiweg 5, 90411 Nürnberg'],
+  ['Fischer Gartenbau GmbH', 'DE789123456', 'Gartenstraße 18, 79098 Freiburg im Breisgau'],
+  ['Krüger Sicherheitstechnik GmbH', 'DE891234567', 'Sicherheitsallee 2, 45127 Essen'],
 ] as const
 
 const ITEM_SETS: { name: string; qty: number; unit: number; discount?: number }[][] = [
@@ -190,6 +199,12 @@ function isoDate(d: Date) {
 function yyyymmdd(d: Date) {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`
 }
+// Stefan 2026-08-26: VENDORS enthält u. a. "Vogel Logistik & Spedition GmbH" —
+// ohne Escaping macht das rohe "&" das erzeugte XML nicht-wohlgeformt, der
+// KoSIT-Validator (und jeder andere XML-Parser) lehnt es dann komplett ab.
+function esc(s: string) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
 
 type Line = { name: string; qty: number; unit: number; discount: number; total: number }
 type Invoice = {
@@ -199,6 +214,7 @@ type Invoice = {
   deliveryDate: Date
   vendor: string
   vat: string
+  address: string
   lines: Line[]
   net: number
   tax: number
@@ -239,7 +255,7 @@ function buildInvoiceWithLines(
   vendorIndex: number,
   items: { name: string; qty: number; unit: number; discount?: number }[],
 ): Invoice {
-  const [vendor, vat] = VENDORS[vendorIndex % VENDORS.length]
+  const [vendor, vat, address] = VENDORS[vendorIndex % VENDORS.length]
   const today = new Date()
   const stamp = Date.now().toString().slice(-6)
   const issue = new Date(today)
@@ -265,6 +281,7 @@ function buildInvoiceWithLines(
     deliveryDate: delivery,
     vendor,
     vat,
+    address,
     lines,
     net,
     tax,
@@ -281,14 +298,32 @@ function buildInvoices(count: number): Invoice[] {
   return out
 }
 
+// Stefan 2026-08-26 ("keine Rechnung kommt durch den Validator"): die
+// bisherige CII-/UBL-Erzeugung war ein bewusst vereinfachtes Mock nur für
+// den EIGENEN, nachsichtigen Parser (lib/erechnung.ts) — der echte KoSIT-
+// Validator erkennt sowas gar nicht erst als XRechnung (fehlender
+// GuidelineSpecifiedDocumentContextParameter mit der CIUS-URN), unabhängig
+// von allen anderen Pflichtangaben. Struktur jetzt an einem ECHTEN, vom
+// KoSIT-Validator akzeptierten Referenzbeispiel ausgerichtet (KoSIT-
+// Test-Suite, 01.01a-INVOICE_uncefact.xml) — inkl. Kontextparameter,
+// TypeCode, Rechnungsempfänger-Anschrift, Zahlungsmittel (IBAN) und
+// DuePayableAmount, die vorher komplett fehlten. Der Einzelpreis je Position
+// wird bewusst als total/qty berechnet (nicht Bruttopreis minus separater
+// Rabatt-Position) — so bleibt die Zeilensumme IMMER exakt konsistent mit
+// Menge×Preis, ohne eigene BR-CO-*-Rundungsprüfungen zu riskieren; der
+// Rabatt bleibt rein ein Anzeige-Detail der eigenen App (PDF/Positionszeilen).
 function buildCiiXml(inv: Invoice): string {
   const lineItems = inv.lines
     .map(
-      (l) => `    <ram:IncludedSupplyChainTradeLineItem>
-      <ram:SpecifiedTradeProduct><ram:Name>${l.name}</ram:Name></ram:SpecifiedTradeProduct>
-      <ram:SpecifiedLineTradeDelivery><ram:BilledQuantity>${l.qty}</ram:BilledQuantity></ram:SpecifiedLineTradeDelivery>
+      (l, i) => `    <ram:IncludedSupplyChainTradeLineItem>
+      <ram:AssociatedDocumentLineDocument><ram:LineID>${i + 1}</ram:LineID></ram:AssociatedDocumentLineDocument>
+      <ram:SpecifiedTradeProduct><ram:Name>${esc(l.name)}</ram:Name></ram:SpecifiedTradeProduct>
+      <ram:SpecifiedLineTradeAgreement>
+        <ram:NetPriceProductTradePrice><ram:ChargeAmount>${(l.total / l.qty).toFixed(2)}</ram:ChargeAmount></ram:NetPriceProductTradePrice>
+      </ram:SpecifiedLineTradeAgreement>
+      <ram:SpecifiedLineTradeDelivery><ram:BilledQuantity unitCode="C62">${l.qty}</ram:BilledQuantity></ram:SpecifiedLineTradeDelivery>
       <ram:SpecifiedLineTradeSettlement>
-        ${l.discount > 0 ? `<ram:SpecifiedTradeAllowanceCharge><ram:ChargeIndicator><udt:Indicator>false</udt:Indicator></ram:ChargeIndicator><ram:ActualAmount>${l.discount.toFixed(2)}</ram:ActualAmount></ram:SpecifiedTradeAllowanceCharge>` : ''}
+        <ram:ApplicableTradeTax><ram:TypeCode>VAT</ram:TypeCode><ram:CategoryCode>S</ram:CategoryCode><ram:RateApplicablePercent>19</ram:RateApplicablePercent></ram:ApplicableTradeTax>
         <ram:SpecifiedTradeSettlementLineMonetarySummation><ram:LineTotalAmount>${l.total.toFixed(2)}</ram:LineTotalAmount></ram:SpecifiedTradeSettlementLineMonetarySummation>
       </ram:SpecifiedLineTradeSettlement>
     </ram:IncludedSupplyChainTradeLineItem>`,
@@ -296,34 +331,64 @@ function buildCiiXml(inv: Invoice): string {
     .join('\n')
   return `<?xml version="1.0" encoding="UTF-8"?>
 <rsm:CrossIndustryInvoice xmlns:rsm="urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100" xmlns:ram="urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100" xmlns:udt="urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100">
+  <rsm:ExchangedDocumentContext>
+    <ram:BusinessProcessSpecifiedDocumentContextParameter><ram:ID>urn:fdc:peppol.eu:2017:poacc:billing:01:1.0</ram:ID></ram:BusinessProcessSpecifiedDocumentContextParameter>
+    <ram:GuidelineSpecifiedDocumentContextParameter><ram:ID>urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0</ram:ID></ram:GuidelineSpecifiedDocumentContextParameter>
+  </rsm:ExchangedDocumentContext>
   <rsm:ExchangedDocument>
     <ram:ID>${inv.number}</ram:ID>
+    <ram:TypeCode>380</ram:TypeCode>
     <ram:IssueDateTime><udt:DateTimeString format="102">${yyyymmdd(inv.issueDate)}</udt:DateTimeString></ram:IssueDateTime>
   </rsm:ExchangedDocument>
   <rsm:SupplyChainTradeTransaction>
+${lineItems}
     <ram:ApplicableHeaderTradeAgreement>
+      <ram:BuyerReference>${inv.number}</ram:BuyerReference>
       <ram:SellerTradeParty>
-        <ram:Name>${inv.vendor}</ram:Name>
-        <ram:SpecifiedTaxRegistration><ram:ID>${inv.vat}</ram:ID></ram:SpecifiedTaxRegistration>
+        <ram:Name>${esc(inv.vendor)}</ram:Name>
+        <ram:DefinedTradeContact>
+          <ram:PersonName>${esc(inv.vendor)}</ram:PersonName>
+          <ram:TelephoneUniversalCommunication><ram:CompleteNumber>+49 30 1234567</ram:CompleteNumber></ram:TelephoneUniversalCommunication>
+          <ram:EmailURIUniversalCommunication><ram:URIID>rechnung@${inv.vendor.toLowerCase().replace(/\W+/g, '')}.test</ram:URIID></ram:EmailURIUniversalCommunication>
+        </ram:DefinedTradeContact>
+        <ram:PostalTradeAddress><ram:PostcodeCode>00000</ram:PostcodeCode><ram:LineOne>${esc(inv.address)}</ram:LineOne><ram:CityName>–</ram:CityName><ram:CountryID>DE</ram:CountryID></ram:PostalTradeAddress>
+        <ram:URIUniversalCommunication><ram:URIID schemeID="EM">rechnung@${inv.vendor.toLowerCase().replace(/\W+/g, '')}.test</ram:URIID></ram:URIUniversalCommunication>
+        <ram:SpecifiedTaxRegistration><ram:ID schemeID="VA">${inv.vat}</ram:ID></ram:SpecifiedTaxRegistration>
       </ram:SellerTradeParty>
-      <ram:BuyerTradeParty><ram:Name>${BUYER}</ram:Name></ram:BuyerTradeParty>
+      <ram:BuyerTradeParty>
+        <ram:Name>${BUYER}</ram:Name>
+        <ram:PostalTradeAddress><ram:PostcodeCode>54321</ram:PostcodeCode><ram:LineOne>Empfängerweg 3</ram:LineOne><ram:CityName>Käuferstadt</ram:CityName><ram:CountryID>DE</ram:CountryID></ram:PostalTradeAddress>
+        <ram:URIUniversalCommunication><ram:URIID schemeID="EM">buchhaltung@demogmbh.test</ram:URIID></ram:URIUniversalCommunication>
+      </ram:BuyerTradeParty>
     </ram:ApplicableHeaderTradeAgreement>
     <ram:ApplicableHeaderTradeDelivery>
       <ram:ActualDeliverySupplyChainEvent><ram:OccurrenceDateTime><udt:DateTimeString format="102">${yyyymmdd(inv.deliveryDate)}</udt:DateTimeString></ram:OccurrenceDateTime></ram:ActualDeliverySupplyChainEvent>
     </ram:ApplicableHeaderTradeDelivery>
     <ram:ApplicableHeaderTradeSettlement>
       <ram:InvoiceCurrencyCode>EUR</ram:InvoiceCurrencyCode>
+      <ram:SpecifiedTradeSettlementPaymentMeans>
+        <ram:TypeCode>58</ram:TypeCode>
+        <ram:PayeePartyCreditorFinancialAccount><ram:IBANID>DE79000000001234567890</ram:IBANID></ram:PayeePartyCreditorFinancialAccount>
+      </ram:SpecifiedTradeSettlementPaymentMeans>
+      <ram:ApplicableTradeTax>
+        <ram:CalculatedAmount>${inv.tax.toFixed(2)}</ram:CalculatedAmount>
+        <ram:TypeCode>VAT</ram:TypeCode>
+        <ram:BasisAmount>${inv.net.toFixed(2)}</ram:BasisAmount>
+        <ram:CategoryCode>S</ram:CategoryCode>
+        <ram:RateApplicablePercent>19</ram:RateApplicablePercent>
+      </ram:ApplicableTradeTax>
       <ram:SpecifiedTradePaymentTerms>
-        <ram:Description>${inv.paymentTerms}</ram:Description>
+        <ram:Description>${esc(inv.paymentTerms)}</ram:Description>
         <ram:DueDateDateTime><udt:DateTimeString format="102">${yyyymmdd(inv.dueDate)}</udt:DateTimeString></ram:DueDateDateTime>
       </ram:SpecifiedTradePaymentTerms>
       <ram:SpecifiedTradeSettlementHeaderMonetarySummation>
+        <ram:LineTotalAmount>${inv.net.toFixed(2)}</ram:LineTotalAmount>
         <ram:TaxBasisTotalAmount>${inv.net.toFixed(2)}</ram:TaxBasisTotalAmount>
-        <ram:TaxTotalAmount>${inv.tax.toFixed(2)}</ram:TaxTotalAmount>
+        <ram:TaxTotalAmount currencyID="EUR">${inv.tax.toFixed(2)}</ram:TaxTotalAmount>
         <ram:GrandTotalAmount>${inv.gross.toFixed(2)}</ram:GrandTotalAmount>
+        <ram:DuePayableAmount>${inv.gross.toFixed(2)}</ram:DuePayableAmount>
       </ram:SpecifiedTradeSettlementHeaderMonetarySummation>
     </ram:ApplicableHeaderTradeSettlement>
-${lineItems}
   </rsm:SupplyChainTradeTransaction>
 </rsm:CrossIndustryInvoice>`
 }
@@ -331,36 +396,63 @@ ${lineItems}
 function buildUblXml(inv: Invoice): string {
   const lineItems = inv.lines
     .map(
-      (l) => `  <cac:InvoiceLine>
-    <cbc:InvoicedQuantity>${l.qty}</cbc:InvoicedQuantity>
-    <cbc:LineExtensionAmount>${l.total.toFixed(2)}</cbc:LineExtensionAmount>
-    ${l.discount > 0 ? `<cac:AllowanceCharge><cbc:ChargeIndicator>false</cbc:ChargeIndicator><cbc:Amount>${l.discount.toFixed(2)}</cbc:Amount></cac:AllowanceCharge>` : ''}
-    <cac:Item><cbc:Name>${l.name}</cbc:Name></cac:Item>
+      (l, i) => `  <cac:InvoiceLine>
+    <cbc:ID>${i + 1}</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="C62">${l.qty}</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="EUR">${l.total.toFixed(2)}</cbc:LineExtensionAmount>
+    <cac:Item>
+      <cbc:Name>${esc(l.name)}</cbc:Name>
+      <cac:ClassifiedTaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>19</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:ClassifiedTaxCategory>
+    </cac:Item>
+    <cac:Price><cbc:PriceAmount currencyID="EUR">${(l.total / l.qty).toFixed(2)}</cbc:PriceAmount></cac:Price>
   </cac:InvoiceLine>`,
     )
     .join('\n')
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+  <cbc:CustomizationID>urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0</cbc:CustomizationID>
+  <cbc:ProfileID>urn:fdc:peppol.eu:2017:poacc:billing:01:1.0</cbc:ProfileID>
   <cbc:ID>${inv.number}</cbc:ID>
   <cbc:IssueDate>${isoDate(inv.issueDate)}</cbc:IssueDate>
   <cbc:DueDate>${isoDate(inv.dueDate)}</cbc:DueDate>
+  <cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>
   <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
-  <cac:Delivery><cbc:ActualDeliveryDate>${isoDate(inv.deliveryDate)}</cbc:ActualDeliveryDate></cac:Delivery>
-  <cac:PaymentTerms><cbc:Note>${inv.paymentTerms}</cbc:Note></cac:PaymentTerms>
+  <cbc:BuyerReference>${inv.number}</cbc:BuyerReference>
   <cac:AccountingSupplierParty>
     <cac:Party>
-      <cac:PartyLegalEntity><cbc:RegistrationName>${inv.vendor}</cbc:RegistrationName></cac:PartyLegalEntity>
-      <cac:PartyTaxScheme><cbc:CompanyID>${inv.vat}</cbc:CompanyID></cac:PartyTaxScheme>
+      <cbc:EndpointID schemeID="EM">rechnung@${inv.vendor.toLowerCase().replace(/\W+/g, '')}.test</cbc:EndpointID>
+      <cac:PostalAddress><cbc:StreetName>${esc(inv.address)}</cbc:StreetName><cbc:CityName>–</cbc:CityName><cbc:PostalZone>00000</cbc:PostalZone><cac:Country><cbc:IdentificationCode>DE</cbc:IdentificationCode></cac:Country></cac:PostalAddress>
+      <cac:PartyTaxScheme><cbc:CompanyID>${inv.vat}</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme>
+      <cac:PartyLegalEntity><cbc:RegistrationName>${esc(inv.vendor)}</cbc:RegistrationName></cac:PartyLegalEntity>
+      <cac:Contact><cbc:Name>${esc(inv.vendor)}</cbc:Name><cbc:Telephone>+49 30 1234567</cbc:Telephone><cbc:ElectronicMail>rechnung@${inv.vendor.toLowerCase().replace(/\W+/g, '')}.test</cbc:ElectronicMail></cac:Contact>
     </cac:Party>
   </cac:AccountingSupplierParty>
   <cac:AccountingCustomerParty>
-    <cac:Party><cac:PartyLegalEntity><cbc:RegistrationName>${BUYER}</cbc:RegistrationName></cac:PartyLegalEntity></cac:Party>
+    <cac:Party>
+      <cbc:EndpointID schemeID="EM">buchhaltung@demogmbh.test</cbc:EndpointID>
+      <cac:PostalAddress><cbc:StreetName>Empfängerweg 3</cbc:StreetName><cbc:CityName>Käuferstadt</cbc:CityName><cbc:PostalZone>54321</cbc:PostalZone><cac:Country><cbc:IdentificationCode>DE</cbc:IdentificationCode></cac:Country></cac:PostalAddress>
+      <cac:PartyLegalEntity><cbc:RegistrationName>${BUYER}</cbc:RegistrationName></cac:PartyLegalEntity>
+    </cac:Party>
   </cac:AccountingCustomerParty>
-  <cac:TaxTotal><cbc:TaxAmount>${inv.tax.toFixed(2)}</cbc:TaxAmount></cac:TaxTotal>
+  <cac:Delivery><cbc:ActualDeliveryDate>${isoDate(inv.deliveryDate)}</cbc:ActualDeliveryDate></cac:Delivery>
+  <cac:PaymentMeans>
+    <cbc:PaymentMeansCode>58</cbc:PaymentMeansCode>
+    <cac:PayeeFinancialAccount><cbc:ID>DE79000000001234567890</cbc:ID></cac:PayeeFinancialAccount>
+  </cac:PaymentMeans>
+  <cac:PaymentTerms><cbc:Note>${esc(inv.paymentTerms)}</cbc:Note></cac:PaymentTerms>
+  <cac:TaxTotal>
+    <cbc:TaxAmount currencyID="EUR">${inv.tax.toFixed(2)}</cbc:TaxAmount>
+    <cac:TaxSubtotal>
+      <cbc:TaxableAmount currencyID="EUR">${inv.net.toFixed(2)}</cbc:TaxableAmount>
+      <cbc:TaxAmount currencyID="EUR">${inv.tax.toFixed(2)}</cbc:TaxAmount>
+      <cac:TaxCategory><cbc:ID>S</cbc:ID><cbc:Percent>19</cbc:Percent><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:TaxCategory>
+    </cac:TaxSubtotal>
+  </cac:TaxTotal>
   <cac:LegalMonetaryTotal>
-    <cbc:TaxExclusiveAmount>${inv.net.toFixed(2)}</cbc:TaxExclusiveAmount>
-    <cbc:TaxInclusiveAmount>${inv.gross.toFixed(2)}</cbc:TaxInclusiveAmount>
-    <cbc:PayableAmount>${inv.gross.toFixed(2)}</cbc:PayableAmount>
+    <cbc:LineExtensionAmount currencyID="EUR">${inv.net.toFixed(2)}</cbc:LineExtensionAmount>
+    <cbc:TaxExclusiveAmount currencyID="EUR">${inv.net.toFixed(2)}</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount currencyID="EUR">${inv.gross.toFixed(2)}</cbc:TaxInclusiveAmount>
+    <cbc:PayableAmount currencyID="EUR">${inv.gross.toFixed(2)}</cbc:PayableAmount>
   </cac:LegalMonetaryTotal>
 ${lineItems}
 </Invoice>`
@@ -379,6 +471,12 @@ async function buildPdf(inv: Invoice): Promise<Uint8Array> {
   const doc = await PDFDocument.create()
   const font = await doc.embedFont(StandardFonts.Helvetica)
   const bold = await doc.embedFont(StandardFonts.HelveticaBold)
+  // Positionstabelle braucht eine echte Monospace-Schrift (Stefan 2026-08-26):
+  // mit Helvetica hat jedes Zeichen eine andere Breite, da fluchten Spalten
+  // per Leerzeichen-Auffüllung NIE exakt — nur bei zufällig ähnlicher
+  // Ziffernbreite sah es vorher halbwegs passend aus.
+  const monoBold = await doc.embedFont(StandardFonts.CourierBold)
+  const mono = await doc.embedFont(StandardFonts.Courier)
   let page = doc.addPage([595, PDF_PAGE_HEIGHT])
   let y = PDF_START_Y
   let pageNum = 1
@@ -395,7 +493,7 @@ async function buildPdf(inv: Invoice): Promise<Uint8Array> {
     page.drawText(`${inv.vendor} — Rechnung ${inv.number} (Fortsetzung)`, { x: 50, y, size: 10, font: bold, color: rgb(0.3, 0.3, 0.3) })
     y -= 20
     if (inItemsSection) {
-      page.drawText(ITEMS_HEADER, { x: 50, y, size: 9, font: bold, color: rgb(0.1, 0.1, 0.1) })
+      page.drawText(ITEMS_HEADER, { x: 50, y, size: 9, font: monoBold, color: rgb(0.1, 0.1, 0.1) })
       y -= 13
     }
   }
@@ -410,6 +508,7 @@ async function buildPdf(inv: Invoice): Promise<Uint8Array> {
 
   drawPageNumber()
   line(inv.vendor, bold, 15, 24)
+  line(inv.address)
   line(`USt-ID: ${inv.vat}`)
   y -= 8
   line('RECHNUNG', bold, 13, 22)
@@ -420,10 +519,16 @@ async function buildPdf(inv: Invoice): Promise<Uint8Array> {
   y -= 8
   line(`Rechnungsempfänger: ${BUYER}`)
   y -= 10
-  line(ITEMS_HEADER, bold, 9)
+  line(ITEMS_HEADER, monoBold, 9)
   inItemsSection = true
   for (const l of inv.lines) {
-    line(`      ${l.name.padEnd(34)} ${String(l.qty).padStart(5)}  ${l.discount > 0 ? `-${l.discount.toFixed(2)}` : '—'.padStart(6)}  ${l.total.toFixed(2)} EUR`, font, 9, 13)
+    // Stefan 2026-08-26: die Rabatt-Spalte war nur im "kein Rabatt"-Zweig auf
+    // feste Breite gepolstert ('—'.padStart(6)) — im "hat Rabatt"-Zweig
+    // (`-${l.discount.toFixed(2)}`) fehlte das padStart() komplett, dadurch
+    // verschob sich die nachfolgende Betrag-Spalte je nach Ziffernzahl des
+    // Rabatts zeilenweise unterschiedlich weit nach rechts.
+    const discountText = (l.discount > 0 ? `-${l.discount.toFixed(2)}` : '—').padStart(7)
+    line(`      ${l.name.padEnd(34)} ${String(l.qty).padStart(5)}  ${discountText}  ${l.total.toFixed(2).padStart(8)} EUR`, mono, 9, 13)
   }
   inItemsSection = false
   y -= 6
@@ -446,6 +551,218 @@ async function buildZugferdPdf(inv: Invoice): Promise<Uint8Array> {
   return doc.save()
 }
 
+// Drittland-Rechnung ohne MwSt. (Stefan 2026-08-25) — Ausfuhrlieferung an
+// einen Nicht-EU-Lieferanten (hier: einer der FOREIGN_VENDORS, alle
+// außerhalb der EU-Umsatzsteuerzone), Steuersatz 0 % MIT dem dafür
+// zwingenden Befreiungshinweis (§14 Abs. 4 Nr. 8 UStG) — testet sowohl die
+// taxRates[].exemptionReason-Erkennung als auch USt-IdNr./Steuernummer
+// getrennt (siehe lib/erechnung.ts ciiTaxIds).
+type ThirdCountryInvoice = { number: string; vendor: string; country: string; currency: string; from: string; net: number }
+
+function buildThirdCountryInvoice(i: number): ThirdCountryInvoice {
+  const v = FOREIGN_VENDORS[i % FOREIGN_VENDORS.length]
+  const stamp = Date.now().toString().slice(-6)
+  return {
+    number: `INV-DL-${stamp}-${pad(i + 1, 3)}`,
+    vendor: v.name,
+    country: v.country,
+    currency: v.currency,
+    from: v.from,
+    net: Math.round((400 + (i % 5) * 137.5) * 100) / 100,
+  }
+}
+
+function buildThirdCountryNoVatXml(inv: ThirdCountryInvoice): string {
+  const today = new Date()
+  const due = new Date(today)
+  due.setDate(due.getDate() + 30)
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rsm:CrossIndustryInvoice xmlns:rsm="urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100" xmlns:ram="urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100" xmlns:udt="urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100">
+  <rsm:ExchangedDocumentContext>
+    <ram:BusinessProcessSpecifiedDocumentContextParameter><ram:ID>urn:fdc:peppol.eu:2017:poacc:billing:01:1.0</ram:ID></ram:BusinessProcessSpecifiedDocumentContextParameter>
+    <ram:GuidelineSpecifiedDocumentContextParameter><ram:ID>urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0</ram:ID></ram:GuidelineSpecifiedDocumentContextParameter>
+  </rsm:ExchangedDocumentContext>
+  <rsm:ExchangedDocument>
+    <ram:ID>${inv.number}</ram:ID>
+    <ram:TypeCode>380</ram:TypeCode>
+    <ram:IssueDateTime><udt:DateTimeString format="102">${yyyymmdd(today)}</udt:DateTimeString></ram:IssueDateTime>
+  </rsm:ExchangedDocument>
+  <rsm:SupplyChainTradeTransaction>
+    <ram:IncludedSupplyChainTradeLineItem>
+      <ram:AssociatedDocumentLineDocument><ram:LineID>1</ram:LineID></ram:AssociatedDocumentLineDocument>
+      <ram:SpecifiedTradeProduct><ram:Name>Export-Lieferung (Drittland)</ram:Name></ram:SpecifiedTradeProduct>
+      <ram:SpecifiedLineTradeAgreement>
+        <ram:NetPriceProductTradePrice><ram:ChargeAmount>${inv.net.toFixed(2)}</ram:ChargeAmount></ram:NetPriceProductTradePrice>
+      </ram:SpecifiedLineTradeAgreement>
+      <ram:SpecifiedLineTradeDelivery><ram:BilledQuantity unitCode="C62">1</ram:BilledQuantity></ram:SpecifiedLineTradeDelivery>
+      <ram:SpecifiedLineTradeSettlement>
+        <ram:ApplicableTradeTax><ram:TypeCode>VAT</ram:TypeCode><ram:CategoryCode>G</ram:CategoryCode><ram:RateApplicablePercent>0</ram:RateApplicablePercent></ram:ApplicableTradeTax>
+        <ram:SpecifiedTradeSettlementLineMonetarySummation><ram:LineTotalAmount>${inv.net.toFixed(2)}</ram:LineTotalAmount></ram:SpecifiedTradeSettlementLineMonetarySummation>
+      </ram:SpecifiedLineTradeSettlement>
+    </ram:IncludedSupplyChainTradeLineItem>
+    <ram:ApplicableHeaderTradeAgreement>
+      <ram:BuyerReference>${inv.number}</ram:BuyerReference>
+      <ram:SellerTradeParty>
+        <ram:Name>${inv.vendor}</ram:Name>
+        <ram:DefinedTradeContact>
+          <ram:PersonName>${inv.vendor}</ram:PersonName>
+          <ram:TelephoneUniversalCommunication><ram:CompleteNumber>+1 555 0100</ram:CompleteNumber></ram:TelephoneUniversalCommunication>
+          <ram:EmailURIUniversalCommunication><ram:URIID>billing@${inv.vendor.toLowerCase().replace(/\W+/g, '')}.test</ram:URIID></ram:EmailURIUniversalCommunication>
+        </ram:DefinedTradeContact>
+        <ram:PostalTradeAddress><ram:PostcodeCode>00000</ram:PostcodeCode><ram:LineOne>Export Avenue 1</ram:LineOne><ram:CityName>Overseas City</ram:CityName><ram:CountryID>${inv.country === 'United States' ? 'US' : inv.country === 'United Kingdom' ? 'GB' : inv.country === 'Norway' ? 'NO' : 'CH'}</ram:CountryID></ram:PostalTradeAddress>
+        <ram:URIUniversalCommunication><ram:URIID schemeID="EM">billing@${inv.vendor.toLowerCase().replace(/\W+/g, '')}.test</ram:URIID></ram:URIUniversalCommunication>
+        <ram:SpecifiedTaxRegistration><ram:ID schemeID="FC">${inv.vendor.replace(/\W+/g, '').slice(0, 12).toUpperCase()}-TAX</ram:ID></ram:SpecifiedTaxRegistration>
+        <ram:SpecifiedTaxRegistration><ram:ID schemeID="VA">${inv.vendor.replace(/\W+/g, '').slice(0, 10).toUpperCase()}-VAT</ram:ID></ram:SpecifiedTaxRegistration>
+      </ram:SellerTradeParty>
+      <ram:BuyerTradeParty>
+        <ram:Name>${BUYER}</ram:Name>
+        <ram:PostalTradeAddress><ram:PostcodeCode>54321</ram:PostcodeCode><ram:LineOne>Empfängerweg 3</ram:LineOne><ram:CityName>Käuferstadt</ram:CityName><ram:CountryID>DE</ram:CountryID></ram:PostalTradeAddress>
+        <ram:URIUniversalCommunication><ram:URIID schemeID="EM">buchhaltung@demogmbh.test</ram:URIID></ram:URIUniversalCommunication>
+      </ram:BuyerTradeParty>
+    </ram:ApplicableHeaderTradeAgreement>
+    <ram:ApplicableHeaderTradeDelivery>
+      <ram:ActualDeliverySupplyChainEvent><ram:OccurrenceDateTime><udt:DateTimeString format="102">${yyyymmdd(today)}</udt:DateTimeString></ram:OccurrenceDateTime></ram:ActualDeliverySupplyChainEvent>
+    </ram:ApplicableHeaderTradeDelivery>
+    <ram:ApplicableHeaderTradeSettlement>
+      <ram:InvoiceCurrencyCode>${inv.currency}</ram:InvoiceCurrencyCode>
+      <ram:SpecifiedTradeSettlementPaymentMeans>
+        <ram:TypeCode>58</ram:TypeCode>
+        <ram:PayeePartyCreditorFinancialAccount><ram:IBANID>DE79000000001234567890</ram:IBANID></ram:PayeePartyCreditorFinancialAccount>
+      </ram:SpecifiedTradeSettlementPaymentMeans>
+      <ram:ApplicableTradeTax>
+        <ram:CalculatedAmount>0.00</ram:CalculatedAmount>
+        <ram:TypeCode>VAT</ram:TypeCode>
+        <ram:ExemptionReason>Steuerfreie Ausfuhrlieferung in ein Drittland (§ 4 Nr. 1a i. V. m. § 6 UStG)</ram:ExemptionReason>
+        <ram:BasisAmount>${inv.net.toFixed(2)}</ram:BasisAmount>
+        <ram:CategoryCode>G</ram:CategoryCode>
+        <ram:RateApplicablePercent>0</ram:RateApplicablePercent>
+      </ram:ApplicableTradeTax>
+      <ram:SpecifiedTradePaymentTerms>
+        <ram:Description>Zahlbar innerhalb 30 Tagen</ram:Description>
+        <ram:DueDateDateTime><udt:DateTimeString format="102">${yyyymmdd(due)}</udt:DateTimeString></ram:DueDateDateTime>
+      </ram:SpecifiedTradePaymentTerms>
+      <ram:SpecifiedTradeSettlementHeaderMonetarySummation>
+        <ram:LineTotalAmount>${inv.net.toFixed(2)}</ram:LineTotalAmount>
+        <ram:TaxBasisTotalAmount>${inv.net.toFixed(2)}</ram:TaxBasisTotalAmount>
+        <ram:TaxTotalAmount currencyID="${inv.currency}">0.00</ram:TaxTotalAmount>
+        <ram:GrandTotalAmount>${inv.net.toFixed(2)}</ram:GrandTotalAmount>
+        <ram:DuePayableAmount>${inv.net.toFixed(2)}</ram:DuePayableAmount>
+      </ram:SpecifiedTradeSettlementHeaderMonetarySummation>
+    </ram:ApplicableHeaderTradeSettlement>
+  </rsm:SupplyChainTradeTransaction>
+</rsm:CrossIndustryInvoice>`
+}
+
+// Gemischte Steuersätze (Stefan 2026-08-25) — EINE Rechnung mit ZWEI
+// unterschiedlichen Umsatzsteuersätzen (19 % + 7 %), z. B. Warenlieferung
+// (19 %) zusammen mit Druckerzeugnissen/Büchern (7 %) — testet, dass
+// taxRates[] wirklich als Array mit mehreren Einträgen behandelt wird statt
+// nur den ersten/letzten Treffer zu übernehmen.
+function buildMixedTaxRatesXml(i: number): { number: string; xml: string; vendor: string; gross: number } {
+  const [vendor, vat] = VENDORS[i % VENDORS.length]
+  const stamp = Date.now().toString().slice(-6)
+  const number = `RE-MIX-${stamp}-${pad(i + 1, 3)}`
+  const today = new Date()
+  const due = new Date(today)
+  due.setDate(due.getDate() + 14)
+  const net19 = 250
+  const net7 = 120
+  const tax19 = Math.round(net19 * 0.19 * 100) / 100
+  const tax7 = Math.round(net7 * 0.07 * 100) / 100
+  const net = net19 + net7
+  const tax = Math.round((tax19 + tax7) * 100) / 100
+  const gross = Math.round((net + tax) * 100) / 100
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<rsm:CrossIndustryInvoice xmlns:rsm="urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100" xmlns:ram="urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100" xmlns:udt="urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100">
+  <rsm:ExchangedDocumentContext>
+    <ram:BusinessProcessSpecifiedDocumentContextParameter><ram:ID>urn:fdc:peppol.eu:2017:poacc:billing:01:1.0</ram:ID></ram:BusinessProcessSpecifiedDocumentContextParameter>
+    <ram:GuidelineSpecifiedDocumentContextParameter><ram:ID>urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0</ram:ID></ram:GuidelineSpecifiedDocumentContextParameter>
+  </rsm:ExchangedDocumentContext>
+  <rsm:ExchangedDocument>
+    <ram:ID>${number}</ram:ID>
+    <ram:TypeCode>380</ram:TypeCode>
+    <ram:IssueDateTime><udt:DateTimeString format="102">${yyyymmdd(today)}</udt:DateTimeString></ram:IssueDateTime>
+  </rsm:ExchangedDocument>
+  <rsm:SupplyChainTradeTransaction>
+    <ram:IncludedSupplyChainTradeLineItem>
+      <ram:AssociatedDocumentLineDocument><ram:LineID>1</ram:LineID></ram:AssociatedDocumentLineDocument>
+      <ram:SpecifiedTradeProduct><ram:Name>Warenlieferung (19 % USt.)</ram:Name></ram:SpecifiedTradeProduct>
+      <ram:SpecifiedLineTradeAgreement><ram:NetPriceProductTradePrice><ram:ChargeAmount>${net19.toFixed(2)}</ram:ChargeAmount></ram:NetPriceProductTradePrice></ram:SpecifiedLineTradeAgreement>
+      <ram:SpecifiedLineTradeDelivery><ram:BilledQuantity unitCode="C62">1</ram:BilledQuantity></ram:SpecifiedLineTradeDelivery>
+      <ram:SpecifiedLineTradeSettlement>
+        <ram:ApplicableTradeTax><ram:TypeCode>VAT</ram:TypeCode><ram:CategoryCode>S</ram:CategoryCode><ram:RateApplicablePercent>19</ram:RateApplicablePercent></ram:ApplicableTradeTax>
+        <ram:SpecifiedTradeSettlementLineMonetarySummation><ram:LineTotalAmount>${net19.toFixed(2)}</ram:LineTotalAmount></ram:SpecifiedTradeSettlementLineMonetarySummation>
+      </ram:SpecifiedLineTradeSettlement>
+    </ram:IncludedSupplyChainTradeLineItem>
+    <ram:IncludedSupplyChainTradeLineItem>
+      <ram:AssociatedDocumentLineDocument><ram:LineID>2</ram:LineID></ram:AssociatedDocumentLineDocument>
+      <ram:SpecifiedTradeProduct><ram:Name>Drucksachen/Fachliteratur (7 % USt.)</ram:Name></ram:SpecifiedTradeProduct>
+      <ram:SpecifiedLineTradeAgreement><ram:NetPriceProductTradePrice><ram:ChargeAmount>${net7.toFixed(2)}</ram:ChargeAmount></ram:NetPriceProductTradePrice></ram:SpecifiedLineTradeAgreement>
+      <ram:SpecifiedLineTradeDelivery><ram:BilledQuantity unitCode="C62">1</ram:BilledQuantity></ram:SpecifiedLineTradeDelivery>
+      <ram:SpecifiedLineTradeSettlement>
+        <ram:ApplicableTradeTax><ram:TypeCode>VAT</ram:TypeCode><ram:CategoryCode>S</ram:CategoryCode><ram:RateApplicablePercent>7</ram:RateApplicablePercent></ram:ApplicableTradeTax>
+        <ram:SpecifiedTradeSettlementLineMonetarySummation><ram:LineTotalAmount>${net7.toFixed(2)}</ram:LineTotalAmount></ram:SpecifiedTradeSettlementLineMonetarySummation>
+      </ram:SpecifiedLineTradeSettlement>
+    </ram:IncludedSupplyChainTradeLineItem>
+    <ram:ApplicableHeaderTradeAgreement>
+      <ram:BuyerReference>${number}</ram:BuyerReference>
+      <ram:SellerTradeParty>
+        <ram:Name>${esc(vendor)}</ram:Name>
+        <ram:DefinedTradeContact>
+          <ram:PersonName>${esc(vendor)}</ram:PersonName>
+          <ram:TelephoneUniversalCommunication><ram:CompleteNumber>+49 30 1234567</ram:CompleteNumber></ram:TelephoneUniversalCommunication>
+          <ram:EmailURIUniversalCommunication><ram:URIID>rechnung@${vendor.toLowerCase().replace(/\W+/g, '')}.test</ram:URIID></ram:EmailURIUniversalCommunication>
+        </ram:DefinedTradeContact>
+        <ram:PostalTradeAddress><ram:PostcodeCode>12345</ram:PostcodeCode><ram:LineOne>Musterstraße 12</ram:LineOne><ram:CityName>Musterstadt</ram:CityName><ram:CountryID>DE</ram:CountryID></ram:PostalTradeAddress>
+        <ram:URIUniversalCommunication><ram:URIID schemeID="EM">rechnung@${vendor.toLowerCase().replace(/\W+/g, '')}.test</ram:URIID></ram:URIUniversalCommunication>
+        <ram:SpecifiedTaxRegistration><ram:ID schemeID="VA">${vat}</ram:ID></ram:SpecifiedTaxRegistration>
+      </ram:SellerTradeParty>
+      <ram:BuyerTradeParty>
+        <ram:Name>${BUYER}</ram:Name>
+        <ram:PostalTradeAddress><ram:PostcodeCode>54321</ram:PostcodeCode><ram:LineOne>Empfängerweg 3</ram:LineOne><ram:CityName>Käuferstadt</ram:CityName><ram:CountryID>DE</ram:CountryID></ram:PostalTradeAddress>
+        <ram:URIUniversalCommunication><ram:URIID schemeID="EM">buchhaltung@demogmbh.test</ram:URIID></ram:URIUniversalCommunication>
+      </ram:BuyerTradeParty>
+    </ram:ApplicableHeaderTradeAgreement>
+    <ram:ApplicableHeaderTradeDelivery>
+      <ram:ActualDeliverySupplyChainEvent><ram:OccurrenceDateTime><udt:DateTimeString format="102">${yyyymmdd(today)}</udt:DateTimeString></ram:OccurrenceDateTime></ram:ActualDeliverySupplyChainEvent>
+    </ram:ApplicableHeaderTradeDelivery>
+    <ram:ApplicableHeaderTradeSettlement>
+      <ram:InvoiceCurrencyCode>EUR</ram:InvoiceCurrencyCode>
+      <ram:SpecifiedTradeSettlementPaymentMeans>
+        <ram:TypeCode>58</ram:TypeCode>
+        <ram:PayeePartyCreditorFinancialAccount><ram:IBANID>DE79000000001234567890</ram:IBANID></ram:PayeePartyCreditorFinancialAccount>
+      </ram:SpecifiedTradeSettlementPaymentMeans>
+      <ram:ApplicableTradeTax>
+        <ram:CalculatedAmount>${tax19.toFixed(2)}</ram:CalculatedAmount>
+        <ram:TypeCode>VAT</ram:TypeCode>
+        <ram:BasisAmount>${net19.toFixed(2)}</ram:BasisAmount>
+        <ram:CategoryCode>S</ram:CategoryCode>
+        <ram:RateApplicablePercent>19</ram:RateApplicablePercent>
+      </ram:ApplicableTradeTax>
+      <ram:ApplicableTradeTax>
+        <ram:CalculatedAmount>${tax7.toFixed(2)}</ram:CalculatedAmount>
+        <ram:TypeCode>VAT</ram:TypeCode>
+        <ram:BasisAmount>${net7.toFixed(2)}</ram:BasisAmount>
+        <ram:CategoryCode>S</ram:CategoryCode>
+        <ram:RateApplicablePercent>7</ram:RateApplicablePercent>
+      </ram:ApplicableTradeTax>
+      <ram:SpecifiedTradePaymentTerms>
+        <ram:Description>Zahlbar innerhalb 14 Tagen</ram:Description>
+        <ram:DueDateDateTime><udt:DateTimeString format="102">${yyyymmdd(due)}</udt:DateTimeString></ram:DueDateDateTime>
+      </ram:SpecifiedTradePaymentTerms>
+      <ram:SpecifiedTradeSettlementHeaderMonetarySummation>
+        <ram:LineTotalAmount>${net.toFixed(2)}</ram:LineTotalAmount>
+        <ram:TaxBasisTotalAmount>${net.toFixed(2)}</ram:TaxBasisTotalAmount>
+        <ram:TaxTotalAmount currencyID="EUR">${tax.toFixed(2)}</ram:TaxTotalAmount>
+        <ram:GrandTotalAmount>${gross.toFixed(2)}</ram:GrandTotalAmount>
+        <ram:DuePayableAmount>${gross.toFixed(2)}</ram:DuePayableAmount>
+      </ram:SpecifiedTradeSettlementHeaderMonetarySummation>
+    </ram:ApplicableHeaderTradeSettlement>
+  </rsm:SupplyChainTradeTransaction>
+</rsm:CrossIndustryInvoice>`
+  return { number, xml, vendor, gross }
+}
+
 export type SendTestInvoicesResult = { sent: number; failed: number; log: string[] }
 
 type TestInvoiceFile = {
@@ -458,6 +775,7 @@ type TestInvoiceFile = {
   groupLabel:
     | 'PDF' | 'XML' | 'ZUGFeRD' | 'HTML (Ausland)' | 'SPAM (Demo)' | 'Fehlgeleitet (Demo)'
     | 'PDF (viele Positionen)' | 'PDF (2 Seiten)' | 'Mehrfach (Demo)'
+    | 'Drittland ohne MwSt.' | 'Gemischte Steuersätze' | 'Lastschrift (Demo)'
   subject: string
   text: string
   vendor: string
@@ -478,8 +796,9 @@ async function buildTestInvoiceFiles(count: number): Promise<TestInvoiceFile[]> 
   const files: TestInvoiceFile[] = []
   for (let i = 0; i < count; i++) {
     // 0=PDF, 1=XML, 2=ZUGFeRD, 3=HTML-Auslandsrechnung, 4=Spam-Demo,
-    // 5=Fehlgeleitet-Demo, 6=PDF viele Positionen, 7=PDF 2 Seiten, 8=Mehrfach-Demo
-    const group = i % 9
+    // 5=Fehlgeleitet-Demo, 6=PDF viele Positionen, 7=PDF 2 Seiten, 8=Mehrfach-Demo,
+    // 9=Drittland ohne MwSt., 10=Gemischte Steuersätze, 11=Lastschrift-Demo
+    const group = i % 12
 
     if (group === 3) {
       const finv = foreignInvoices[i]
@@ -576,6 +895,66 @@ async function buildTestInvoiceFiles(count: number): Promise<TestInvoiceFile[]> 
         vendor: invA.vendor,
         from: null,
         extraAttachments: [{ filename: `${invB.number}.pdf`, content: pdfB, contentType: 'application/pdf' }],
+      })
+      continue
+    }
+
+    if (group === 9) {
+      const tc = buildThirdCountryInvoice(i)
+      const xml = buildThirdCountryNoVatXml(tc)
+      files.push({
+        filename: `${tc.number}.xml`,
+        content: Buffer.from(xml, 'utf8'),
+        contentType: 'application/xml',
+        htmlBody: null,
+        groupLabel: 'Drittland ohne MwSt.',
+        subject: `[TEST!] Invoice ${tc.number} from ${tc.vendor} (${tc.country}, 0% VAT)`,
+        text: `Anbei Rechnung ${tc.number} über ${tc.net.toFixed(2)} ${tc.currency} von ${tc.vendor} (${tc.country}) — steuerfreie Ausfuhrlieferung, 0% USt.`,
+        vendor: tc.vendor,
+        from: tc.from,
+      })
+      continue
+    }
+
+    if (group === 10) {
+      const mix = buildMixedTaxRatesXml(i)
+      files.push({
+        filename: `${mix.number}.xml`,
+        content: Buffer.from(mix.xml, 'utf8'),
+        contentType: 'application/xml',
+        htmlBody: null,
+        groupLabel: 'Gemischte Steuersätze',
+        subject: `[TEST!] Rechnung ${mix.number} von ${mix.vendor} (19% + 7% USt.)`,
+        text: `Anbei Rechnung ${mix.number} über ${mix.gross.toFixed(2)} EUR von ${mix.vendor} — Positionen mit unterschiedlichen Steuersätzen (19% und 7%).`,
+        vendor: mix.vendor,
+        from: null,
+      })
+      continue
+    }
+
+    if (group === 11) {
+      // Lastschrift-Demo (Stefan 2026-08-25): normale PDF-Rechnung, aber mit
+      // Lastschrift-Hinweis statt der üblichen Zahlungsbedingung im Text —
+      // buildPdf rendert paymentTerms als Text auf die Seite, die KI liest
+      // ihn beim Auslesen mit (siehe aiExtract.ts directDebitByVendor:
+      // "NUR wenn im Text klar steht ... Lastschrift/SEPA-Lastschrift/
+      // Einzugsermächtigung/Bankeinzug"). Demonstriert, dass "Fälligkeit"
+      // dafür korrekt durch "wird abgebucht" ersetzt wird (siehe ERechnungView.tsx).
+      const base = buildInvoiceWithLines(i, i, ITEM_SETS[i % ITEM_SETS.length])
+      const inv: Invoice = {
+        ...base,
+        paymentTerms: 'Der Rechnungsbetrag wird von uns automatisch per SEPA-Lastschrift von Ihrem Konto abgebucht — keine Überweisung nötig.',
+      }
+      files.push({
+        filename: `${inv.number}.pdf`,
+        content: Buffer.from(await buildPdf(inv)),
+        contentType: 'application/pdf',
+        htmlBody: null,
+        groupLabel: 'Lastschrift (Demo)',
+        subject: `[TEST!] Rechnung ${inv.number} von ${inv.vendor} (Lastschrift)`,
+        text: `Anbei Rechnung ${inv.number} über ${inv.gross.toFixed(2)} EUR von ${inv.vendor} — wird per Lastschrift abgebucht.`,
+        vendor: inv.vendor,
+        from: null,
       })
       continue
     }

@@ -13,6 +13,7 @@ const schema = z.object({
   maintenanceLock: z.boolean().optional(),
   serviceStatusText: z.string().max(200).optional(),
   supportTimeoutMin: z.string().regex(/^\d+$/).optional(),
+  sessionTimeoutHours: z.string().regex(/^\d+$/).optional(),
   endAllSupport: z.boolean().optional(),
 })
 
@@ -45,6 +46,15 @@ export async function PUT(req: NextRequest) {
         actorName: ctx.email,
         action: 'SUPPORT_TIMEOUT',
         details: `Globaler Support-Zeitabschluss: ${data.supportTimeoutMin} min`,
+      })
+    }
+    if (data.sessionTimeoutHours !== undefined) {
+      await setSetting('SESSION_TIMEOUT_HOURS', data.sessionTimeoutHours)
+      await audit({
+        actorId: ctx.userId,
+        actorName: ctx.email,
+        action: 'SESSION_TIMEOUT',
+        details: `Globale Sitzungsdauer: ${data.sessionTimeoutHours} h`,
       })
     }
     if (data.endAllSupport) {

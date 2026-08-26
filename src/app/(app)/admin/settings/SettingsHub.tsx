@@ -8,10 +8,13 @@ import { useRouter } from 'next/navigation'
 import { useRef, useState, type ReactNode } from 'react'
 import { CostCodesPanel } from './CostCodesPanel'
 import { DatevAccountsPanel } from './DatevAccountsPanel'
+import { VendorAddressesPanel } from './VendorAddressesPanel'
 import { EncryptionSetup } from './EncryptionSetup'
 import { TokenManager } from './TokenManager'
 
 type Switches = {
+  legalName: string
+  buyerNameMismatchBlocksHandover: boolean
   aiAllowed: boolean
   ipLoggingAllowed: boolean
   backupEnabled: boolean
@@ -22,6 +25,8 @@ type Switches = {
   mailInGraphFolder: string
   mailInGraphMoveToFolder: string
   spamReplyEnabled: boolean
+  autoDeleteExactDuplicates: boolean
+  autoSupersedeInvoiceVersions: boolean
   mailInGraphTenantId: string
   mailInGraphClientId: string
   mailInGraphClientSecret: string
@@ -42,7 +47,8 @@ type Switches = {
   datevGegenkonto: string
   datevWjBeginn: string
   datevFibuEmail: string
-  costCentersEnabled: boolean
+  costCenterEnabled: boolean
+  costCarrierEnabled: boolean
   dueReminderDaysAfterReceipt: number | null
   dueReminderDaysBeforeDue: number | null
 }
@@ -54,9 +60,10 @@ const FREQUENCIES = [
   { value: 'YEARLY', label: 'jährlich' },
 ]
 
-type TabKey = 'general' | 'backup' | 'report' | 'datev' | 'encryption' | 'tokens'
+type TabKey = 'tenant' | 'general' | 'backup' | 'report' | 'datev' | 'encryption' | 'tokens'
 
 const TABS: { key: TabKey; label: string; hint: string }[] = [
+  { key: 'tenant', label: 'Mandant', hint: 'Name, Kurzname, Lizenz, Einlieferungs-Adresse' },
   { key: 'general', label: 'Allgemein', hint: 'KI-Nutzung, IP-Protokollierung, Sprache, E-Mail-Eingang' },
   { key: 'backup', label: 'Datensicherung', hint: 'Zeitplan, Download-Link, Erinnerung, externes Ziel, Rücksicherung (§17)' },
   { key: 'report', label: 'Bericht', hint: 'Revisionssicherer Hash-Bericht (Rechnungsliste + Prüfsummen)' },
@@ -68,6 +75,14 @@ const TABS: { key: TabKey; label: string; hint: string }[] = [
 function TabIcon({ tab }: { tab: TabKey }) {
   const common = { width: 19, height: 19, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const }
   switch (tab) {
+    case 'tenant':
+      return (
+        <svg {...common} aria-hidden="true">
+          <path d="M4 21V7l8-4 8 4v14" />
+          <path d="M9 21v-6h6v6" />
+          <path d="M9 11h.01M15 11h.01M9 15h.01M15 15h.01" />
+        </svg>
+      )
     case 'general':
       return (
         <svg {...common} aria-hidden="true">
@@ -119,13 +134,29 @@ export function SettingsHub({
   initial,
   encryptionEnabled,
   lastBackupAt,
+  tenant,
 }: {
   initial: Switches
   encryptionEnabled: boolean
   lastBackupAt: string | null
+  // Mandanten-Stammdaten (Stefan 2026-08-25) — eigener Tab statt einer
+  // separaten, immer sichtbaren Karte über den Einstellungen (gehört genauso
+  // zu den Mandanten-Einstellungen wie die übrigen Tabs).
+  tenant: {
+    name: string
+    slug: string
+    licensePlan: string | null
+    licenseExpiresAt: string | null
+    mailInAddress: string | null
+    mailInDomain: string
+    mailInSmtpEnabled: boolean
+    mailInGraphActive: boolean
+    mailInGraphMailbox: string | null
+    mailInGraphFolder: string | null
+  }
 }) {
   const router = useRouter()
-  const [tab, setTab] = useState<TabKey>('general')
+  const [tab, setTab] = useState<TabKey>('tenant')
   const [s, setS] = useState(initial)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
@@ -225,7 +256,7 @@ export function SettingsHub({
     </details>
   )
 
-  const toggle = (key: 'aiAllowed' | 'ipLoggingAllowed' | 'mailInGraphEnabled', label: string, hint?: string) => (
+  const toggle = (key: 'aiAllowed' | 'ipLoggingAllowed' | 'mailInGraphEnabled' | 'buyerNameMismatchBlocksHandover', label: string, hint?: string) => (
     <label className="flex items-start gap-2 text-sm text-gray-700">
       <input type="checkbox" className="mt-0.5" checked={s[key]}
         onChange={(e) => setS((p) => ({ ...p, [key]: e.target.checked }))} />
@@ -286,13 +317,92 @@ export function SettingsHub({
         </div>
       </div>
 
-      {tab === 'general' && (
-        <section className="dp-card space-y-3">
-          <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Allgemein</h2>
-          {toggle('aiAllowed', 'KI-Funktionen erlauben', 'Bei "aus" werden keine Daten an eine KI übergeben — serverseitig erzwungen.')}
-          {toggle('ipLoggingAllowed', 'IP-Protokollierung erlauben', 'Speichert IP-Adressen der Benutzer im Audit-Protokoll (§18) — nur möglich, wenn der Betreiber es für Ihren Mandanten freigeschaltet hat.')}
+      {tab === 'tenant' && (
+        <section className="dp-card space-y-4">
+          <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Ihr Mandant</h2>
           <div>
-            <label className="dp-label">E-Mail-Eingang: nur Absender dieser Domänen</label>
+            <p className="text-sm text-gray-700">{tenant.name}</p>
+            <p className="text-xs text-gray-400">
+              Kurzname: <span className="font-mono">{tenant.slug}</span> · Lizenz:{' '}
+              {tenant.licensePlan ?? '—'} ·{' '}
+              {tenant.licenseExpiresAt
+                ? `bis ${new Date(tenant.licenseExpiresAt).toLocaleDateString('de-DE')}`
+                : 'unbegrenzt'}
+            </p>
+          </div>
+
+          <div className="border-t border-[var(--line)] pt-4 space-y-3">
+            <div>
+              <label className="dp-label" title="Exakte Firmenbezeichnung wie auf Ihren Rechnungen adressiert — wird mit dem Rechnungsempfänger jeder eingehenden E-Rechnung verglichen (Warnung bei Abweichung, z. B. bei einer versehentlich falsch adressierten Rechnung). Leer = keine Prüfung.">
+                Firmenbezeichnung (für den Rechnungsempfänger-Abgleich)
+              </label>
+              <input className="dp-input mt-1" value={s.legalName}
+                placeholder="z. B. Delta Plus Systemhaus GmbH"
+                onChange={(e) => setS((p) => ({ ...p, legalName: e.target.value }))} />
+            </div>
+            {toggle('buyerNameMismatchBlocksHandover', 'Bei abweichendem Rechnungsempfänger die Übergabe an die Fibu sperren',
+              'Solange die Abweichung nicht per „Passt trotzdem" akzeptiert wurde, lässt sich die Rechnung nicht in den Übergabekorb verschieben (manuell wie automatisch). Ohne Firmenbezeichnung oben wirkungslos.')}
+          </div>
+
+          <div className="border-t border-[var(--line)] pt-4">
+            <p className="dp-label mb-1">E-Mail-Eingang</p>
+            {tenant.mailInAddress ? (
+              <>
+                <p className="font-mono text-sm text-[var(--accent)]">{tenant.mailInAddress}</p>
+                <p className="mt-1 text-xs text-gray-400">
+                  beliebiger Lokalteil möglich, z. B. auch{' '}
+                  <span className="font-mono">irgendwas@{tenant.slug}.{tenant.mailInDomain}</span>
+                </p>
+                <p className="mt-2 text-xs text-gray-500">
+                  Richten Sie in Ihrem E-Mail-Programm eine Weiterleitung eingehender Rechnungen an
+                  diese Adresse ein — alles Weitere passiert automatisch. Rechnungen als PDF- oder
+                  Bild-Anhang werden als Beleg angelegt. Der Verlauf eingehender E-Mails steht im{' '}
+                  <a className="underline" href="/audit">Audit-Protokoll</a>.
+                </p>
+                <p className="mt-2 rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-strong)]">
+                  Bitte geben Sie diese Adresse nicht direkt an Lieferanten oder sonstige Dritte weiter
+                  — richten Sie stattdessen eine einfache Weiterleitung in Ihrem E-Mail-Programm bzw.
+                  bei Ihrem E-Mail-Provider dorthin ein. So behalten Sie die alleinige Kontrolle über
+                  Ihr Rechnungspostfach.
+                </p>
+                {!tenant.mailInSmtpEnabled && !tenant.mailInGraphActive && (
+                  <p className="mt-2 rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-strong)]">
+                    Der automatische Abruf ist derzeit deaktiviert — eingehende Mails werden gesammelt
+                    und nach Aktivierung verarbeitet.
+                  </p>
+                )}
+                {tenant.mailInGraphActive && (
+                  <p className="mt-2 rounded-lg bg-[var(--accent-bg)] px-3 py-2 text-xs text-[var(--accent)]">
+                    Zusätzlich aktiv: automatischer Abruf per Microsoft Graph aus Postfach{' '}
+                    <span className="font-mono">{tenant.mailInGraphMailbox}</span>
+                    {tenant.mailInGraphFolder ? <>, Ordner <span className="font-mono">{tenant.mailInGraphFolder}</span></> : null}.
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="text-xs text-gray-400">
+                noch nicht eingerichtet — der Betreiber muss unter Systemeinstellungen → Mail-Eingang eine Basis-Domain hinterlegen
+              </p>
+            )}
+          </div>
+          <SaveBar />
+        </section>
+      )}
+
+      {tab === 'general' && (
+        <section className="dp-card space-y-5">
+          <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Allgemein</h2>
+
+          <div className="space-y-3">
+            <p className="text-xs font-bold uppercase tracking-wide text-gray-400">KI & Datenschutz</p>
+            {toggle('aiAllowed', 'KI-Funktionen erlauben', 'Bei "aus" werden keine Daten an eine KI übergeben — serverseitig erzwungen.')}
+            {toggle('ipLoggingAllowed', 'IP-Protokollierung erlauben', 'Speichert IP-Adressen der Benutzer im Audit-Protokoll (§18) — nur möglich, wenn der Betreiber es für Ihren Mandanten freigeschaltet hat.')}
+          </div>
+
+          <div className="space-y-3 border-t border-[var(--line)] pt-5">
+            <p className="text-xs font-bold uppercase tracking-wide text-gray-400">Mail-Eingang</p>
+          <div>
+            <label className="dp-label">Nur Absender dieser Domänen</label>
             <input className="dp-input mt-1" value={s.mailAllowedDomains}
               placeholder="z. B. meinefirma.de, lieferant.de — leer = alle"
               onChange={(e) => setS((p) => ({ ...p, mailAllowedDomains: e.target.value }))} />
@@ -356,24 +466,6 @@ export function SettingsHub({
                       statt nur „Mail.Read" in der App-Registrierung, siehe Anleitung oben.
                     </p>
                   </div>
-                  <div className="sm:col-span-2">
-                    <label className="flex items-center gap-2 text-sm text-gray-700">
-                      <input type="checkbox" className="accent-[var(--accent)]" checked={s.spamReplyEnabled}
-                        onChange={(e) => setS((p) => ({ ...p, spamReplyEnabled: e.target.checked }))} />
-                      Automatische Antwort an den Absender bei Spam-Verdacht
-                    </label>
-                    <p className="mt-1 rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-[10px] text-[var(--warn-strong)]">
-                      Schickt eine kurze automatische Info, wenn eine Mail eindeutig NICHT als Rechnung
-                      erkannt wird ("Spam-Verdacht"-Korb) — mit dem Hinweis, sich bei echtem
-                      Rechnungsbezug direkt zu melden. <strong>Zu bedenken:</strong> echter Spam hat
-                      fast immer eine gefälschte Absenderadresse — die Antwort geht dann an eine
-                      unbeteiligte dritte Person (kein technischer Schutz davor möglich), und eine
-                      Auto-Antwort bestätigt Spam-Versendern eine aktive Mailbox. Nur einschalten, wenn
-                      Ihnen dieses Risiko bewusst ist. Je Beleg wird höchstens einmal geantwortet. Im
-                      Entwicklermodus (Systemeinstellungen) wird nie versendet — dort laufen Test-/Demo-Mails,
-                      oft mit echten Absenderadressen.
-                    </p>
-                  </div>
                   <div>
                     <label className="dp-label">Tenant-ID (Ihr Azure AD)</label>
                     <input className="dp-input mt-1" value={s.mailInGraphTenantId}
@@ -407,7 +499,65 @@ export function SettingsHub({
               </>
             )}
           </div>
+          </div>
 
+          {/* Dubletten & Spam-Antwort (Stefan 2026-08-25): vorher nur sichtbar,
+              wenn oben "Mail-Eingang per Microsoft Graph" aktiv war — obwohl
+              das genauso für den normalen SMTP-Mail-Eingang gilt. Jetzt immer
+              sichtbar, unabhängig vom gewählten Mail-Eingang-Weg. */}
+          <div className="space-y-3 border-t border-[var(--line)] pt-5">
+            <p className="text-xs font-bold uppercase tracking-wide text-gray-400">Dubletten & Versionen</p>
+            <div>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input type="checkbox" className="accent-[var(--accent)]" checked={s.spamReplyEnabled}
+                  onChange={(e) => setS((p) => ({ ...p, spamReplyEnabled: e.target.checked }))} />
+                Automatische Antwort an den Absender bei Spam-Verdacht
+              </label>
+              <p className="mt-1 rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-[10px] text-[var(--warn-strong)]">
+                Schickt eine kurze automatische Info, wenn eine Mail eindeutig NICHT als Rechnung
+                erkannt wird ("Spam-Verdacht"-Korb) — mit dem Hinweis, sich bei echtem
+                Rechnungsbezug direkt zu melden. <strong>Zu bedenken:</strong> echter Spam hat
+                fast immer eine gefälschte Absenderadresse — die Antwort geht dann an eine
+                unbeteiligte dritte Person (kein technischer Schutz davor möglich), und eine
+                Auto-Antwort bestätigt Spam-Versendern eine aktive Mailbox. Nur einschalten, wenn
+                Ihnen dieses Risiko bewusst ist. Je Beleg wird höchstens einmal geantwortet. Im
+                Entwicklermodus (Systemeinstellungen) wird nie versendet — dort laufen Test-/Demo-Mails,
+                oft mit echten Absenderadressen.
+              </p>
+            </div>
+            <div>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input type="checkbox" className="accent-[var(--accent)]" checked={s.autoDeleteExactDuplicates}
+                  onChange={(e) => setS((p) => ({ ...p, autoDeleteExactDuplicates: e.target.checked }))} />
+                Erkannte Dubletten automatisch löschen
+              </label>
+              <p className="mt-1 text-[10px] text-gray-400">
+                Nur bei 100 % sicherem Treffer — eine bereits eingegangene, byte-identische Beleg-Datei
+                wird automatisch in den Papierkorb verschoben (nichts geht endgültig verloren). Der
+                schwächere Abgleich über Rechnungsnummer + Lieferant (z. B. bei einem Korrektur-/
+                Ersatzbeleg mit derselben Nummer) bleibt immer nur eine Markierung mit
+                Nachprüfung durch einen Menschen — der wird nie automatisch gelöscht.
+              </p>
+            </div>
+            <div>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input type="checkbox" className="accent-[var(--accent)]" checked={s.autoSupersedeInvoiceVersions}
+                  onChange={(e) => setS((p) => ({ ...p, autoSupersedeInvoiceVersions: e.target.checked }))} />
+                Bei mehrfach gesendeter Rechnung nur die neueste Version aktiv halten
+              </label>
+              <p className="mt-1 text-[10px] text-gray-400">
+                Eigenständig von der Dubletten-Erkennung oben: greift, wenn dieselbe Rechnungsnummer +
+                derselbe Lieferant erneut eingeht, aber mit ANDEREM Dateiinhalt (z. B. eine korrigierte
+                oder erneut gesendete Fassung) — die neueste Version bleibt normal bearbeitbar, ältere
+                Versionen werden automatisch schreibgeschützt und in der Liste ausgegraut, aber nichts
+                wird gelöscht. Ohne diese Einstellung landet ein solcher Treffer stattdessen als
+                normale Dubletten-Markierung zur manuellen Entscheidung.
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-3 border-t border-[var(--line)] pt-5">
+            <p className="text-xs font-bold uppercase tracking-wide text-gray-400">Sonstiges</p>
           <div>
             <label className="dp-label">Standardsprache</label>
             <select className="dp-input mt-1 !w-auto" value={s.defaultLanguage}
@@ -445,6 +595,7 @@ export function SettingsHub({
                   onChange={(e) => setS((p) => ({ ...p, dueReminderDaysBeforeDue: e.target.value === '' ? null : Number(e.target.value) }))} />
               </div>
             </div>
+          </div>
           </div>
           <SaveBar />
         </section>
@@ -667,13 +818,28 @@ export function SettingsHub({
                 </p>
               )}
             </div>
-            <div className="border-t border-[var(--line)] pt-3">
+            <div className="border-t border-[var(--line)] pt-3 space-y-2">
+              {/* Stefan 2026-08-26: vorher ein gemeinsamer Schalter für beide —
+                  in der Praxis nutzt nicht jeder Mandant Kostenstellen UND
+                  Kostenträger zusammen, deshalb jetzt unabhängig abschaltbar. */}
               <label className="flex items-start gap-2 text-sm text-gray-700"
-                title="Blendet je Rechnung eine Kostenstellen-/Kostenträger-Auswahl ein, befüllt aus den beiden Listen unten">
-                <input type="checkbox" className="mt-0.5" checked={s.costCentersEnabled}
-                  onChange={(e) => setS((p) => ({ ...p, costCentersEnabled: e.target.checked }))} />
+                title="Blendet je Rechnung eine Kostenstellen-Auswahl ein, befüllt aus der Liste unten">
+                <input type="checkbox" className="mt-0.5" checked={s.costCenterEnabled}
+                  onChange={(e) => setS((p) => ({ ...p, costCenterEnabled: e.target.checked }))} />
                 <span>
-                  Kostenstellen/Kostenträger verwenden
+                  Kostenstellen verwenden
+                  <span className="block text-[11px] text-gray-400">
+                    Bei „aus" bleibt die Auswahl auf der Rechnung ausgeblendet — bereits zugeordnete
+                    Werte gehen dabei nicht verloren.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2 text-sm text-gray-700"
+                title="Blendet je Rechnung eine Kostenträger-Auswahl ein, befüllt aus der Liste unten">
+                <input type="checkbox" className="mt-0.5" checked={s.costCarrierEnabled}
+                  onChange={(e) => setS((p) => ({ ...p, costCarrierEnabled: e.target.checked }))} />
+                <span>
+                  Kostenträger verwenden
                   <span className="block text-[11px] text-gray-400">
                     Bei „aus" bleibt die Auswahl auf der Rechnung ausgeblendet — bereits zugeordnete
                     Werte gehen dabei nicht verloren.
@@ -684,12 +850,9 @@ export function SettingsHub({
             <SaveBar />
           </section>
           <DatevAccountsPanel />
-          {s.costCentersEnabled && (
-            <>
-              <CostCodesPanel kind="KOSTENSTELLE" label="Kostenstellen" />
-              <CostCodesPanel kind="KOSTENTRAEGER" label="Kostenträger" />
-            </>
-          )}
+          <VendorAddressesPanel />
+          {s.costCenterEnabled && <CostCodesPanel kind="KOSTENSTELLE" label="Kostenstellen" />}
+          {s.costCarrierEnabled && <CostCodesPanel kind="KOSTENTRAEGER" label="Kostenträger" />}
         </>
       )}
 

@@ -21,9 +21,11 @@ import { InvoiceNumberCell } from '@/components/crypto/InvoiceNumberCell'
 import { InvoiceVendorCell } from '@/components/crypto/InvoiceVendorCell'
 import { DEK_UNLOCKED_EVENT } from '@/components/crypto/useDecryptedContent'
 import { decryptJson } from '@/lib/clientCrypto'
+import { EINVOICE_FORMATS } from '@/lib/docFormat'
 import { getCachedDek } from '@/lib/keyStore'
 import { STATUS_LABELS, type InvoiceDTO } from '@/lib/invoices'
 import { CheckBadges } from './CheckBadges'
+import { useColumnVisibility } from './columnVisibility'
 import { DeleteInvoiceButton } from './DeleteInvoiceButton'
 import { DraggableInvoiceRow } from './DraggableInvoiceRow'
 import { RowCheckbox } from './InvoiceSelection'
@@ -34,6 +36,8 @@ export type InvoiceRowData = InvoiceDTO & {
   pendingApprovalTitle: string | null
   /** Beleg-Eingang fällt in ein abgeschlossenes Audit-Jahr (§18) — schreibgeschützt. */
   locked: boolean
+  /** Weitere Rechnung(en) mit derselben sourceMessageId existieren (Sammel-Mail-Split). */
+  hasSiblings: boolean
 }
 
 type DecryptedContent = {
@@ -60,6 +64,10 @@ function mailExcerpt(text: string | null, maxLen = 220): string | null {
   const collapsed = text.replace(/\s+/g, ' ').trim()
   if (!collapsed) return null
   return collapsed.length > maxLen ? `${collapsed.slice(0, maxLen).trimEnd()}…` : collapsed
+}
+
+function isEInvoiceFormat(docFormat: string | null): boolean {
+  return docFormat !== null && (EINVOICE_FORMATS as string[]).includes(docFormat)
 }
 
 function toNumber(v?: string | null): number | null {
@@ -175,7 +183,31 @@ export function InvoiceRows({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, q, sortField, sortDir, encryptionEnabled, decrypted, decryptionPending])
 
-  const colSpan = showTrash ? 12 : 16
+  const { visible } = useColumnVisibility()
+
+  // Blättern in der Detailansicht (Stefan 2026-08-26): merkt die gerade
+  // sichtbare, fertig sortierte/gefilterte Reihenfolge dieser Liste in
+  // sessionStorage, damit die Detailseite "‹ Zurück"/"Weiter ›" innerhalb
+  // GENAU dieser Ansicht anbieten kann — auch bei clientseitig sortierten/
+  // gefilterten Inhalts-verschlüsselten Listen, wo die Server-Reihenfolge
+  // nicht der angezeigten entspricht. Siehe invoices/[id]/InvoiceNavigator.tsx.
+  const visibleIds = visibleRows.map((r) => r.id).join(',')
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        'invoiceNavContext',
+        JSON.stringify({ ids: visibleIds ? visibleIds.split(',') : [], listHref: window.location.pathname + window.location.search }),
+      )
+    } catch {
+      // sessionStorage nicht verfügbar — Blättern in der Detailansicht bleibt dann einfach aus
+    }
+  }, [visibleIds])
+
+  // Über colSpan hinaus keine bedingte Berechnung nötig — ein zu großer
+  // Wert wird vom Browser einfach auf die tatsächliche Spaltenzahl gekappt,
+  // deshalb keine Notwendigkeit, ihn bei jeder Spalten-Ein-/Ausblendung
+  // exakt nachzuführen.
+  const colSpan = 24
 
   return (
     <>
@@ -203,7 +235,13 @@ export function InvoiceRows({
           )}
           <td className="dp-td font-mono text-[11px] text-gray-500">
             {i.locked && (
-              <span title={`Abgeschlossener Prüfungszeitraum ${new Date(i.createdAt).getFullYear()} — schreibgeschützt`}>🔒 </span>
+              <span title={
+                i.supersededAt
+                  ? 'Ältere Version — durch eine neuere, gleichlautende Rechnung ersetzt, schreibgeschützt'
+                  : `Abgeschlossener Prüfungszeitraum ${new Date(i.createdAt).getFullYear()} — schreibgeschützt`
+              }>
+                {i.supersededAt ? '🕓 ' : '🔒 '}
+              </span>
             )}
             {i.docId ?? '—'}
           </td>
@@ -218,30 +256,38 @@ export function InvoiceRows({
               isDuplicate={Boolean(i.duplicateOfId)}
             />
           </td>
-          <td className="dp-td font-mono text-xs">
-            <InvoiceNumberCell contentEnc={i.contentEnc} fallbackInvoiceNumber={i.invoiceNumber} />
-          </td>
-          <td className="dp-td text-xs">{fmtDateOnly(i.invoiceDate)}</td>
-          <td className="dp-td text-xs">
-            {i.directDebitByVendor ? (
-              <span className="text-gray-500" title="Lieferant bucht per Lastschrift/Abbuchung selbst ab">
-                wird abgebucht
-              </span>
-            ) : (
-              fmtDateOnly(i.dueDate)
-            )}
-          </td>
-          <td className="dp-td whitespace-nowrap text-xs" title="Eingang in E-Invoice">
-            {format(new Date(i.createdAt), 'dd.MM.yyyy HH:mm', { locale: de })}
-          </td>
-          <td className="dp-td">
-            <InvoiceAmountCell
-              contentEnc={i.contentEnc}
-              field="amountNet"
-              fallbackAmount={i.amountNet}
-              fallbackCurrency={i.currency}
-            />
-          </td>
+          {visible.invoiceNumber && (
+            <td className="dp-td font-mono text-xs">
+              <InvoiceNumberCell contentEnc={i.contentEnc} fallbackInvoiceNumber={i.invoiceNumber} />
+            </td>
+          )}
+          {visible.invoiceDate && <td className="dp-td text-xs">{fmtDateOnly(i.invoiceDate)}</td>}
+          {visible.dueDate && (
+            <td className="dp-td text-xs">
+              {i.directDebitByVendor ? (
+                <span className="text-gray-500" title="Lieferant bucht per Lastschrift/Abbuchung selbst ab">
+                  wird abgebucht
+                </span>
+              ) : (
+                fmtDateOnly(i.dueDate)
+              )}
+            </td>
+          )}
+          {visible.createdAt && (
+            <td className="dp-td whitespace-nowrap text-xs" title="Eingang in E-Invoice">
+              {format(new Date(i.createdAt), 'dd.MM.yyyy HH:mm', { locale: de })}
+            </td>
+          )}
+          {visible.amountNet && (
+            <td className="dp-td">
+              <InvoiceAmountCell
+                contentEnc={i.contentEnc}
+                field="amountNet"
+                fallbackAmount={i.amountNet}
+                fallbackCurrency={i.currency}
+              />
+            </td>
+          )}
           <td className="dp-td">
             <InvoiceAmountCell
               contentEnc={i.contentEnc}
@@ -263,6 +309,7 @@ export function InvoiceRows({
               {STATUS_LABELS[i.status]}
             </span>
           </td>
+          {visible.docFormat && (
           <td className="dp-td">
             <div className="flex flex-col items-start gap-0.5">
               {i.docFormat === 'ZUGFERD' || i.docFormat?.startsWith('XRECHNUNG') ? (
@@ -297,7 +344,12 @@ export function InvoiceRows({
               ) : (
                 <span className="text-[10px] text-gray-400">—</span>
               )}
-              {(i.source === 'SCAN' || i.aiAssisted) && (
+              {/* Stefan 2026-08-26: bei einer echten E-Rechnung (XRechnung/
+                  ZUGFeRD) kommen die Daten immer aus dem strukturierten XML,
+                  nie von der KI — das "✨ KI"-Kennzeichen soll dort auch bei
+                  (eigentlich nicht vorkommendem) aiAssisted=true nie auftauchen,
+                  sonst wirkt es, als wären die Werte nur eine KI-Vermutung. */}
+              {!isEInvoiceFormat(i.docFormat) && (i.source === 'SCAN' || i.aiAssisted) && (
                 i.aiAssisted && !i.aiConfirmedAt ? (
                   <span
                     className="whitespace-nowrap rounded-full bg-[var(--warn-bg)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--warn-strong)]"
@@ -314,9 +366,38 @@ export function InvoiceRows({
                   </span>
                 )
               )}
+              {/* Sammel-Mail-Split (Stefan 2026-08-25): mehrere PDF-Anhänge in
+                  einer Mail werden automatisch in getrennte Vorgänge
+                  aufgeteilt (siehe lib/mailin.ts) — ohne diesen Hinweis war in
+                  der Liste nicht erkennbar, dass eine Zeile zu einer
+                  Sammel-Mail gehört (Detailseite zeigt die Geschwister). */}
+              {/* Spam/Fehlleitung-Wahrscheinlichkeit (Stefan 2026-08-25) — nur
+                  bei nicht eindeutig als Rechnung eingestuften Belegen, damit
+                  nicht blind auf die automatische Einstufung vertraut werden
+                  muss (siehe lib/mailin.ts invoiceClass/-Confidence). */}
+              {i.invoiceClass && i.invoiceClass !== 'INVOICE' && (
+                <span
+                  className={`whitespace-nowrap rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                    i.invoiceClass === 'NOT_INVOICE' ? 'bg-red-50 text-[var(--danger)]' : 'bg-[var(--warn-bg)] text-[var(--warn-strong)]'
+                  }`}
+                  title={`Automatische Einstufung beim Mail-Eingang: ${i.invoiceClass === 'NOT_INVOICE' ? 'kein Rechnungsbezug erkannt' : 'nicht eindeutig'}${i.invoiceClassConfidence !== null ? ` — geschätzte Sicherheit ${i.invoiceClassConfidence}%` : ''}`}
+                >
+                  {i.invoiceClass === 'NOT_INVOICE' ? '🚫' : '❓'}
+                  {i.invoiceClassConfidence !== null ? ` ${i.invoiceClassConfidence}%` : ' Spam?'}
+                </span>
+              )}
+              {i.hasSiblings && (
+                <span
+                  className="whitespace-nowrap rounded-full bg-[var(--surface-muted)] px-1.5 py-0.5 text-[10px] font-semibold text-gray-600"
+                  title="Diese Rechnung kam zusammen mit weiteren als separate Anhänge in einer Sammel-Mail an — automatisch in getrennte Vorgänge aufgeteilt (siehe Detailseite)"
+                >
+                  📎 geteilt
+                </span>
+              )}
             </div>
           </td>
-          {!showTrash && (
+          )}
+          {!showTrash && visible.mailBodyText && (
             <td className="dp-td w-[220px] max-w-[220px]">
               {mailExcerpt(i.mailBodyText) ? (
                 <span className="line-clamp-3 whitespace-normal break-words text-[10px] leading-snug text-gray-500" title={i.mailBodyText ?? undefined}>
@@ -327,16 +408,20 @@ export function InvoiceRows({
               )}
             </td>
           )}
-          {!showTrash && (
+          {!showTrash && visible.thumbnail && (
             <td className="dp-td">
               {i.hasFile && !i.encrypted ? (
+                // Größer als vorher (h-10 w-10 → h-16 w-16) und mit Hover-Zoom
+                // (Stefan 2026-08-26, "man sieht nix") — beim Draufhalten
+                // vergrößert sich die Vorschau deutlich, ohne die Tabellenzeile
+                // dauerhaft aufzublähen.
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={`/api/invoices/${i.id}/thumbnail`}
                   alt=""
                   loading="lazy"
-                  title="Mini-Vorschau des Belegs"
-                  className="h-10 w-10 rounded border border-[var(--line)] object-cover"
+                  title="Vorschau des Belegs — zum Vergrößern mit der Maus darüberfahren"
+                  className="relative z-0 h-16 w-16 rounded border border-[var(--line)] object-cover transition-transform duration-150 hover:z-30 hover:scale-[3.5] hover:shadow-xl"
                   onError={(e) => { e.currentTarget.style.display = 'none' }}
                 />
               ) : (
@@ -344,7 +429,7 @@ export function InvoiceRows({
               )}
             </td>
           )}
-          {!showTrash && (
+          {!showTrash && visible.checks && (
             <td className="dp-td">
               <CheckBadges
                 invoiceId={i.id}
@@ -358,6 +443,9 @@ export function InvoiceRows({
                 accountingBy={i.checkAccountingBy}
                 canApprove={canApprove}
                 canAccounting={canHandover}
+                docFormat={i.docFormat}
+                kositCheckedAt={i.kositCheckedAt}
+                kositAccepted={i.kositAccepted}
               />
             </td>
           )}
@@ -371,9 +459,16 @@ export function InvoiceRows({
           ) : (
             <td className="dp-td">
               {i.locked ? (
-                <span className="text-[10px] text-gray-400" title={`Abgeschlossener Prüfungszeitraum ${new Date(i.createdAt).getFullYear()} — schreibgeschützt`}>
-                  🔒 gesperrt
-                </span>
+                i.supersededByInvoiceId ? (
+                  <a className="text-[10px] font-semibold text-[var(--accent)] underline" href={`/invoices/${i.supersededByInvoiceId}`}
+                    title="Ältere Version — durch eine neuere, gleichlautende Rechnung ersetzt">
+                    🕓 alte Version
+                  </a>
+                ) : (
+                  <span className="text-[10px] text-gray-400" title={`Abgeschlossener Prüfungszeitraum ${new Date(i.createdAt).getFullYear()} — schreibgeschützt`}>
+                    🔒 gesperrt
+                  </span>
+                )
               ) : canApprove ? (
                 <DeleteInvoiceButton invoiceId={i.id} />
               ) : (

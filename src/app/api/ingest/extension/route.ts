@@ -11,7 +11,7 @@ import { ApiError } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { nextDocId } from '@/lib/docId'
 import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
-import { analyzeInvoiceFile, autoElectronicCheck, type Analysis } from '@/lib/erechnung'
+import { analyzeInvoiceFile, autoElectronicCheck, autoFormalCheckForEInvoice, type Analysis } from '@/lib/erechnung'
 import { hasFeature } from '@/lib/license'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
 
@@ -85,15 +85,16 @@ export async function POST(req: NextRequest) {
     const fileHash = isEncrypted
       ? (/^[a-f0-9]{64}$/i.test(suppliedHash) ? suppliedHash : null)
       : hashBuffer(buffer)
-    const duplicateOfId = await detectDuplicate(tenant.id, {
+    const duplicateOfId = (await detectDuplicate(tenant.id, {
       fileHash,
       invoiceNumber: d?.number ?? null,
       vendor: d?.sellerName ?? null,
-    })
+    }))?.id ?? null
 
     const docId = await nextDocId(tenant.id)
     const basketId = await getInboxBasketId(tenant.id)
     const electronicCheck = autoElectronicCheck(analysis?.format ?? 'PDF', analysis?.validation?.valid)
+    const formalCheck = autoFormalCheckForEInvoice(analysis?.format ?? 'PDF', analysis?.validation?.valid)
     const invoice = await prisma.invoice.create({
       data: {
         tenantId: tenant.id,
@@ -101,6 +102,8 @@ export async function POST(req: NextRequest) {
         basketId,
         checkElectronicAt: electronicCheck.at,
         checkElectronicBy: electronicCheck.by,
+        checkFormalAt: formalCheck.at,
+        checkFormalBy: formalCheck.by,
         vendor: d?.sellerName || vendor,
         invoiceNumber: d?.number ?? null,
         invoiceDate: d?.issueDate ? new Date(d.issueDate) : null,

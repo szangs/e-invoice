@@ -10,10 +10,13 @@ import { ensureSystemBaskets, getBasketCounts, sortBaskets } from '@/lib/baskets
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { STATUS_LABELS, toDTO } from '@/lib/invoices'
+import { ColumnSettingsButton } from './ColumnSettingsButton'
+import { ColumnVisibilityProvider } from './columnVisibility'
 import { DatevExportButton } from './DatevExportButton'
 import { InterfaceRequestForm } from './InterfaceRequestForm'
+import { InvoiceTableHead } from './InvoiceTableHead'
 import { CONTENT_SORT_FIELDS, InvoiceRows, type InvoiceRowData } from './InvoiceRows'
-import { BulkActionBar, InvoiceSelectionProvider, SelectAllCheckbox } from './InvoiceSelection'
+import { BulkActionBar, InvoiceSelectionProvider } from './InvoiceSelection'
 
 export const dynamic = 'force-dynamic'
 
@@ -172,12 +175,19 @@ export default async function InvoicesPage({
     })
   }
 
-  // Ungelesene, an mich adressierte Nachrichten (Stefan 2026-07-08) — kleiner
-  // Hinweis in der Liste, damit die Nachricht auch auffällt, ohne jede
-  // Rechnung einzeln öffnen zu müssen.
+  // Offene (nicht erledigte), an mich adressierte oder "an alle" gerichtete
+  // Nachrichten (Stefan 2026-07-08, erweitert 2026-08-26 um den Erledigt-
+  // Status statt nur den Lesestatus — "gehört zum Dokument", bleibt also
+  // sichtbar bis abgehakt, nicht nur bis zum ersten Öffnen) — kleiner Hinweis
+  // in der Liste, damit die Nachricht auch auffällt, ohne jede Rechnung
+  // einzeln öffnen zu müssen.
   const unreadNoteRows = ctx.userId
     ? await prisma.invoiceNote.findMany({
-        where: { invoiceId: { in: invoices.map((i) => i.id) }, toUserId: ctx.userId, readAt: null },
+        where: {
+          invoiceId: { in: invoices.map((i) => i.id) },
+          doneAt: null,
+          OR: [{ toUserId: ctx.userId }, { toUserId: null }],
+        },
         select: { invoiceId: true },
       })
     : []
@@ -205,6 +215,24 @@ export default async function InvoicesPage({
     }
   }
 
+  // Sammel-Mail-Split sichtbar machen (Stefan 2026-08-25): mehrere PDF-Anhänge
+  // in einer Mail werden automatisch in getrennte Vorgänge aufgeteilt (siehe
+  // lib/mailin.ts) — ohne diesen Hinweis war in der Liste nicht erkennbar,
+  // dass eine Zeile zu einer Sammel-Mail gehört. Zählung unabhängig von der
+  // aktuellen Seite/Filterung, damit ein Geschwister außerhalb der Seite
+  // trotzdem erkannt wird.
+  const sourceMessageIds = Array.from(
+    new Set(invoices.map((i) => i.sourceMessageId).filter((x): x is string => Boolean(x))),
+  )
+  const siblingCounts = sourceMessageIds.length > 0
+    ? await prisma.invoice.groupBy({
+        by: ['sourceMessageId'],
+        where: { tenantId, sourceMessageId: { in: sourceMessageIds }, deletedAt: null },
+        _count: { id: true },
+      })
+    : []
+  const siblingCountMap = new Map(siblingCounts.map((s) => [s.sourceMessageId, s._count.id]))
+
   // Serialisierte Zeilen für die client-seitige Tabelle (InvoiceRows.tsx) —
   // übernimmt Anzeige sowie (bei verschlüsselten Mandanten) Suche/Sortierung
   // nach Lieferant/Nummer/Beträgen (Stefan 2026-07-09, #109).
@@ -216,7 +244,11 @@ export default async function InvoicesPage({
       : null,
     // Perioden-Abschluss (§18, Stefan 2026-08-25): Beleg-Eingang fällt in ein
     // bereits abgeschlossenes Jahr → schreibgeschützt (siehe lib/auditClosure.ts).
-    locked: closedYears.has(i.createdAt.getFullYear()),
+    // Rechnungsversionierung: eine überholte, ältere Version ist ebenfalls
+    // gesperrt (siehe schema.prisma Invoice.supersededAt) — unterscheidet
+    // sich in InvoiceRows.tsx nur im Icon/Tooltip.
+    locked: closedYears.has(i.createdAt.getFullYear()) || i.supersededAt !== null,
+    hasSiblings: Boolean(i.sourceMessageId) && (siblingCountMap.get(i.sourceMessageId!) ?? 0) > 1,
   }))
 
   const exportUrl = `/api/invoices/export?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`
@@ -339,6 +371,7 @@ export default async function InvoicesPage({
       </h3>
 
       <InvoiceSelectionProvider>
+      <ColumnVisibilityProvider scopeKey={showTrash ? 'trash' : basketFilter ?? 'all'}>
       {!showTrash && (
         <BulkActionBar
           baskets={visibleBaskets.map((b) => ({ id: b.id, name: b.name }))}
@@ -347,32 +380,26 @@ export default async function InvoicesPage({
           canApprove={canApprove}
         />
       )}
+      <div className="flex justify-end">
+        <ColumnSettingsButton />
+      </div>
       <div className="dp-card overflow-x-auto p-0">
         <table className="w-full min-w-[1120px]">
-          <thead>
-            <tr className="dp-tr">
-              {!showTrash && (
-                <th className="dp-th w-8">
-                  <SelectAllCheckbox ids={invoiceRows.map((r) => r.id)} />
-                </th>
-              )}
-              <SortTh label="Dok-ID" href={sortHref('docId')} arrow={sortArrow('docId')} />
-              <SortTh label="Lieferant" href={sortHref('vendor')} arrow={sortArrow('vendor')} />
-              <SortTh label="Nummer" href={sortHref('invoiceNumber')} arrow={sortArrow('invoiceNumber')} />
-              <SortTh label="Datum" href={sortHref('invoiceDate')} arrow={sortArrow('invoiceDate')} />
-              <SortTh label="Fällig" href={sortHref('dueDate')} arrow={sortArrow('dueDate')} />
-              <SortTh label="Eingang" href={sortHref('createdAt')} arrow={sortArrow('createdAt')} />
-              <SortTh label="Netto" href={sortHref('amountNet')} arrow={sortArrow('amountNet')} />
-              <SortTh label="Brutto" href={sortHref('amountGross')} arrow={sortArrow('amountGross')} />
-              <SortTh label="Status" href={sortHref('status')} arrow={sortArrow('status')} />
-              <th className="dp-th" title="Beleg-Format und Erfassungsart (elektronisch/Scan, KI/manuell)">Inhalt</th>
-              {!showTrash && <th className="dp-th" title="Kurzer Auszug aus dem Mailtext, mit dem der Beleg eintraf — nur zur groben Einschätzung, volle Ansicht auf der Detailseite">Mailtext</th>}
-              {!showTrash && <th className="dp-th" title="Kleine Vorschau des Belegs">Vorschau</th>}
-              {!showTrash && <th className="dp-th" title="Elektronische Vorprüfung und Formal richtig — Sachlich richtig/An Buchhaltung übergeben direkt anklickbar">Prüfung</th>}
-              <th className="dp-th">Beleg</th>
-              <th className="dp-th">Aktion</th>
-            </tr>
-          </thead>
+          <InvoiceTableHead
+            showTrash={showTrash}
+            invoiceIds={invoiceRows.map((r) => r.id)}
+            sorts={{
+              docId: { label: 'Dok-ID', href: sortHref('docId'), arrow: sortArrow('docId') },
+              vendor: { label: 'Lieferant', href: sortHref('vendor'), arrow: sortArrow('vendor') },
+              invoiceNumber: { label: 'Nummer', href: sortHref('invoiceNumber'), arrow: sortArrow('invoiceNumber') },
+              invoiceDate: { label: 'Datum', href: sortHref('invoiceDate'), arrow: sortArrow('invoiceDate') },
+              dueDate: { label: 'Fällig', href: sortHref('dueDate'), arrow: sortArrow('dueDate') },
+              createdAt: { label: 'Eingang', href: sortHref('createdAt'), arrow: sortArrow('createdAt') },
+              amountNet: { label: 'Netto', href: sortHref('amountNet'), arrow: sortArrow('amountNet') },
+              amountGross: { label: 'Brutto', href: sortHref('amountGross'), arrow: sortArrow('amountGross') },
+              status: { label: 'Status', href: sortHref('status'), arrow: sortArrow('status') },
+            }}
+          />
           <tbody>
             <InvoiceRows
               rows={invoiceRows}
@@ -388,17 +415,8 @@ export default async function InvoicesPage({
           </tbody>
         </table>
       </div>
+      </ColumnVisibilityProvider>
       </InvoiceSelectionProvider>
     </div>
-  )
-}
-
-function SortTh({ label, href, arrow }: { label: string; href: string; arrow: string }) {
-  return (
-    <th className="dp-th">
-      <Link href={href} className="hover:text-[var(--accent)]" title={`Nach ${label} sortieren`}>
-        {label}{arrow}
-      </Link>
-    </th>
   )
 }

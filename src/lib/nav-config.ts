@@ -30,10 +30,9 @@ export const NAV_GROUPS: NavGroup[] = [
       // Knöpfe in den Ablagekörben und im Dashboard: RE02a "Elektronische
       // Rechnung hinzufügen" (/invoices/new) und RE02b "Papierrechnung
       // scannen" (/invoices/new/scan)
-      {
-        href: '/mailin', label: 'E-Mail-Eingang', code: 'RE03',
-        hint: 'Einlieferungs-Adresse und Verlauf automatisch eingegangener Rechnungen',
-      },
+      // RE03 "E-Mail-Eingang" (Stefan 2026-08-25) entfernt — eigener
+      // Menüpunkt war unnötig: Adresse + Erklärtext stehen jetzt in den
+      // Mandanten-Einstellungen (MA01), der Verlauf im Audit-Protokoll (AU02).
     ],
   },
   {

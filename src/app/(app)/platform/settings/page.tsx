@@ -130,6 +130,18 @@ export default function SystemSettingsPage() {
     setAiModels(data.models ?? [])
   }
 
+  async function resetTokenUsage() {
+    setBusy(true)
+    const since = new Date().toISOString()
+    await fetch('/api/platform/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ AI_TOKENS_TOTAL: '0', AI_TOKENS_SINCE: since }),
+    })
+    setS((p) => ({ ...(p as Settings), AI_TOKENS_TOTAL: '0', AI_TOKENS_SINCE: since }))
+    setBusy(false)
+  }
+
   async function testSmtp() {
     setSmtpTest('Sende …')
     await save()
@@ -460,6 +472,27 @@ export default function SystemSettingsPage() {
           <p className="text-[11px] text-gray-400">
             Die Nutzung ist zusätzlich je Mandant abschaltbar (§19) und wird serverseitig erzwungen.
           </p>
+          {/* Tokenverbrauch-Schätzung (Stefan 2026-08-25) — reine Anzahl der
+              vom Anbieter gemeldeten Tokens, bewusst KEINE Kostenschätzung in
+              Euro (Preis pro Token unterscheidet sich stark je Anbieter/Modell). */}
+          <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] px-3 py-2.5">
+            <p className="dp-label">Geschätzter Tokenverbrauch</p>
+            <p className="mt-1 text-sm text-gray-700">
+              <span className="font-mono font-semibold">{Number(s.AI_TOKENS_TOTAL || 0).toLocaleString('de-DE')}</span> Tokens
+              {s.AI_TOKENS_SINCE && (
+                <span className="text-gray-400"> — seit {new Date(s.AI_TOKENS_SINCE).toLocaleString('de-DE')}</span>
+              )}
+            </p>
+            <p className="mt-1 text-[11px] text-gray-400">
+              Nur eine grobe Abschätzung anhand der vom Anbieter gemeldeten Tokenzahl je Aufruf —
+              keine Kostenangabe in Euro, da der Preis pro Token je nach Anbieter/Modell stark
+              unterschiedlich ist.
+            </p>
+            <button type="button" className="btn-secondary mt-2 !px-2.5 !py-1 text-xs" onClick={resetTokenUsage} disabled={busy}
+              title="Zähler auf 0 zurücksetzen, z. B. nach dem Prüfen der Abrechnung beim Anbieter">
+              Zähler zurücksetzen
+            </button>
+          </div>
           <SaveBar />
         </section>
       )}

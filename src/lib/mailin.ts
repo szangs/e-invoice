@@ -15,13 +15,15 @@ import { ensureSystemBaskets } from '@/lib/baskets'
 import { prisma } from '@/lib/db'
 import { nextDocId } from '@/lib/docId'
 import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
-import { analyzeInvoiceFile, autoElectronicCheck } from '@/lib/erechnung'
+import { analyzeInvoiceFile, autoElectronicCheck, autoFormalCheckForEInvoice } from '@/lib/erechnung'
 import { renderHtmlToPdf } from '@/lib/htmlToPdf'
+import { scheduleKositCheck } from '@/lib/kositValidator'
 import { hasFeature } from '@/lib/license'
 import { sendSystemMail } from '@/lib/mail'
 import { extractFirstPageText, rasterizeFirstPage } from '@/lib/pdfRaster'
 import { getSettings, isDevMode } from '@/lib/settings'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
+import { buildVendorReferenceHint, getVendorDefaults, getVendorReferenceExample, upsertVendorAddress } from '@/lib/vendorMemory'
 
 // Spam-/Nicht-Rechnung-Klassifikation ohne KI (Stefan 2026-08-25): reine
 // Stichwort-Heuristik als Rückfallebene, wenn kein KI-Anbieter konfiguriert
@@ -50,6 +52,15 @@ function classifyByKeywords(text: string): 'INVOICE' | 'UNCERTAIN' | 'NOT_INVOIC
   if (hasInvoiceSignal && hasAmount) return 'INVOICE'
   if (SPAM_KEYWORDS.test(text) && !hasInvoiceSignal && !hasAmount) return 'NOT_INVOICE'
   return 'UNCERTAIN'
+}
+
+/**
+ * Grobe Sicherheit in Prozent für die Stichwort-Heuristik (Stefan 2026-08-25)
+ * — keine echte Wahrscheinlichkeit, nur eine feste, konservative Einordnung
+ * je getroffener Regel (die Heuristik selbst kennt keine Abstufung).
+ */
+function confidenceForKeywordClass(cls: 'INVOICE' | 'UNCERTAIN' | 'NOT_INVOICE'): number {
+  return cls === 'NOT_INVOICE' ? 75 : cls === 'INVOICE' ? 15 : 50
 }
 
 /**
@@ -152,7 +163,7 @@ export type InboundAttachment = { filename?: string; contentType: string; conten
  * nächsten Poll in den MailIntake-Zeilen mitgespeichert.
  */
 export async function processInboundAttachments(
-  tenant: Pick<Tenant, 'id' | 'name' | 'mailAllowedDomains' | 'aiAllowed' | 'licensePlan' | 'licenseExpiresAt' | 'spamReplyEnabled'>,
+  tenant: Pick<Tenant, 'id' | 'name' | 'mailAllowedDomains' | 'aiAllowed' | 'licensePlan' | 'licenseExpiresAt' | 'spamReplyEnabled' | 'autoDeleteExactDuplicates' | 'autoSupersedeInvoiceVersions'>,
   from: string,
   toAddress: string,
   subject: string,
@@ -260,7 +271,7 @@ export async function processInboundAttachments(
     return { processed: 0, ok: false, docIds: [] }
   }
 
-  const { inboxId, quarantineId } = await ensureSystemBaskets(tenant.id)
+  const { inboxId, quarantineId, archiveId } = await ensureSystemBaskets(tenant.id)
   const canUseAi = tenant.aiAllowed && hasFeature(tenant, 'AI') && (await isAiConfigured())
   let processed = 0
   const docIds: string[] = []
@@ -282,14 +293,26 @@ export async function processInboundAttachments(
     const isStructuredValid =
       (analysis.format === 'ZUGFERD' || analysis.format?.startsWith('XRECHNUNG')) && analysis.validation?.valid === true
     let invoiceClass: 'INVOICE' | 'UNCERTAIN' | 'NOT_INVOICE' = 'INVOICE'
+    // Sicherheit der Einstufung in Prozent (Stefan 2026-08-25) — von der KI
+    // selbst geschätzt, bei der Stichwort-Heuristik grob aus der getroffenen
+    // Regel abgeleitet (siehe classifyByKeywords). Null bei strukturierter,
+    // bereits formal validierter E-Rechnung — dort gibt es keine
+    // Wahrscheinlichkeit, das ist einfach sicher.
+    let invoiceClassConfidence: number | null = null
     let ai: AiExtractedInvoice | null = null
     if (!isStructuredValid) {
       if (mime === 'application/pdf' && analysis.format === 'PDF' && canUseAi) {
         try {
           const png = await rasterizeFirstPage(buffer)
           if (png) {
-            ai = await extractInvoiceFromImage(png.toString('base64'), 'image/png')
+            // Lieferanten-Gedächtnis (Stefan 2026-08-25): frühere, bereits
+            // geprüfte Rechnung desselben Absenders als Orientierung für die
+            // KI mitgeben — siehe lib/vendorMemory.ts.
+            const referenceExample = await getVendorReferenceExample(tenant.id, from)
+            const vendorHint = buildVendorReferenceHint(referenceExample, from)
+            ai = await extractInvoiceFromImage(png.toString('base64'), 'image/png', vendorHint || undefined)
             invoiceClass = ai.documentType === 'not_invoice' ? 'NOT_INVOICE' : ai.documentType === 'invoice' ? 'INVOICE' : 'UNCERTAIN'
+            invoiceClassConfidence = ai.documentTypeConfidence
           } else {
             invoiceClass = 'UNCERTAIN'
           }
@@ -303,6 +326,7 @@ export async function processInboundAttachments(
       } else if (mime === 'application/pdf' && analysis.format === 'PDF') {
         const text = await extractFirstPageText(buffer)
         invoiceClass = text ? classifyByKeywords(text) : 'UNCERTAIN'
+        invoiceClassConfidence = confidenceForKeywordClass(invoiceClass)
       } else {
         // Bild-Anhang ohne KI-Lauf (Foto/Scan als Mail-Anhang, kein Textlayer) —
         // keine Aussage möglich, sicherheitshalber "unsicher" statt zu raten.
@@ -311,15 +335,36 @@ export async function processInboundAttachments(
     }
 
     const fileHash = hashBuffer(buffer)
-    const duplicateOfId = await detectDuplicate(tenant.id, {
+    const vendorName = ai?.vendor || d?.sellerName || domainOf(from) || from
+    const invoiceNumberValue = ai?.invoiceNumber ?? d?.number ?? null
+    // Vorher NUR d?.number/d?.sellerName (XML-Daten) — bei einer "nackten"
+    // PDF ohne eingebettetes XML (der Normalfall bei einem erneuten Versand
+    // per Mail) griff der Rechnungsnummer+Lieferant-Abgleich dadurch nie,
+    // weil d dort immer null ist (Stefan 2026-08-25, Bugfix).
+    const duplicateMatch = await detectDuplicate(tenant.id, {
       fileHash,
-      invoiceNumber: d?.number ?? null,
-      vendor: d?.sellerName ?? null,
+      invoiceNumber: invoiceNumberValue,
+      vendor: vendorName,
     })
+    // Rechnungsversionierung (Stefan 2026-08-25, Tenant.autoSupersedeInvoiceVersions)
+    // — EIGENES Konzept, KEINE Dublette: bei einem reinen Rechnungsnummer+
+    // Lieferant-Treffer (exact=false, siehe lib/duplicates.ts) mit
+    // eingeschaltetem Schalter wird NICHT als möglicher Dublette markiert,
+    // sondern automatisch als neuere Version behandelt — die älteren
+    // Versionen werden gleich nach dem Anlegen schreibgeschützt (unten).
+    const isVersioningCase = duplicateMatch !== null && !duplicateMatch.exact && tenant.autoSupersedeInvoiceVersions
+    const duplicateOfId = isVersioningCase ? null : (duplicateMatch?.id ?? null)
     const fileName = await saveInvoiceFile(tenant.id, att.filename ?? 'beleg.pdf', buffer)
     const docId = await nextDocId(tenant.id)
     const electronicCheck = autoElectronicCheck(analysis.format, analysis.validation?.valid)
+    const formalCheck = autoFormalCheckForEInvoice(analysis.format, analysis.validation?.valid)
     const basketId = invoiceClass === 'NOT_INVOICE' ? quarantineId : inboxId
+    // Lieferanten-Gedächtnis (Stefan 2026-08-25): Workflow-Felder, die bei
+    // diesem Lieferanten schon einmal von einem Menschen bestätigt wurden,
+    // als Vorschlag übernehmen — nur dort, wo die aktuelle Rechnung selbst
+    // nichts geliefert hat (siehe lib/vendorMemory.ts, keine Übernahme von
+    // Beträgen/Datum/Rechnungsnummer).
+    const vendorDefaults = await getVendorDefaults(tenant.id, vendorName)
     const invoice = await prisma.invoice.create({
       data: {
         tenantId: tenant.id,
@@ -327,8 +372,10 @@ export async function processInboundAttachments(
         basketId,
         checkElectronicAt: electronicCheck.at,
         checkElectronicBy: electronicCheck.by,
-        vendor: ai?.vendor || d?.sellerName || domainOf(from) || from,
-        invoiceNumber: ai?.invoiceNumber ?? d?.number ?? null,
+        checkFormalAt: formalCheck.at,
+        checkFormalBy: formalCheck.by,
+        vendor: vendorName,
+        invoiceNumber: invoiceNumberValue,
         invoiceDate: ai?.invoiceDate ? new Date(ai.invoiceDate) : d?.issueDate ? new Date(d.issueDate) : null,
         dueDate: ai?.dueDate ? new Date(ai.dueDate) : d?.dueDate ? new Date(d.dueDate) : null,
         discountDueDate: ai?.discountDueDate
@@ -337,12 +384,27 @@ export async function processInboundAttachments(
             ? new Date(d.discountDueDate)
             : null,
         discountPercent: ai?.discountPercent ?? d?.discountPercent ?? null,
+        // Anschrift/Steuerkennung (Stefan 2026-08-25) — nur aus der KI, nie
+        // aus dem XML: bei E-Rechnung bleibt das XML die alleinige Quelle
+        // (ERechnungView liest live daraus), diese Spalten sind ausschließlich
+        // für Nicht-E-Rechnungen gedacht.
+        sellerAddress: ai?.sellerAddress ?? null,
+        sellerVatId: ai?.sellerVatId ?? null,
+        sellerTaxNumber: ai?.sellerTaxNumber ?? null,
+        sellerCountryCode: ai?.sellerCountryCode ?? null,
         amountNet: ai?.amountNet ?? d?.net ?? null,
         amountTax: ai?.amountTax ?? d?.tax ?? null,
         amountGross: ai?.amountGross ?? d?.gross ?? null,
-        currency: ai?.currency || d?.currency || 'EUR',
-        tags: ai?.tags ?? null,
-        directDebitByVendor: ai?.directDebitByVendor ?? false,
+        currency: ai?.currency || d?.currency || vendorDefaults?.currency || 'EUR',
+        tags: ai?.tags ?? vendorDefaults?.tags ?? null,
+        directDebitByVendor: ai?.directDebitByVendor ?? vendorDefaults?.directDebitByVendor ?? false,
+        // Lieferanten-Gedächtnis: Kostenstelle/-träger werden bei der
+        // automatischen Erfassung nie erkannt (weder KI noch XML) — hier
+        // einzige Quelle, damit man sie nicht bei jeder Rechnung desselben
+        // Lieferanten erneut von Hand eintragen muss.
+        costCenterCode: vendorDefaults?.costCenterCode ?? null,
+        costCarrierCode: vendorDefaults?.costCarrierCode ?? null,
+        senderEmail: from,
         lineItems: ai?.lines && ai.lines.length > 0 ? ai.lines : undefined,
         status: InvoiceStatus.NEW,
         // Datum/Uhrzeit im Notiztext (Stefan 2026-08-25): vorher stand hier
@@ -361,8 +423,13 @@ export async function processInboundAttachments(
         validationOk: analysis.validation?.valid ?? null,
         validationIssues: analysis.validation?.missing.join(', ') || null,
         invoiceClass,
+        invoiceClassConfidence,
         htmlRendered,
         mailBodyText,
+        // Nur bei Graph gesetzt (sourceMessageId ist optional, SMTP hat
+        // keine stabile ID) — verlinkt mehrere Rechnungen aus derselben
+        // Sammel-Mail miteinander (siehe Kommentar in schema.prisma).
+        sourceMessageId: sourceMessageId ?? null,
         // KI-Werte sind NICHT sofort vertrauenswürdig: aiAssisted=true macht
         // die Rechnung erst nach menschlicher Bestätigung verschiebbar (siehe
         // lib/baskets.ts requestMove) und markiert sie in der Liste
@@ -372,8 +439,53 @@ export async function processInboundAttachments(
         // KI-Erkennung.
         aiAssisted: ai !== null,
         aiUncertainFields: ai && ai.uncertainFields.length > 0 ? ai.uncertainFields.join(',') : null,
+        // Automatisches Löschen 100%-sicherer Dubletten (Stefan 2026-08-25,
+        // Tenant.autoDeleteExactDuplicates) — NUR bei exact=true (identische
+        // Beleg-Datei), NIE bei der schwächeren Rechnungsnummer+Lieferant-
+        // Heuristik. Soft-Delete wie beim regulären Löschen-Button, bleibt im
+        // Papierkorb nachvollziehbar statt endgültig zu verschwinden.
+        ...(duplicateMatch?.exact && tenant.autoDeleteExactDuplicates
+          ? { deletedAt: new Date(), deletedBy: 'System (automatische Dubletten-Erkennung — identische Datei)' }
+          : {}),
       },
     })
+
+    // Automatische KoSIT-Prüfung (Stefan 2026-08-26) — läuft im Hintergrund
+    // weiter, ohne die Mail-Verarbeitung zu verzögern (siehe Kommentar in
+    // lib/kositValidator.ts). Kein Aufruf bei automatisch gelöschten exakten
+    // Dubletten — für die braucht niemand ein Prüfergebnis.
+    if (analysis.xml && !invoice.deletedAt) scheduleKositCheck(invoice.id)
+
+    // Lieferanten-Adressregister nachführen (Stefan 2026-08-26) — bevorzugt
+    // die strukturierte XML-Anschrift (E-Rechnung, zuverlässigste Quelle),
+    // sonst die KI-erkannte (nackte PDF). Bei aktiver Inhalts-Verschlüsselung
+    // ist hier ohnehin nichts Auswertbares vorhanden (kein Klartext serverseitig).
+    await upsertVendorAddress(tenant.id, vendorName, d?.sellerAddress ?? ai?.sellerAddress)
+
+    // Rechnungsversionierung fortsetzen (Stefan 2026-08-25): ALLE bisherigen,
+    // noch nicht überholten Versionen mit derselben Rechnungsnummer+Lieferant
+    // schreibschützen — normalerweise nur eine, aber bei einer Versionskette
+    // (mehrfach nachgesendet) sicherheitshalber alle, nicht nur die letzte.
+    // Zusätzlich gleich in die Ablage verschieben (Stefan 2026-08-26,
+    // "sollen wir sowas nicht einfach in die Ablage verschieben?") — vorher
+    // blieb die schreibgeschützte alte Version einfach in ihrem bisherigen
+    // Korb (meist Eingang) liegen, ohne dass man dort noch irgendetwas damit
+    // tun konnte (kein Bearbeiten/Verschieben/Löschen mehr möglich) — nur
+    // verwirrend. requestMove() kann hier nicht verwendet werden (die lehnt
+    // schreibgeschützte Rechnungen genau deshalb ab), daher direktes Update.
+    if (isVersioningCase && invoiceNumberValue) {
+      await prisma.invoice.updateMany({
+        where: {
+          tenantId: tenant.id,
+          id: { not: invoice.id },
+          invoiceNumber: invoiceNumberValue,
+          vendor: vendorName,
+          deletedAt: null,
+          supersededAt: null,
+        },
+        data: { supersededAt: new Date(), supersededByInvoiceId: invoice.id, basketId: archiveId },
+      })
+    }
 
     await prisma.mailIntake.create({
       data: {
@@ -382,7 +494,7 @@ export async function processInboundAttachments(
         toAddress,
         subject,
         status: 'PROCESSED',
-        detail: `${att.filename ?? 'Anhang'} (${analysis.format})${duplicateOfId ? ' · DUBLETTE' : ''}${invoiceClass !== 'INVOICE' ? ` · ${invoiceClass}` : ''}`,
+        detail: `${att.filename ?? 'Anhang'} (${analysis.format})${duplicateOfId ? ' · DUBLETTE' : ''}${isVersioningCase ? ' · NEUE VERSION' : ''}${invoiceClass !== 'INVOICE' ? ` · ${invoiceClass}${invoiceClassConfidence !== null ? ` (${invoiceClassConfidence}%)` : ''}` : ''}`,
         invoiceId: invoice.id,
         sourceMessageId,
       },

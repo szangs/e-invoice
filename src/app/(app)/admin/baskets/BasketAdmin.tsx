@@ -10,6 +10,10 @@ import { BasketKindIcon, TrashIcon } from '@/components/baskets/BasketStrip'
 
 type Member = { id: string; email: string; username: string }
 type RightRow = { userId: string; email: string; right: string }
+// Mitarbeiter-Gruppen (Stefan 2026-08-26) — siehe EmployeeGroup in schema.prisma.
+type GroupMember = { id: string; email: string }
+type GroupRow = { id: string; name: string; members: GroupMember[] }
+type GroupRightRow = { groupId: string; name: string; right: string }
 type BasketRow = {
   id: string
   name: string
@@ -20,6 +24,10 @@ type BasketRow = {
   invoiceCount: number
   members: Member[]
   rights: RightRow[]
+  groupRights: GroupRightRow[]
+  /** Belegfluss (Stefan 2026-08-25) — Ziel-Körbe, in die aus diesem Korb
+   * verschoben werden darf. Leer = uneingeschränkt (siehe lib/baskets.ts requestMove). */
+  allowedTargetIds: string[]
 }
 /** Papierkorb für Körbe (Stefan 2026-07-08) — nur leere Körbe lassen sich
  * löschen (siehe DELETE-Route), landen dann hier und lassen sich wiederherstellen. */
@@ -45,7 +53,7 @@ const KIND_LABEL: Record<BasketRow['kind'], string> = {
   HANDOVER: 'Übergabekorb (fest)',
   CUSTOM: 'Eigener Korb',
   ARCHIVE: 'Ablage (fest, nach Übergabe)',
-  QUARANTINE: 'Spam-Verdacht (fest, Mail-Eingang-Klassifikation)',
+  QUARANTINE: 'Spam/Fehlleitung (fest, Mail-Eingang-Klassifikation)',
 }
 
 const KIND_STYLE: Record<BasketRow['kind'], { ring: string; iconBg: string; iconFg: string }> = {
@@ -69,6 +77,7 @@ export function BasketAdmin({
   allUsers,
   rightsUsers,
   deletedBaskets,
+  groups,
 }: {
   baskets: BasketRow[]
   /** Für die Benachrichtigung-Mitarbeiter-Auswahl — alle aktiven Mitarbeiter. */
@@ -77,14 +86,13 @@ export function BasketAdmin({
   rightsUsers: Member[]
   /** Papierkorb für Körbe — gelöschte (leere) Körbe zum Wiederherstellen. */
   deletedBaskets: DeletedBasketRow[]
+  /** Mitarbeiter-Gruppen (Stefan 2026-08-26) — für Korb-Rechte je Gruppe. */
+  groups: GroupRow[]
 }) {
   const router = useRouter()
-  const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [addUserFor, setAddUserFor] = useState<Record<string, string>>({})
-  const [addRightUserFor, setAddRightUserFor] = useState<Record<string, string>>({})
-  const [addRightValueFor, setAddRightValueFor] = useState<Record<string, string>>({})
   const [activeId, setActiveId] = useState<string | null>(baskets[0]?.id ?? null)
   const [showDeleted, setShowDeleted] = useState(false)
 
@@ -108,30 +116,48 @@ export function BasketAdmin({
     return data
   }
 
-  async function create(e: React.FormEvent) {
-    e.preventDefault()
-    if (!name.trim()) return
-    const ok = await call('/api/admin/baskets', 'POST', { name: name.trim() })
-    if (ok) setName('')
+  // Name wird erst beim Klicken abgefragt (Stefan 2026-08-25) statt eines
+  // dauerhaft sichtbaren Eingabefelds über der Körbe-Leiste — das Anlegen
+  // ist ein seltener Vorgang, der so viel Platz nicht rechtfertigt.
+  async function create() {
+    const input = window.prompt('Name des neuen Korbs:')
+    if (!input || !input.trim()) return
+    await call('/api/admin/baskets', 'POST', { name: input.trim() })
   }
 
   return (
     <>
-      <form onSubmit={create} className="dp-card flex flex-wrap items-end gap-3">
-        <div className="min-w-[220px] flex-1">
-          <label className="dp-label">Neuer Korb — Name</label>
-          <input className="dp-input mt-1" value={name} required
-            onChange={(e) => setName(e.target.value)} placeholder="z. B. Kostenstelle Einkauf" />
-        </div>
-        <button className="btn-primary" disabled={busy}>Anlegen</button>
-        {msg && <p className="w-full text-sm text-[var(--danger)]">{msg}</p>}
-      </form>
+      {msg && <p className="dp-card text-sm text-[var(--danger)]">{msg}</p>}
 
       <div className="dp-card">
         <p className="dp-label mb-3" title="Korb anklicken, um seine Einstellungen darunter zu bearbeiten">
           Körbe
         </p>
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Reihenfolge (Stefan 2026-08-25): Eingangskorb + eigene Körbe zuerst
+              (Bearbeitungsfluss), dann "+ Neuer Korb" mit Abstand (ml-auto)
+              als Trenner vor den festen End-Körben Übergabekorb/Ablage, ganz
+              rechts "Gelöschte Körbe" als eigener, abgesetzter Bereich. */}
+          {baskets.filter((b) => b.kind !== 'HANDOVER' && b.kind !== 'ARCHIVE').map((b) => (
+            <BasketTile key={b.id} b={b} isActive={!showDeleted && b.id === active?.id}
+              onClick={() => { setActiveId(b.id); setShowDeleted(false) }} />
+          ))}
+          <button
+            type="button"
+            onClick={create}
+            disabled={busy}
+            title="Neuen Korb anlegen — fragt den Namen ab"
+            className="ml-auto flex min-w-[160px] items-center gap-2.5 rounded-2xl border-2 border-dashed border-[var(--line)] bg-white px-4 py-3 text-left text-gray-500 shadow-sm transition hover:border-[var(--accent-soft)] hover:text-[var(--accent)] hover:shadow-md"
+          >
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--surface-muted)] text-xl leading-none">
+              +
+            </span>
+            <span className="text-sm font-semibold">Neuer Korb</span>
+          </button>
+          {baskets.filter((b) => b.kind === 'HANDOVER' || b.kind === 'ARCHIVE').map((b) => (
+            <BasketTile key={b.id} b={b} isActive={!showDeleted && b.id === active?.id}
+              onClick={() => { setActiveId(b.id); setShowDeleted(false) }} />
+          ))}
           {deletedBaskets.length > 0 && (
             <button
               type="button"
@@ -154,31 +180,6 @@ export function BasketAdmin({
               </span>
             </button>
           )}
-          {baskets.map((b) => {
-            const isActive = !showDeleted && b.id === active?.id
-            const style = KIND_STYLE[b.kind]
-            return (
-              <button
-                key={b.id}
-                type="button"
-                onClick={() => { setActiveId(b.id); setShowDeleted(false) }}
-                title={`${KIND_LABEL[b.kind]} — ${b.invoiceCount} Rechnung(en)`}
-                className={`flex min-w-[160px] items-center gap-2.5 rounded-2xl border-2 bg-white px-4 py-3 text-left shadow-sm transition ${
-                  isActive ? `${style.ring} bg-[var(--accent-bg)] shadow-md` : 'border-[var(--line)] hover:border-[var(--accent-soft)] hover:shadow-md'
-                }`}
-              >
-                <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${style.iconBg} ${style.iconFg}`}>
-                  <BasketKindIcon kind={b.kind} />
-                </span>
-                <span className="min-w-0">
-                  <span className={`block truncate text-sm font-semibold ${isActive ? 'text-[var(--accent)]' : 'text-gray-800'}`}>
-                    {b.name}
-                  </span>
-                  <span className="block text-[11px] text-gray-500">{b.invoiceCount} Rechnung(en)</span>
-                </span>
-              </button>
-            )
-          })}
         </div>
       </div>
 
@@ -247,67 +248,64 @@ export function BasketAdmin({
 
           <div className="grid gap-6 border-t border-[var(--line)] pt-3 md:grid-cols-2">
             <div>
-              <p className="dp-label mb-1" title="Jeder Mitarbeiter braucht eine eigene Zeile, um überhaupt etwas in diesem Korb zu sehen oder zu tun. Sechs Stufen, jede schließt die darunter liegenden ein: Korb sehen < Inhalt anzeigen < Verschieben < Sachlich freigeben < Übergabe an den Übergabekorb < Übergabe an die Fibu. Mandanten-Admin und Betreiber haben immer alle Rechte.">
-                Korb-Rechte je Mitarbeiter
+              {/* Korb-Rechte, eine Tabelle für Mitarbeiter UND Gruppen (Stefan
+                  2026-08-26, "die Rechte sollten anders vergeben werden"):
+                  vorher zwei getrennte Listen mit je einem eigenen "Zuweisen"-
+                  Dropdown-Umweg. Jetzt eine Zeile pro Mitarbeiter/Gruppe,
+                  Rechtsstufe direkt anklickbar — kein Auswahl-Umweg mehr.
+                  Individuelles Mitarbeiter-Recht ersetzt ein eventuelles
+                  Gruppenrecht auf demselben Korb komplett (siehe lib/
+                  basketRights.ts), gilt NICHT mehr nur ergänzend. */}
+              <p className="dp-label mb-1" title="Ohne Zeile bzw. ohne angeklickte Stufe: kein Zugriff. Sechs Stufen, jede schließt die darunter liegenden ein: Korb sehen < Inhalt anzeigen < Verschieben < Sachlich freigeben < Übergabe an den Übergabekorb < Übergabe an die Fibu. Ein individuelles Mitarbeiter-Recht ersetzt ein etwaiges Gruppenrecht auf diesem Korb vollständig. Mandanten-Admin und Betreiber haben immer alle Rechte, erscheinen deshalb nicht in der Liste. Gruppen werden unter Admin → Benutzer angelegt und verwaltet.">
+                Korb-Rechte
               </p>
-              <div className="space-y-1.5">
-                {active.rights.length === 0 && (
-                  <p className="text-xs text-gray-400">Noch niemandem ein Recht zugewiesen — ohne Recht kein Zugriff.</p>
-                )}
-                {active.rights.map((r) => (
-                  <div key={r.userId} className="flex items-center gap-2">
-                    <span className="w-40 shrink-0 truncate text-xs text-gray-600" title={r.email}>{r.email}</span>
-                    <select
-                      className="dp-input !w-auto !py-1 text-xs"
-                      value={r.right}
-                      disabled={busy}
-                      title="Zugriffsrecht dieses Mitarbeiters in diesem Korb ändern"
-                      onChange={(e) =>
-                        call(`/api/admin/baskets/${active.id}/rights`, 'PUT', {
-                          userId: r.userId,
-                          right: e.target.value || null,
-                        })
-                      }
-                    >
-                      <option value="">Kein Zugriff</option>
+              {rightsUsers.length === 0 && groups.length === 0 ? (
+                <p className="text-xs text-gray-400">Noch keine Mitarbeiter oder Gruppen vorhanden.</p>
+              ) : (
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr>
+                      <th className="pb-1 text-left font-normal text-gray-400">Name</th>
                       {(active.kind === 'ARCHIVE' ? ARCHIVE_RIGHT_OPTIONS : RIGHT_OPTIONS).map((o) => (
-                        <option key={o.value} value={o.value}>{o.label}</option>
+                        <th key={o.value} className="pb-1 text-center font-normal text-gray-400" title={o.label}>
+                          {o.label.slice(0, 1)}
+                        </th>
                       ))}
-                    </select>
-                  </div>
-                ))}
-              </div>
-              {rightsUsers.filter((u) => !active.rights.some((r) => r.userId === u.id)).length > 0 && (
-                <div className="mt-2 flex items-center gap-2">
-                  <select className="dp-input !w-auto !py-1 text-xs"
-                    value={addRightUserFor[active.id] ?? ''}
-                    onChange={(e) => setAddRightUserFor((s) => ({ ...s, [active.id]: e.target.value }))}>
-                    <option value="">Mitarbeiter auswählen…</option>
-                    {rightsUsers.filter((u) => !active.rights.some((r) => r.userId === u.id)).map((u) => (
-                      <option key={u.id} value={u.id}>{u.email}</option>
-                    ))}
-                  </select>
-                  <select className="dp-input !w-auto !py-1 text-xs"
-                    value={addRightValueFor[active.id] ?? ''}
-                    onChange={(e) => setAddRightValueFor((s) => ({ ...s, [active.id]: e.target.value }))}>
-                    <option value="">Recht wählen…</option>
-                    {(active.kind === 'ARCHIVE' ? ARCHIVE_RIGHT_OPTIONS : RIGHT_OPTIONS).map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                  <button className="btn-secondary !px-2 !py-1 text-xs"
-                    disabled={busy || !addRightUserFor[active.id] || !addRightValueFor[active.id]}
-                    onClick={async () => {
-                      const userId = addRightUserFor[active.id]
-                      const right = addRightValueFor[active.id]
-                      if (!userId || !right) return
-                      await call(`/api/admin/baskets/${active.id}/rights`, 'PUT', { userId, right })
-                      setAddRightUserFor((s) => ({ ...s, [active.id]: '' }))
-                      setAddRightValueFor((s) => ({ ...s, [active.id]: '' }))
-                    }}>
-                    Zuweisen
-                  </button>
-                </div>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rightsUsers.map((u) => {
+                      const current = active.rights.find((r) => r.userId === u.id)?.right ?? ''
+                      return (
+                        <tr key={u.id}>
+                          <td className="max-w-[160px] truncate py-0.5 text-gray-600" title={u.email}>👤 {u.email}</td>
+                          {(active.kind === 'ARCHIVE' ? ARCHIVE_RIGHT_OPTIONS : RIGHT_OPTIONS).map((o) => (
+                            <RightCell key={o.value} option={o} current={current} disabled={busy}
+                              onClick={() => call(`/api/admin/baskets/${active.id}/rights`, 'PUT', {
+                                userId: u.id,
+                                right: current === o.value ? null : o.value,
+                              })} />
+                          ))}
+                        </tr>
+                      )
+                    })}
+                    {groups.map((g) => {
+                      const current = active.groupRights.find((r) => r.groupId === g.id)?.right ?? ''
+                      return (
+                        <tr key={g.id}>
+                          <td className="max-w-[160px] truncate py-0.5 text-gray-600" title={g.name}>👥 {g.name}</td>
+                          {(active.kind === 'ARCHIVE' ? ARCHIVE_RIGHT_OPTIONS : RIGHT_OPTIONS).map((o) => (
+                            <RightCell key={o.value} option={o} current={current} disabled={busy}
+                              onClick={() => call(`/api/admin/baskets/${active.id}/group-rights`, 'PUT', {
+                                groupId: g.id,
+                                right: current === o.value ? null : o.value,
+                              })} />
+                          ))}
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
               )}
             </div>
 
@@ -376,8 +374,129 @@ export function BasketAdmin({
               </div>
             )}
           </div>
+
+          <details className="border-t border-[var(--line)] pt-3" open>
+            <summary className="dp-label mb-1 cursor-pointer select-none"
+              title="Legt fest, aus welchen/in welche Körbe hinein verschoben werden darf. Ohne Auswahl bleibt das jeweils uneingeschränkt — erst mit mindestens einem Haken wird es auf die ausgewählten Körbe beschränkt.">
+              Belegfluss ▾
+            </summary>
+            {baskets.filter((b) => b.id !== active.id).length === 0 ? (
+              <p className="text-xs text-gray-400">Keine weiteren Körbe vorhanden.</p>
+            ) : (
+              <div className="mt-2 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <p className="mb-1 text-xs font-semibold text-gray-600">Eingehend — erlaubte Quell-Körbe</p>
+                  <p className="mb-1.5 text-[11px] text-gray-500">
+                    Welche anderen Körbe dürfen HIERHER verschieben — ändert deren eigenen Belegfluss (Ausgehend), nicht den dieses Korbs.
+                  </p>
+                  <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
+                    {baskets.filter((b) => b.id !== active.id).map((b) => (
+                      <label key={b.id} className="flex items-center gap-1.5 text-sm text-gray-700">
+                        <input type="checkbox" className="accent-[var(--accent)]" disabled={busy}
+                          checked={b.allowedTargetIds.includes(active.id)}
+                          onChange={(e) => {
+                            const next = e.target.checked
+                              ? [...b.allowedTargetIds, active.id]
+                              : b.allowedTargetIds.filter((id) => id !== active.id)
+                            call(`/api/admin/baskets/${b.id}/transitions`, 'PUT', { targetBasketIds: next })
+                          }} />
+                        {b.name}
+                        {b.allowedTargetIds.length === 0 && (
+                          <span className="text-[10px] text-gray-400">(aktuell uneingeschränkt)</span>
+                        )}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <p className="mb-1 text-xs font-semibold text-gray-600">Ausgehend — erlaubte Ziel-Körbe</p>
+                  <p className="mb-1.5 text-[11px] text-gray-500">
+                    {active.allowedTargetIds.length === 0
+                      ? 'Uneingeschränkt — Verschieben aus diesem Korb heraus ist überallhin möglich.'
+                      : 'Verschieben aus diesem Korb ist nur noch in die ausgewählten Ziele möglich.'}
+                  </p>
+                  <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
+                    {baskets.filter((b) => b.id !== active.id).map((b) => (
+                      <label key={b.id} className="flex items-center gap-1.5 text-sm text-gray-700">
+                        <input type="checkbox" className="accent-[var(--accent)]" disabled={busy}
+                          checked={active.allowedTargetIds.includes(b.id)}
+                          onChange={(e) => {
+                            const next = e.target.checked
+                              ? [...active.allowedTargetIds, b.id]
+                              : active.allowedTargetIds.filter((id) => id !== b.id)
+                            call(`/api/admin/baskets/${active.id}/transitions`, 'PUT', { targetBasketIds: next })
+                          }} />
+                        {b.name}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </details>
         </div>
       )}
     </>
+  )
+}
+
+// Reihenfolge für die kumulative Einfärbung in RightCell — unabhängig davon,
+// ob gerade alle sechs Stufen (RIGHT_OPTIONS) oder nur die zwei für die
+// Ablage erlaubten (ARCHIVE_RIGHT_OPTIONS) angezeigt werden.
+const FULL_RIGHT_ORDER = RIGHT_OPTIONS.map((o) => o.value)
+
+/** Eine anklickbare Rechtsstufe in der Korb-Rechte-Tabelle — gefüllt, wenn
+ * sie <= der aktuell gesetzten Stufe liegt (Stufen schließen sich kumulativ
+ * ein), sonst nur umrandet. Klick auf die aktuell gesetzte Stufe setzt auf
+ * "kein Zugriff" zurück (siehe onClick-Logik am Aufrufort). */
+function RightCell({
+  option, current, disabled, onClick,
+}: {
+  option: { value: string; label: string }
+  current: string
+  disabled: boolean
+  onClick: () => void
+}) {
+  const filled = current !== '' && FULL_RIGHT_ORDER.indexOf(option.value) <= FULL_RIGHT_ORDER.indexOf(current)
+  return (
+    <td className="py-0.5 text-center">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onClick}
+        title={`${option.label}${current === option.value ? ' (klicken zum Entfernen)' : ''}`}
+        className={`flex h-5 w-5 items-center justify-center rounded-full border text-[10px] font-bold transition ${
+          filled
+            ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+            : 'border-gray-300 bg-white text-gray-400 hover:border-[var(--accent-soft)]'
+        }`}
+      >
+        {option.label.slice(0, 1)}
+      </button>
+    </td>
+  )
+}
+
+function BasketTile({ b, isActive, onClick }: { b: BasketRow; isActive: boolean; onClick: () => void }) {
+  const style = KIND_STYLE[b.kind]
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`${KIND_LABEL[b.kind]} — ${b.invoiceCount} Rechnung(en)`}
+      className={`flex min-w-[160px] items-center gap-2.5 rounded-2xl border-2 bg-white px-4 py-3 text-left shadow-sm transition ${
+        isActive ? `${style.ring} bg-[var(--accent-bg)] shadow-md` : 'border-[var(--line)] hover:border-[var(--accent-soft)] hover:shadow-md'
+      }`}
+    >
+      <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${style.iconBg} ${style.iconFg}`}>
+        <BasketKindIcon kind={b.kind} />
+      </span>
+      <span className="min-w-0">
+        <span className={`block truncate text-sm font-semibold ${isActive ? 'text-[var(--accent)]' : 'text-gray-800'}`}>
+          {b.name}
+        </span>
+        <span className="block text-[11px] text-gray-500">{b.invoiceCount} Rechnung(en)</span>
+      </span>
+    </button>
   )
 }

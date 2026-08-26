@@ -9,8 +9,9 @@ import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { nextDocId } from '@/lib/docId'
 import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
-import { analyzeInvoiceFile, autoElectronicCheck, EINVOICE_FORMATS, type Analysis } from '@/lib/erechnung'
+import { analyzeInvoiceFile, autoElectronicCheck, autoFormalCheckForEInvoice, EINVOICE_FORMATS, type Analysis } from '@/lib/erechnung'
 import { CONTENT_ENC_VENDOR_PLACEHOLDER, toDTO } from '@/lib/invoices'
+import { scheduleKositCheck } from '@/lib/kositValidator'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
 
 // Inhalts-Verschlüsselung (Stefan 2026-07-09): ist contentEnc gesetzt, hat der
@@ -111,11 +112,11 @@ export async function POST(req: NextRequest) {
     // "gleicher Lieferant + gleiche Nummer" würde sonst ständig fälschlich
     // anschlagen. Die Dubletten-Prüfung stützt sich dann nur noch auf den
     // Datei-Hash (fileHash, s. o. — wird vor dem Verschlüsseln gebildet).
-    const duplicateOfId = await detectDuplicate(tenantId, {
+    const duplicateOfId = (await detectDuplicate(tenantId, {
       fileHash,
       invoiceNumber: hasEncryptedContent ? null : (fields.invoiceNumber || d?.number || null),
       vendor: hasEncryptedContent ? null : (fields.vendor || d?.sellerName || null),
-    })
+    }))?.id ?? null
 
     const docId = await nextDocId(tenantId)
     // Neue Rechnungen starten immer im Eingangskorb (Körbe-Workflow, Stefan
@@ -127,6 +128,7 @@ export async function POST(req: NextRequest) {
     // (nackte PDF, Scan, verschlüsselter Upload — strukturell nie eine
     // E-Rechnung) "entfällt" statt eines offenen, aber sinnlosen Häkchens.
     const electronicCheck = autoElectronicCheck(analysis?.format ?? 'PDF', analysis?.validation?.valid)
+    const formalCheck = autoFormalCheckForEInvoice(analysis?.format ?? 'PDF', analysis?.validation?.valid)
     const invoice = await prisma.invoice.create({
       data: {
         tenantId,
@@ -134,6 +136,8 @@ export async function POST(req: NextRequest) {
         basketId,
         checkElectronicAt: electronicCheck.at,
         checkElectronicBy: electronicCheck.by,
+        checkFormalAt: formalCheck.at,
+        checkFormalBy: formalCheck.by,
         vendor: hasEncryptedContent
           ? VENDOR_PLACEHOLDER
           : isEInvoiceUpload ? (d?.sellerName || 'Unbekannt') : (fields.vendor || d?.sellerName || 'Unbekannt'),
@@ -186,6 +190,9 @@ export async function POST(req: NextRequest) {
       action: 'INVOICE_CREATE',
       details: `Rechnung ${invoice.vendor} ${invoice.invoiceNumber ?? ''} erfasst`,
     })
+    // Automatische KoSIT-Prüfung (Stefan 2026-08-26) — läuft im Hintergrund
+    // weiter, ohne die Antwort auf diese Anfrage zu verzögern.
+    if (invoice.xmlData) scheduleKositCheck(invoice.id)
     return NextResponse.json({ invoice: toDTO(invoice) })
   } catch (e) {
     return jsonError(e)

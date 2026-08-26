@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { getSettings } from '@/lib/settings'
+import { KositPanel } from './KositPanel'
 import { MailinPanel } from './MailinPanel'
 import { OpsControls } from './OpsControls'
 import { SupportOps } from './SupportOps'
@@ -63,9 +64,12 @@ export default async function PlatformPage() {
         maintenanceLock={settings.MAINTENANCE_LOCK === '1'}
         serviceStatusText={settings.SERVICE_STATUS_TEXT}
         supportTimeoutMin={settings.SUPPORT_TIMEOUT_MIN || '30'}
+        sessionTimeoutHours={settings.SESSION_TIMEOUT_HOURS || '12'}
       />
 
       <MailinPanel />
+
+      <KositPanel />
 
       {/* Fernwartung §14A */}
       <section className="dp-card">

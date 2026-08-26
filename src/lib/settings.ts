@@ -29,6 +29,13 @@ export const SETTING_KEYS = [
   'AI_API_KEY',
   'AI_MODEL',
   'AI_BASE_URL',
+  // Tokenverbrauch-Schätzung (Stefan 2026-08-25) — Summe der vom Anbieter
+  // gemeldeten total_tokens je Aufruf (lib/aiExtract.ts), NUR eine grobe
+  // Abschätzung: Modelle/Anbieter haben stark unterschiedliche Preise pro
+  // Token, deshalb bewusst KEINE Kostenschätzung in Euro, nur die reine
+  // Token-Zahl seit dem letzten Zurücksetzen.
+  'AI_TOKENS_TOTAL',
+  'AI_TOKENS_SINCE',
   // Schalter
   'WELCOME_MAIL_ENABLED', // "1" = automatischer Versand der Zugangsdaten
   'FEEDBACK_ENABLED',
@@ -37,6 +44,7 @@ export const SETTING_KEYS = [
   'MAINTENANCE_LOCK', // "1" = Anmeldesperre für normale Nutzer
   'SERVICE_STATUS_TEXT',
   'SUPPORT_TIMEOUT_MIN', // globaler Zeitabschluss für Fernwartungs-Sitzungen (§9/§14)
+  'SESSION_TIMEOUT_HOURS', // globale Sitzungsdauer für alle Anmeldungen (§5) — leer = 12h Standard
   // E-Mail-Eingang (Weiterleitungs-Modell, eigener SMTP-Empfänger — IMAP-Abruf am 2026-07-08 entfernt)
   'MAIL_IN_DOMAIN', // z. B. einvoice.deltaplus.de (Subdomain für Einlieferung)
   'MAIL_IN_PREFIX', // z. B. "rechnung-" → rechnung-<kurzname>@<domain>
@@ -86,6 +94,23 @@ export async function setSetting(key: SettingKey, value: string): Promise<void> 
     update: { value },
     create: { key, value },
   })
+}
+
+/**
+ * Zählt vom KI-Anbieter gemeldete Tokens auf (Stefan 2026-08-25, siehe
+ * AI_TOKENS_TOTAL oben) — bewusst "best effort" per Lese-Schreib-Zyklus statt
+ * einer atomaren DB-Operation: bei parallel laufenden Anfragen ist ein
+ * kleiner Zählfehler für eine reine Abschätzung unkritisch.
+ */
+export async function addAiTokenUsage(tokens: number): Promise<void> {
+  if (!Number.isFinite(tokens) || tokens <= 0) return
+  const [totalRow, sinceRow] = await Promise.all([
+    prisma.systemSetting.findUnique({ where: { key: 'AI_TOKENS_TOTAL' } }),
+    prisma.systemSetting.findUnique({ where: { key: 'AI_TOKENS_SINCE' } }),
+  ])
+  const newTotal = (Number(totalRow?.value) || 0) + tokens
+  await setSetting('AI_TOKENS_TOTAL', String(newTotal))
+  if (!sinceRow?.value) await setSetting('AI_TOKENS_SINCE', new Date().toISOString())
 }
 
 /** Maske für sensible Werte: erste/letzte 2 Zeichen sichtbar. */

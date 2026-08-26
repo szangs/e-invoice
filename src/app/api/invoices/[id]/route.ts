@@ -11,6 +11,7 @@ import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { EINVOICE_FORMATS } from '@/lib/docFormat'
 import { CONTENT_ENC_VENDOR_PLACEHOLDER, toDTO } from '@/lib/invoices'
+import { upsertVendorAddress } from '@/lib/vendorMemory'
 
 // Steuerlich relevante Felder — bei ZUGFeRD/XRechnung ist das XML das
 // rechtsverbindliche Original, hier darf die Anzeige nie davon abweichen
@@ -19,6 +20,7 @@ import { CONTENT_ENC_VENDOR_PLACEHOLDER, toDTO } from '@/lib/invoices'
 // NICHT betroffen — das ist unsere eigene Workflow-Metadaten-Ebene.
 const TAX_RELEVANT_FIELDS = [
   'vendor', 'invoiceNumber', 'invoiceDate', 'dueDate', 'discountDueDate', 'discountPercent',
+  'sellerAddress', 'sellerVatId', 'sellerTaxNumber', 'sellerCountryCode',
   'amountNet', 'amountTax', 'amountGross', 'currency',
 ] as const
 
@@ -29,6 +31,10 @@ const schema = z.object({
   dueDate: z.string().nullable().optional(),
   discountDueDate: z.string().nullable().optional(),
   discountPercent: z.number().nullable().optional(),
+  sellerAddress: z.string().nullable().optional(),
+  sellerVatId: z.string().nullable().optional(),
+  sellerTaxNumber: z.string().nullable().optional(),
+  sellerCountryCode: z.string().nullable().optional(),
   amountNet: z.number().nullable().optional(),
   amountTax: z.number().nullable().optional(),
   amountGross: z.number().nullable().optional(),
@@ -49,6 +55,15 @@ const schema = z.object({
   // in TAX_RELEVANT_FIELDS) und bei aktiver Inhalts-Verschlüsselung.
   costCenterCode: z.string().nullable().optional(),
   costCarrierCode: z.string().nullable().optional(),
+  // Inland/EU/Drittland-Überschreibung (Stefan 2026-08-25) — Workflow-
+  // Einschätzung, kein Rechnungsinhalt, deshalb auch bei E-Rechnung frei
+  // änderbar (nicht in TAX_RELEVANT_FIELDS).
+  taxRegion: z.enum(['INLAND', 'EU', 'DRITTLAND']).nullable().optional(),
+  // "Prüfung ignorieren" (Stefan 2026-08-25) — Begründung ist beim Setzen
+  // Pflicht (serverseitig erzwungen unten), beim Zurücknehmen (false) wird
+  // reason ignoriert.
+  pflichtangabenIgnored: z.boolean().optional(),
+  pflichtangabenIgnoredReason: z.string().nullable().optional(),
   // Inhalts-Verschlüsselung (Stefan 2026-07-09): ersetzt vendor/invoiceNumber/
   // amount*/currency/tags/notes oben durch ein einziges Chiffrat — siehe
   // clientCrypto.ts encryptJson / /invoices/[id]/InvoiceEditForm.tsx.
@@ -92,8 +107,10 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     const ctx = await getContext()
     const tenantId = requireTenant(ctx)
     const existing = await findOwn(params.id, tenantId)
-    const { checkElectronic, checkFormal, checkSubstantive, checkAccounting, restore, confirmAi, lineItems, ...rest } =
-      schema.parse(await req.json())
+    const {
+      checkElectronic, checkFormal, checkSubstantive, checkAccounting, restore, confirmAi, lineItems,
+      pflichtangabenIgnored, pflichtangabenIgnoredReason, ...rest
+    } = schema.parse(await req.json())
     const data = { ...rest } as typeof rest
     // Separat behandelt statt im generischen `data`-Spread (Stefan
     // 2026-08-25): Prisma verlangt für Json?-Spalten beim Löschen das
@@ -125,6 +142,12 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     if (await isInvoiceLockedByClosure(existing.createdAt)) {
       throw new ApiError(423, `Diese Rechnung gehört zum abgeschlossenen Prüfungszeitraum ${existing.createdAt.getFullYear()} und ist schreibgeschützt.`)
     }
+    // Rechnungsversionierung (Stefan 2026-08-25): eine ältere, bereits
+    // überholte Version ist ebenfalls schreibgeschützt (siehe schema.prisma
+    // Invoice.supersededAt) — Ausnahme wie beim Perioden-Abschluss keine.
+    if (existing.supersededAt) {
+      throw new ApiError(423, 'Diese Rechnung wurde durch eine neuere Version ersetzt und ist schreibgeschützt.')
+    }
 
     // Steuerlich relevante Felder bei ZUGFeRD/XRechnung serverseitig sperren
     // (defense-in-depth — die UI blendet sie zwar schon read-only ein, aber
@@ -152,6 +175,9 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       data.currency = 'EUR'
       data.tags = null
       data.notes = null
+      data.sellerAddress = null
+      data.sellerVatId = null
+      data.sellerTaxNumber = null
     }
 
     // Korb-Rechte (Stefan 2026-07-08): "Sachlich freigeben" braucht APPROVE,
@@ -238,6 +264,13 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       basketMove = { basketId: handoverId }
     }
 
+    // "Prüfung ignorieren" (Stefan 2026-08-25): Begründung ist beim Setzen
+    // Pflicht — reine Anzeige-Ausnahme, aber GoBD-Nachvollziehbarkeit über
+    // Grund/wer/wann bleibt erhalten (siehe audit() unten zusätzlich).
+    if (pflichtangabenIgnored === true && !pflichtangabenIgnoredReason?.trim()) {
+      throw new ApiError(400, 'Für "Prüfung ignorieren" wird eine kurze Begründung benötigt.')
+    }
+
     // Als eigene, explizit getypte Variable statt eines großen Inline-Spreads
     // (Stefan 2026-08-25): TS kommt bei so vielen kombinierten optionalen
     // Feldern sonst mit Prismas "checked vs. unchecked update input"-Union
@@ -249,6 +282,11 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       ...basketMove,
       ...(restore ? { deletedAt: null, deletedBy: null } : {}),
       ...(confirmAi ? { aiConfirmedAt: new Date(), aiConfirmedBy: ctx.email } : {}),
+      ...(pflichtangabenIgnored === true
+        ? { pflichtangabenIgnoredAt: new Date(), pflichtangabenIgnoredBy: ctx.email, pflichtangabenIgnoredReason: pflichtangabenIgnoredReason!.trim() }
+        : pflichtangabenIgnored === false
+          ? { pflichtangabenIgnoredAt: null, pflichtangabenIgnoredBy: null, pflichtangabenIgnoredReason: null }
+          : {}),
       invoiceDate: data.invoiceDate === undefined ? undefined : data.invoiceDate ? new Date(data.invoiceDate) : null,
       dueDate: data.dueDate === undefined ? undefined : data.dueDate ? new Date(data.dueDate) : null,
       discountDueDate: data.discountDueDate === undefined ? undefined : data.discountDueDate ? new Date(data.discountDueDate) : null,
@@ -257,6 +295,13 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       where: { id: params.id },
       data: updateData,
     })
+    // Lieferanten-Adressregister nachführen (Stefan 2026-08-26) — nur wenn
+    // dieser Aufruf tatsächlich eine Klartext-Anschrift mitgeliefert hat
+    // (bei aktiver Inhalts-Verschlüsselung sendet der Client stattdessen
+    // contentEnc, sellerAddress bleibt hier undefined).
+    if (updateData.sellerAddress !== undefined) {
+      await upsertVendorAddress(tenantId, invoice.vendor, invoice.sellerAddress)
+    }
     await audit({
       tenantId,
       actorId: ctx.userId,
@@ -264,7 +309,11 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       action: restore ? 'INVOICE_RESTORE' : 'INVOICE_UPDATE',
       details: restore
         ? `Rechnung ${invoice.vendor} ${invoice.invoiceNumber ?? invoice.id} wiederhergestellt`
-        : `Rechnung ${invoice.vendor} ${invoice.invoiceNumber ?? invoice.id} geändert`,
+        : pflichtangabenIgnored === true
+          ? `Pflichtangaben-Prüfung ignoriert für ${invoice.vendor} ${invoice.invoiceNumber ?? invoice.id} — Grund: ${pflichtangabenIgnoredReason!.trim()}`
+          : pflichtangabenIgnored === false
+            ? `Pflichtangaben-Prüfung wieder aktiviert für ${invoice.vendor} ${invoice.invoiceNumber ?? invoice.id}`
+            : `Rechnung ${invoice.vendor} ${invoice.invoiceNumber ?? invoice.id} geändert`,
     })
 
     // Automatischer Wechsel in den Übergabekorb (Stefan 2026-07-09): sobald
@@ -328,6 +377,9 @@ export async function DELETE(_req: NextRequest, { params }: { params: { id: stri
     }
     if (await isInvoiceLockedByClosure(existing.createdAt)) {
       throw new ApiError(423, `Diese Rechnung gehört zum abgeschlossenen Prüfungszeitraum ${existing.createdAt.getFullYear()} und ist schreibgeschützt.`)
+    }
+    if (existing.supersededAt) {
+      throw new ApiError(423, 'Diese Rechnung wurde durch eine neuere Version ersetzt und ist schreibgeschützt.')
     }
     const invoice = await prisma.invoice.update({
       where: { id: existing.id },

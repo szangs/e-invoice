@@ -9,6 +9,11 @@ build/
 
 uploads/
 
+# KoSIT-Validator (Stefan 2026-08-26): JRE + validator.jar + Regelwerk werden
+# per scripts/setup-kosit.ts heruntergeladen, nicht ins Repo committen (groß,
+# binär, per Update-Funktion ohnehin austauschbar) — siehe tools/kosit/.
+tools/kosit/
+
 npm-debug.log*
 *.tsbuildinfo
 next-env.d.ts

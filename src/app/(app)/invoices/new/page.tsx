@@ -36,7 +36,8 @@ const LOCK_REASON =
   'da die Anzeige sonst vom rechtsverbindlichen Original abweichen würde.'
 
 function toInput(n: number | null): string {
-  return n === null ? '' : String(n).replace('.', ',')
+  // Immer 2 Nachkommastellen (Stefan 2026-08-25, Bugfix — siehe InvoiceEditForm.tsx).
+  return n === null ? '' : n.toFixed(2).replace('.', ',')
 }
 
 export default function NewInvoicePage() {
@@ -340,7 +341,8 @@ export default function NewInvoicePage() {
             {aiBusy ? 'KI liest die Rechnung …' : '✨ Mit KI ausfüllen'}
           </button>
           <p className="text-[11px] text-gray-500">
-            Liest den Beleg und befüllt die Felder unten inkl. Verschlagwortung — bitte prüfen.
+            Liest den Beleg und befüllt die Felder unten inkl. Verschlagwortung. KI-generierte oder
+            -verarbeitete Inhalte können fehlerhaft sein — bitte vor der Übernahme immer gegenprüfen.
             {encEnabled && (
               <span className="block text-[var(--warn-strong)]">
                 ⚠ Der Beleg wird für diese Erkennung an den externen KI-Anbieter gesendet — eine

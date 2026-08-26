@@ -21,8 +21,20 @@ import { getSettings, isDevMode } from '@/lib/settings'
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0'
 
+// "Prefer: IdType=ImmutableId" (Stefan 2026-08-25): ohne diesen Header liefert
+// Graph für Postfach-Objekte VERÄNDERLICHE IDs — eine Nachrichten-ID kann sich
+// beim Verschieben in einen anderen Ordner ändern, teils auch bei anderen
+// Nachrichten im selben Ordner. Live beobachtet: bei mehreren Nachrichten in
+// einem Poll-Zyklus schlugen Betreff-Kennzeichnung/Verschieben für spätere
+// Nachrichten mit "ErrorItemNotFound (404)" fehl, weil die zuvor geholte ID
+// nicht mehr galt. Mit dem Header bleiben IDs über Verschiebe-Vorgänge hinweg
+// stabil — betrifft ALLE Graph-Aufrufe, die mit Nachrichten-IDs arbeiten
+// (auch nur-lesende, da dieselbe ID später zum Verschieben/Kennzeichnen
+// wiederverwendet wird).
+const IMMUTABLE_ID_HEADERS = { Prefer: 'IdType="ImmutableId"' }
+
 async function graphGet(token: string, url: string): Promise<any> {
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}`, ...IMMUTABLE_ID_HEADERS } })
   if (!res.ok) {
     const body = await res.text()
     throw new Error(`Graph-Anfrage fehlgeschlagen (${res.status}): ${body.slice(0, 300)}`)
@@ -101,7 +113,7 @@ async function fetchRecentMessages(token: string, mailbox: string, folderId: str
 async function moveMessage(token: string, mailbox: string, messageId: string, destinationFolderId: string): Promise<void> {
   const res = await fetch(`${GRAPH_BASE}/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}/move`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...IMMUTABLE_ID_HEADERS },
     body: JSON.stringify({ destinationId: destinationFolderId }),
   })
   if (!res.ok) {
@@ -124,7 +136,7 @@ async function tagMessageSubject(token: string, mailbox: string, messageId: stri
   const newSubject = `${tag} ${originalSubject}`.slice(0, 250)
   const res = await fetch(`${GRAPH_BASE}/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}`, {
     method: 'PATCH',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...IMMUTABLE_ID_HEADERS },
     body: JSON.stringify({ subject: newSubject }),
   })
   if (!res.ok) {
@@ -223,7 +235,7 @@ export async function createGraphTestMessage(
     `${GRAPH_BASE}/users/${encodeURIComponent(mailbox)}/mailFolders/${encodeURIComponent(folderId)}/messages`,
     {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...IMMUTABLE_ID_HEADERS },
       body: JSON.stringify({
         subject,
         body: htmlBody ? { contentType: 'HTML', content: htmlBody } : { contentType: 'Text', content: text },
@@ -267,14 +279,20 @@ export async function testGraphMailbox(
   return { folderId, messageCount: messages.length, source: creds.source, moveToFolderResolved }
 }
 
-/** Fragt für alle dafür aktivierten Mandanten ihr konfiguriertes Postfach/Ordner ab. */
-export async function runGraphMailinPoll(): Promise<string[]> {
+/**
+ * Fragt für alle dafür aktivierten Mandanten ihr konfiguriertes Postfach/
+ * Ordner ab — mit `tenantId` auf genau einen Mandanten eingeschränkt (Stefan
+ * 2026-08-25, für den manuellen "Jetzt abrufen"-Knopf im Eingangskorb, siehe
+ * api/mailin/poll/route.ts — ein Mandant darf natürlich nur seinen eigenen
+ * Abruf auslösen, nicht den aller anderen).
+ */
+export async function runGraphMailinPoll(tenantId?: string): Promise<string[]> {
   const log: string[] = []
   const s = await getSettings()
   if (s.MAIL_IN_GRAPH_ENABLED !== '1') return ['Graph-Mail-Eingang ist deaktiviert (Systemeinstellungen).']
 
   const tenants = await prisma.tenant.findMany({
-    where: { active: true, mailInGraphEnabled: true, mailInGraphMailbox: { not: null } },
+    where: { active: true, mailInGraphEnabled: true, mailInGraphMailbox: { not: null }, ...(tenantId ? { id: tenantId } : {}) },
   })
   if (tenants.length === 0) return ['Kein Mandant hat den Graph-Mail-Eingang aktiviert.']
 

@@ -13,6 +13,7 @@ import { isInvoiceLockedByClosure } from '@/lib/auditClosure'
 import { hasBasketRight } from '@/lib/basketRights'
 import { ApiError } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { buyerNameMismatch, parseInvoiceXml } from '@/lib/erechnung'
 import { sendSystemMail } from '@/lib/mail'
 
 /** Legt Eingangs-/Übergabe-/Ablage-/Spam-Verdacht-Korb an, falls für den Mandanten noch nicht vorhanden. */
@@ -48,7 +49,7 @@ export async function ensureSystemBaskets(
   const quarantineId = quarantine
     ? quarantine.id
     : (await prisma.basket.create({
-        data: { tenantId, name: 'Spam-Verdacht', kind: BasketKind.QUARANTINE, position: 500 },
+        data: { tenantId, name: 'Spam/Fehlleitung', kind: BasketKind.QUARANTINE, position: 500 },
       })).id
   return { inboxId, handoverId, archiveId, quarantineId }
 }
@@ -94,7 +95,9 @@ export type BasketCounts = {
   total: number
   dueSoon: number
   overdue: number
-  /** Ungelesene, an DIESEN Nutzer adressierte Nachrichten in diesem Korb (Stefan 2026-07-08). */
+  /** Offene (nicht als erledigt markierte) Nachrichten in diesem Korb, an
+   * DIESEN Nutzer adressiert oder "an alle" (Stefan 2026-07-08, erweitert
+   * 2026-08-26 um den Erledigt-Status statt nur den Lesestatus). */
   unreadNotes: number
   /** Vollständig geprüft (Elektronisch+Formal+Sachlich) und noch nicht an die
    * Fibu übergeben (Stefan 2026-07-09) — im Übergabekorb aussagekräftiger als
@@ -122,10 +125,12 @@ const DUE_SOON_DAYS = 7
  * Buchhaltung übergebene Rechnungen (checkAccountingAt gesetzt — Fälligkeit
  * ist dann Sache der Fibu, nicht mehr der Körbe-Bearbeitung).
  *
- * `userId` (optional): wenn gesetzt, zusätzlich ungelesene, an DIESEN Nutzer
- * gerichtete Nachrichten je Korb zählen (Stefan 2026-07-08) — dasselbe
- * 💬-Symbol wie in der Rechnungsliste, hier auf Korb-Ebene aggregiert, damit
- * eine Nachricht auffällt, ohne den Korb erst öffnen zu müssen.
+ * `userId` (optional): wenn gesetzt, zusätzlich offene (nicht erledigte), an
+ * DIESEN Nutzer oder "an alle" gerichtete Nachrichten je Korb zählen (Stefan
+ * 2026-07-08, erweitert 2026-08-26) — dasselbe 💬-Symbol wie in der
+ * Rechnungsliste, hier auf Korb-Ebene aggregiert, damit eine Nachricht
+ * auffällt, ohne den Korb erst öffnen zu müssen. Zählt bewusst bis zum
+ * Erledigt-Haken, nicht nur bis zum ersten Lesen.
  */
 export async function getBasketCounts(tenantId: string, userId?: string): Promise<Record<string, BasketCounts>> {
   const now = new Date()
@@ -170,7 +175,12 @@ export async function getBasketCounts(tenantId: string, userId?: string): Promis
     }),
     userId
       ? prisma.invoiceNote.findMany({
-          where: { tenantId, toUserId: userId, readAt: null, invoice: { deletedAt: null } },
+          where: {
+            tenantId,
+            doneAt: null,
+            OR: [{ toUserId: userId }, { toUserId: null }],
+            invoice: { deletedAt: null },
+          },
           select: { invoice: { select: { basketId: true } } },
         })
       : Promise.resolve([]),
@@ -232,7 +242,8 @@ export async function requestMove(
     select: {
       id: true, vendor: true, invoiceNumber: true, basketId: true, createdAt: true,
       checkElectronicAt: true, checkFormalAt: true, checkSubstantiveAt: true,
-      aiAssisted: true, aiConfirmedAt: true,
+      aiAssisted: true, aiConfirmedAt: true, supersededAt: true,
+      xmlData: true, buyerNameMismatchAcknowledged: true,
     },
   })
   if (!invoice) throw new Error('Rechnung nicht gefunden')
@@ -242,6 +253,12 @@ export async function requestMove(
   // werden (siehe lib/auditClosure.ts).
   if (await isInvoiceLockedByClosure(invoice.createdAt)) {
     throw new ApiError(423, `Diese Rechnung gehört zum abgeschlossenen Prüfungszeitraum ${invoice.createdAt.getFullYear()} und ist schreibgeschützt.`)
+  }
+  // Rechnungsversionierung (Stefan 2026-08-25): eine ältere, bereits
+  // überholte Version darf ebenfalls nicht mehr verschoben werden — die
+  // aktuelle Version übernimmt den Workflow.
+  if (invoice.supersededAt) {
+    throw new ApiError(423, 'Diese Rechnung wurde durch eine neuere Version ersetzt und ist schreibgeschützt.')
   }
 
   // KI-erkannte Werte müssen erst von einem Menschen bestätigt werden (Tab-
@@ -265,6 +282,20 @@ export async function requestMove(
     if (!fullyChecked) {
       throw new ApiError(400, 'Diese Rechnung ist noch nicht vollständig geprüft — der Übergabekorb wird erst nach allen drei Häkchen automatisch erreicht.')
     }
+    // Rechnungsempfänger-Abgleich (Stefan 2026-08-25, Tenant.legalName) —
+    // optional, per Mandanten-Einstellung: eine unbestätigte Abweichung
+    // sperrt die Übergabe an die Fibu, bis sie per "Passt trotzdem"
+    // akzeptiert wurde (siehe BuyerNameMismatchWarning.tsx). Nur bei
+    // E-Rechnung prüfbar (buyerName kommt strukturiert aus dem XML).
+    if (!invoice.buyerNameMismatchAcknowledged && invoice.xmlData) {
+      const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { legalName: true, buyerNameMismatchBlocksHandover: true } })
+      if (tenant?.buyerNameMismatchBlocksHandover) {
+        const parsed = parseInvoiceXml(invoice.xmlData)
+        if (parsed && buyerNameMismatch(tenant.legalName, parsed.data.buyerName)) {
+          throw new ApiError(400, `Rechnungsempfänger weicht von der hinterlegten Firmenbezeichnung „${tenant.legalName}" ab — bitte auf der Detailseite prüfen und ggf. "Passt trotzdem" bestätigen, bevor an die Fibu übergeben wird.`)
+        }
+      }
+    }
   }
 
   const fromBasket = invoice.basketId
@@ -282,6 +313,17 @@ export async function requestMove(
       throw new ApiError(403, target.kind === BasketKind.HANDOVER
         ? 'Kein Recht zur Übergabe an den Übergabekorb.'
         : 'Kein Recht zum Verschieben aus diesem Korb.')
+    }
+
+    // Belegfluss (Stefan 2026-08-25): solange für den Ausgangskorb KEIN
+    // Eintrag existiert, bleibt das Verschieben uneingeschränkt (Opt-in, kein
+    // Bruch für bestehende Mandanten) — siehe BasketAdmin.tsx.
+    const allowedTargets = await prisma.basketTransition.findMany({
+      where: { fromBasketId: fromBasket.id },
+      select: { toBasketId: true },
+    })
+    if (allowedTargets.length > 0 && !allowedTargets.some((t) => t.toBasketId === targetBasketId)) {
+      throw new ApiError(400, `Verschieben von "${fromBasket.name}" nach "${target.name}" ist im Belegfluss nicht vorgesehen.`)
     }
   }
 
