@@ -9,6 +9,18 @@ set -euo pipefail
 APP_DIR=/opt/e-rechnung-check/service
 SERVICE_USER=erechnung
 
+echo "== Swap (kleiner vServer) =="
+if [ "$(swapon --show --noheadings | wc -l)" -eq 0 ] && [ ! -f /swapfile ]; then
+  fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  echo "  2G Swap angelegt"
+else
+  echo "  Swap vorhanden — übersprungen"
+fi
+
 echo "== Pakete =="
 apt-get update -y
 apt-get install -y ca-certificates curl gnupg unzip default-jre-headless nginx

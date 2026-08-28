@@ -83,7 +83,21 @@ export async function validateWithKosit(xml) {
     const inputPath = join(dir, 'invoice.xml')
     await writeFile(inputPath, xml, 'utf8')
     const repository = dirname(cfg.scenarios)
-    const args = ['-jar', cfg.jar, '-s', cfg.scenarios, '-r', repository, '-h', '-o', dir, inputPath]
+    // JVM-Heap begrenzen — der vServer hat wenig RAM, KoSIT lädt viel XSLT.
+    const xmx = process.env.KOSIT_JAVA_XMX?.trim() || '512m'
+    const args = [
+      `-Xmx${xmx}`,
+      '-jar',
+      cfg.jar,
+      '-s',
+      cfg.scenarios,
+      '-r',
+      repository,
+      '-h',
+      '-o',
+      dir,
+      inputPath,
+    ]
 
     let res
     try {
