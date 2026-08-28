@@ -752,6 +752,20 @@ pre.raw {
   color: var(--ink-soft);
   margin-bottom: 4px;
 }
+/* Lange Feature-Liste kompakter; im gestapelten Layout zweispaltig. */
+.feature-list li {
+  font-size: 13px;
+  margin-bottom: 3px;
+}
+@media (min-width: 480px) and (max-width: 739px) {
+  .feature-list {
+    column-count: 2;
+    column-gap: 22px;
+  }
+  .feature-list li {
+    break-inside: avoid;
+  }
+}
 .preview-col .btn {
   margin-top: auto;
   justify-content: center;
