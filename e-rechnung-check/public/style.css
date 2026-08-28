@@ -808,7 +808,38 @@ pre.raw {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--ink-faint);
-  margin: 0 0 6px !important;
+  margin: 14px 0 6px !important;
+}
+.preview-col > .preview-more-label:first-of-type {
+  margin-top: 0 !important;
+}
+
+/* Neutraler Hinweis-Callout (HS-Spalte) */
+.preview-highlight {
+  font-size: 13px !important;
+  color: var(--ink) !important;
+  background: var(--surface-warm);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0 0 14px !important;
+}
+.preview-hl-badge {
+  display: inline-block;
+  background: var(--accent-soft);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  padding: 2px 9px;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+.preview-col sup {
+  font-size: 0.7em;
 }
 
 .spinner {

@@ -48,6 +48,15 @@
     })
   }
 
+  // Alle Links auf fremde Domains in einem neuen Tab öffnen
+  // (z. B. hamburger-software.de, deltaplus.de, GitHub).
+  document.querySelectorAll('a[href^="http"]').forEach(function (a) {
+    if (a.host && a.host !== location.host) {
+      a.target = '_blank'
+      a.rel = 'noopener noreferrer'
+    }
+  })
+
   var dropzone = document.getElementById('dropzone')
   var fileInput = document.getElementById('fileInput')
   var chooseBtn = document.getElementById('chooseBtn')
@@ -516,7 +525,7 @@
         '<p class="subtle">' +
         esc([kosit.engine, kosit.timestamp].filter(Boolean).join(' · ') || 'KoSIT-Validator') +
         ' · quelloffen (Apache-2.0): ' +
-        '<a href="https://github.com/itplr-kosit/validator">itplr-kosit/validator</a></p></div>'
+        '<a href="https://github.com/itplr-kosit/validator" target="_blank" rel="noopener noreferrer">itplr-kosit/validator</a></p></div>'
     }
 
     return '<div class="stack">' + formalBlock + kositBlock + '</div>'
