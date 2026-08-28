@@ -77,12 +77,39 @@ startet den systemd-Dienst `e-rechnung-check` und richtet den nginx-vHost ein.
 
 | Variable | Zweck |
 |---|---|
-| `ALLOWED_ORIGINS` | Domains, die die API im Browser aufrufen dürfen (CORS). Default: `https://www.deltaplus.de,https://deltaplus.de` |
+| `ALLOWED_ORIGINS` | Domains, die die API aufrufen dürfen. Default: `https://www.deltaplus.de,https://deltaplus.de` |
 | `PORT` / `HOST` | lokale Bindung hinter nginx (Default `127.0.0.1:8787`) |
 | `KOSIT_VALIDATOR_JAR`, `KOSIT_SCENARIOS` | von `setup:kosit` gesetzt |
 | `JAVA_BIN` | falls `java` nicht im PATH |
 
 Nach Änderungen: `systemctl restart e-rechnung-check`
+
+### Missbrauchsschutz (damit nicht jeder die API frei nutzt)
+
+Standardmäßig aktiv, ohne Zusatzkonfiguration:
+
+| Schutz | Variable | Default |
+|---|---|---|
+| **Origin/Referer-Pflicht** — nur Aufrufe von `ALLOWED_ORIGINS` (blockt `curl` & fremde Seiten) | `REQUIRE_ORIGIN` | `true` |
+| **Rate-Limit je IP** | `RATE_MAX` / `RATE_WINDOW_MS` | 15 / 10 min |
+| **Parallelitätsgrenze** (KoSIT ist CPU-intensiv) | `MAX_CONCURRENT` | 3 |
+| **Upload-Größe** | `MAX_BYTES` | 15 MB |
+
+Optional zuschaltbar:
+
+* **Cloudflare Turnstile** (echter Bot-Schutz, kostenlos): `TURNSTILE_SECRET`
+  in `.env` **und** den passenden Sitekey in `public/index.html`
+  (`<meta name="e-rechnung-turnstile-sitekey">`). Die Seite lädt das Widget
+  dann selbst; ohne gültigen Token → HTTP 403.
+* **Statisches API-Token** (schwacher Zusatzfilter): `API_TOKEN` in `.env` +
+  `<meta name="e-rechnung-api-token">` in der Seite → Header `X-Api-Token`.
+
+Die Origin-Prüfung reicht gegen Gelegenheits-Nutzung; gegen gezielten
+Missbrauch (gefälschter `Origin`-Header) greifen Rate-Limit + Parallelitäts-
+grenze, und für harten Schutz Turnstile.
+
+> Hinweis: Wenn eure Website eine Content-Security-Policy hat, muss für
+> Turnstile `challenges.cloudflare.com` in `script-src` und `frame-src`.
 
 ### Updates
 
@@ -121,7 +148,8 @@ CMS-Seite übernehmen (dann `style.css` + `app.js` mitliefern und die
 ```bash
 cd service
 cp .env.example .env
-# ALLOWED_ORIGINS=http://localhost:8080  (fürs lokale Frontend)
+# ALLOWED_ORIGINS=http://localhost:8080   (fürs lokale Frontend)
+# REQUIRE_ORIGIN=false                     (fürs Testen mit curl)
 npm install
 npm run setup:kosit        # braucht Java 11+ und Internet
 npm start                  # Dienst auf http://127.0.0.1:8787

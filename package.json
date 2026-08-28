@@ -1,8 +1,11 @@
 {
   "name": "einvoice",
-  "version": "0.1.0",
+  "version": "0.5.1",
   "private": true,
   "scripts": {
+    "version:daily": "node scripts/version-bump-daily.mjs",
+    "predev": "node scripts/version-bump-daily.mjs",
+    "prebuild": "node scripts/version-bump-daily.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

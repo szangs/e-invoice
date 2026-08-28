@@ -10,6 +10,10 @@
     />
     <!-- API-Basis des KoSIT-Prüfdienstes (vServer). Bei Bedarf hier anpassen. -->
     <meta name="e-rechnung-api" content="https://e-rechnung-api.deltaplus.de" />
+    <!-- Optionaler Missbrauchsschutz — leer = aus.
+         Turnstile-Sitekey (Cloudflare, kostenlos) muss zum TURNSTILE_SECRET des Dienstes passen. -->
+    <meta name="e-rechnung-turnstile-sitekey" content="" />
+    <meta name="e-rechnung-api-token" content="" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
@@ -112,7 +116,7 @@
     </main>
 
     <footer class="site-footer">
-      <p class="mono">© 2026 Delta Plus Systemhaus GmbH – EDV Lösungen</p>
+      <p class="mono">© 2026 Delta Plus Systemhaus GmbH – EDV Lösungen · v0.5.1</p>
       <p>
         Dorfstrasse 64 · 41372 Niederkrüchten · 02163&nbsp;/&nbsp;888&nbsp;45&nbsp;70 ·
         <a href="https://www.deltaplus.de">www.deltaplus.de</a>

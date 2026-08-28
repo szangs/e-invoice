@@ -2,10 +2,39 @@
 (function () {
   'use strict'
 
+  function meta(name) {
+    var el = document.querySelector('meta[name="' + name + '"]')
+    return (el && el.content && el.content.trim()) || ''
+  }
+
   // API-Basis: <meta name="e-rechnung-api"> oder window.ERECHNUNG_API_BASE.
-  var META = document.querySelector('meta[name="e-rechnung-api"]')
-  var API_BASE = (window.ERECHNUNG_API_BASE || (META && META.content) || '').replace(/\/+$/, '')
+  var API_BASE = (window.ERECHNUNG_API_BASE || meta('e-rechnung-api')).replace(/\/+$/, '')
   var ANALYZE_URL = API_BASE + '/api/analyze'
+  var API_TOKEN = meta('e-rechnung-api-token')
+  var TS_SITEKEY = meta('e-rechnung-turnstile-sitekey')
+  var turnstileToken = null
+
+  // Cloudflare Turnstile nur laden, wenn ein Sitekey hinterlegt ist.
+  if (TS_SITEKEY) {
+    window.__erTurnstileCb = function (tok) {
+      turnstileToken = tok
+    }
+    window.addEventListener('DOMContentLoaded', function () {
+      var box = document.createElement('div')
+      box.className = 'cf-turnstile'
+      box.style.marginTop = '10px'
+      box.setAttribute('data-sitekey', TS_SITEKEY)
+      box.setAttribute('data-callback', '__erTurnstileCb')
+      box.setAttribute('data-theme', 'light')
+      var dz = document.getElementById('dropzone')
+      if (dz) dz.appendChild(box)
+      var s = document.createElement('script')
+      s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js'
+      s.async = true
+      s.defer = true
+      document.head.appendChild(s)
+    })
+  }
 
   var dropzone = document.getElementById('dropzone')
   var fileInput = document.getElementById('fileInput')
@@ -82,16 +111,20 @@
       showError('Kein Prüfdienst konfiguriert (meta[name="e-rechnung-api"] fehlt).')
       return
     }
+    if (TS_SITEKEY && !turnstileToken) {
+      showError('Die Bot-Prüfung lädt noch — bitte einen Moment und dann erneut versuchen.')
+      return
+    }
+
+    var headers = {
+      'Content-Type': file.type || (name.endsWith('.pdf') ? 'application/pdf' : 'application/xml'),
+      'X-File-Name': encodeURIComponent(file.name || 'rechnung'),
+    }
+    if (API_TOKEN) headers['X-Api-Token'] = API_TOKEN
+    if (turnstileToken) headers['X-Turnstile-Token'] = turnstileToken
 
     setBusy(true)
-    fetch(ANALYZE_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': file.type || (name.endsWith('.pdf') ? 'application/pdf' : 'application/xml'),
-        'X-File-Name': encodeURIComponent(file.name || 'rechnung'),
-      },
-      body: file,
-    })
+    fetch(ANALYZE_URL, { method: 'POST', headers: headers, body: file })
       .then(function (res) {
         return res.json().then(function (json) {
           return { ok: res.ok, status: res.status, json: json }
@@ -109,6 +142,15 @@
       })
       .finally(function () {
         setBusy(false)
+        // Turnstile-Token ist einmalig — Widget für den nächsten Upload zurücksetzen.
+        turnstileToken = null
+        if (TS_SITEKEY && window.turnstile && window.turnstile.reset) {
+          try {
+            window.turnstile.reset()
+          } catch (e) {
+            /* ignore */
+          }
+        }
       })
   }
 
