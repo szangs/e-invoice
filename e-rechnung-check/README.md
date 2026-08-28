@@ -10,25 +10,23 @@ oder Anmeldung.
 
 ```
 e-rechnung-check/
-├── public/            ← STATISCH: auf den QualityHosting-Webspace hochladen
-│   ├── index.html         (deltaplus.de/e-rechnung/)
-│   ├── style.css
-│   └── app.js             ← Konstante API-Basis via <meta name="e-rechnung-api">
-└── service/           ← Node-Dienst für den 1&1 vServer (85.215.136.179)
+├── public/            ← statische Teaser-Seite (index.html, style.css, app.js)
+└── service/           ← Node-Dienst + KoSIT-Validator (Java)
     ├── src/server.mjs     HTTP-API  POST /api/analyze , GET /healthz
     ├── src/erechnung.mjs  XML-/ZUGFeRD-Parsing + formale Kernprüfung
-    ├── src/kosit.mjs      Aufruf des KoSIT-Validators (Java) + Report-Auswertung
+    ├── src/kosit.mjs      Aufruf des KoSIT-Validators + Report-Auswertung
     ├── setup-kosit.mjs    lädt Validator-JAR + XRechnung-Konfiguration
     └── deploy/            systemd-Unit, nginx-Config, provision.sh
 ```
 
-Datenfluss:
+**Betriebsart: All-in-one** — statische Seite **und** Dienst laufen auf einem
+vServer unter einer Domain (`e-rechnung.deltaplus.de`). Keine getrennte
+Webspace-Ablage, kein CORS, ein Zertifikat. Auf der Hauptwebsite nur ein Link.
 
 ```
-Browser  ──(Datei als Rohbytes, POST)──▶  https://e-rechnung-api.deltaplus.de
-   ▲                                              │
-   │        JSON: Rechnungsdaten + Prüfbericht     ▼
-   └──────────────────────────────────  Node-Dienst ──▶ java -jar validator.jar
+Browser ──▶ https://e-rechnung.deltaplus.de/         (nginx: statische Seite)
+        └─▶ https://e-rechnung.deltaplus.de/api/...   (nginx → 127.0.0.1:8787 Node)
+                                                          └─▶ java -jar validator.jar
 ```
 
 Es wird **nichts gespeichert** — die Datei existiert nur als Buffer im
@@ -37,56 +35,84 @@ gelöscht wird.
 
 ---
 
-## Teil A — Prüfdienst auf dem vServer
+## Deployment (vServer, Debian/Ubuntu, Root)
 
-Voraussetzung: Debian/Ubuntu, Root-Zugang (`root@85.215.136.179`).
-
-### 1. Code auf den Server bringen
-
-Vom Arbeitsplatz aus (aus dem Ordner `e-rechnung-check/`):
+### 1. Code auf den Server (aus dem Ordner `e-rechnung-check/`)
 
 ```bash
-rsync -av --exclude node_modules --exclude kosit --exclude .env \
+ssh root@85.215.136.179 'mkdir -p /opt/e-rechnung-check'
+rsync -az --delete --exclude node_modules --exclude kosit --exclude .env \
   service/ root@85.215.136.179:/opt/e-rechnung-check/service/
+rsync -az --delete public/ root@85.215.136.179:/opt/e-rechnung-check/public/
 ```
 
-### 2. Einrichten (auf dem Server, als root)
+### 2. Einrichten (auf dem Server)
 
 ```bash
 bash /opt/e-rechnung-check/service/deploy/provision.sh
 ```
 
-Das Skript installiert Node 20, Java (JRE), nginx; legt den Systembenutzer
-`erechnung` an; `npm install`; lädt den KoSIT-Validator (`npm run setup:kosit`);
-startet den systemd-Dienst `e-rechnung-check` und richtet den nginx-vHost ein.
+Installiert Node 20, Java (JRE), nginx; legt 2 GB Swap an; Systembenutzer
+`erechnung`; `npm install`; lädt den KoSIT-Validator; startet den systemd-Dienst
+`e-rechnung-check`; richtet den nginx-vHost `e-rechnung.deltaplus.de` ein
+(andere Domain: `E_RECHNUNG_DOMAIN=... bash .../provision.sh`).
 
 ### 3. DNS + TLS
 
-* DNS: A-Record `e-rechnung-api.deltaplus.de` → `85.215.136.179`
-* TLS:
-  ```bash
-  apt-get install -y certbot python3-certbot-nginx
-  certbot --nginx -d e-rechnung-api.deltaplus.de
-  ```
-* Test: `curl https://e-rechnung-api.deltaplus.de/healthz`
-  → `{"ok":true,"kosit":{"configured":true}}`
+```bash
+# DNS: A-Record  e-rechnung.deltaplus.de  ->  85.215.136.179   (beim Provider)
+ssh root@85.215.136.179 'certbot --nginx -d e-rechnung.deltaplus.de --redirect \
+  --non-interactive --agree-tos -m stefan.zangs@deltaplus.de'
+```
 
-### Konfiguration
+Test: `curl https://e-rechnung.deltaplus.de/healthz` →
+`{"ok":true,"kosit":{"configured":true}}` · Browser: `https://e-rechnung.deltaplus.de/`
 
-`service/.env` (aus `.env.example`). Wichtig:
+### 4. Auf www.deltaplus.de verlinken
 
-| Variable | Zweck |
-|---|---|
-| `ALLOWED_ORIGINS` | Domains, die die API aufrufen dürfen. Default: `https://www.deltaplus.de,https://deltaplus.de` |
-| `PORT` / `HOST` | lokale Bindung hinter nginx (Default `127.0.0.1:8787`) |
-| `KOSIT_VALIDATOR_JAR`, `KOSIT_SCENARIOS` | von `setup:kosit` gesetzt |
-| `JAVA_BIN` | falls `java` nicht im PATH |
+Menüpunkt / Button „E-Rechnung prüfen" → `https://e-rechnung.deltaplus.de/`.
+(Alternativ per `<iframe>` einbetten.)
+
+---
+
+## Updates
+
+```bash
+# aus e-rechnung-check/
+rsync -az --delete --exclude node_modules --exclude kosit --exclude .env \
+  service/ root@85.215.136.179:/opt/e-rechnung-check/service/
+rsync -az --delete public/ root@85.215.136.179:/opt/e-rechnung-check/public/
+ssh root@85.215.136.179 'chown -R erechnung:erechnung /opt/e-rechnung-check \
+  && cd /opt/e-rechnung-check/service && sudo -u erechnung npm install --omit=dev \
+  && systemctl restart e-rechnung-check'
+```
+
+KoSIT-Regeln aktualisieren (neue XRechnung-Version):
+
+```bash
+ssh root@85.215.136.179 'cd /opt/e-rechnung-check/service \
+  && sudo -u erechnung npm run setup:kosit && systemctl restart e-rechnung-check'
+```
+
+---
+
+## Konfiguration
+
+`service/.env` (aus `.env.example`):
+
+| Variable | Zweck | Default |
+|---|---|---|
+| `ALLOWED_ORIGINS` | Domains, die die API aufrufen dürfen | `e-rechnung.deltaplus.de`, `www.deltaplus.de`, `deltaplus.de` |
+| `PORT` / `HOST` | lokale Bindung hinter nginx | `127.0.0.1:8787` |
+| `KOSIT_VALIDATOR_JAR`, `KOSIT_SCENARIOS` | von `setup:kosit` gesetzt | – |
+| `KOSIT_JAVA_XMX` | JVM-Heap-Limit | `512m` |
+| `JAVA_BIN` | falls `java` nicht im PATH | `java` |
 
 Nach Änderungen: `systemctl restart e-rechnung-check`
 
-### Missbrauchsschutz (damit nicht jeder die API frei nutzt)
+### Missbrauchsschutz
 
-Standardmäßig aktiv, ohne Zusatzkonfiguration:
+Standardmäßig aktiv:
 
 | Schutz | Variable | Default |
 |---|---|---|
@@ -98,48 +124,22 @@ Standardmäßig aktiv, ohne Zusatzkonfiguration:
 Optional zuschaltbar:
 
 * **Cloudflare Turnstile** (echter Bot-Schutz, kostenlos): `TURNSTILE_SECRET`
-  in `.env` **und** den passenden Sitekey in `public/index.html`
-  (`<meta name="e-rechnung-turnstile-sitekey">`). Die Seite lädt das Widget
-  dann selbst; ohne gültigen Token → HTTP 403.
+  in `.env` **und** Sitekey in `public/index.html`
+  (`<meta name="e-rechnung-turnstile-sitekey">`). Ohne gültigen Token → HTTP 403.
+  Bei eigener CSP: `challenges.cloudflare.com` in `script-src` + `frame-src`.
 * **Statisches API-Token** (schwacher Zusatzfilter): `API_TOKEN` in `.env` +
-  `<meta name="e-rechnung-api-token">` in der Seite → Header `X-Api-Token`.
-
-Die Origin-Prüfung reicht gegen Gelegenheits-Nutzung; gegen gezielten
-Missbrauch (gefälschter `Origin`-Header) greifen Rate-Limit + Parallelitäts-
-grenze, und für harten Schutz Turnstile.
-
-> Hinweis: Wenn eure Website eine Content-Security-Policy hat, muss für
-> Turnstile `challenges.cloudflare.com` in `script-src` und `frame-src`.
-
-### Updates
-
-```bash
-rsync -av --exclude node_modules --exclude kosit --exclude .env \
-  service/ root@85.215.136.179:/opt/e-rechnung-check/service/
-ssh root@85.215.136.179 'cd /opt/e-rechnung-check/service && sudo -u erechnung npm install --omit=dev && systemctl restart e-rechnung-check'
-```
-
-KoSIT-Regeln aktualisieren (neue XRechnung-Version):
-```bash
-ssh root@85.215.136.179 'cd /opt/e-rechnung-check/service && sudo -u erechnung npm run setup:kosit && systemctl restart e-rechnung-check'
-```
+  `<meta name="e-rechnung-api-token">` → Header `X-Api-Token`.
 
 ---
 
-## Teil B — Teaser-Seite auf den Webspace
+## Seite woanders hosten (optional)
 
-1. In `public/index.html` die Zeile prüfen/anpassen:
-   ```html
-   <meta name="e-rechnung-api" content="https://e-rechnung-api.deltaplus.de" />
-   ```
-2. Inhalt von `public/` per FTP/SFTP in einen Ordner `e-rechnung/` im
-   Webspace legen → erreichbar unter `https://www.deltaplus.de/e-rechnung/`.
-3. Fertig. Die Seite ist statisch, kein PHP/Node auf dem Webspace nötig.
+Wenn die Seite doch auf dem QualityHosting-Webspace liegen soll:
 
-Einbindung in die bestehende Website: entweder als eigener Menüpunkt
-(Link auf `/e-rechnung/`) oder den Inhalt von `index.html` in eine
-CMS-Seite übernehmen (dann `style.css` + `app.js` mitliefern und die
-`<meta>`-Zeile im `<head>` ergänzen).
+1. `public/index.html`: `<meta name="e-rechnung-api" content="https://e-rechnung.deltaplus.de" />`
+2. `public/` per FTP in den Webspace (z. B. `deltaplus.de/e-rechnung/`).
+3. `e-rechnung.deltaplus.de` bleibt der API-Endpunkt; CORS ist im Dienst
+   bereits umgesetzt (`ALLOWED_ORIGINS`).
 
 ---
 
@@ -148,20 +148,19 @@ CMS-Seite übernehmen (dann `style.css` + `app.js` mitliefern und die
 ```bash
 cd service
 cp .env.example .env
-# ALLOWED_ORIGINS=http://localhost:8080   (fürs lokale Frontend)
-# REQUIRE_ORIGIN=false                     (fürs Testen mit curl)
+#   REQUIRE_ORIGIN=false           (fürs Testen mit curl)
+#   ALLOWED_ORIGINS=http://localhost:8080
 npm install
 npm run setup:kosit        # braucht Java 11+ und Internet
 npm start                  # Dienst auf http://127.0.0.1:8787
 
-# zweites Terminal: statische Seite servieren
+# zweites Terminal:
 cd ../public && python3 -m http.server 8080
-# Browser: http://localhost:8080  (vorher <meta> auf http://127.0.0.1:8787 setzen)
+#   in index.html: <meta name="e-rechnung-api" content="http://127.0.0.1:8787" />
 ```
 
-Ohne Java läuft der Dienst trotzdem — dann zeigt die Seite Rechnungsbild +
-formale Kernprüfung, und beim KoSIT-Block steht der Hinweis, dass der
-Validator nicht eingerichtet ist.
+Ohne Java läuft der Dienst trotzdem — die Seite zeigt dann Rechnungsbild +
+formale Kernprüfung, der KoSIT-Block meldet „nicht eingerichtet".
 
 ---
 
@@ -172,9 +171,11 @@ Validator nicht eingerichtet ist.
 | XRechnung UBL (.xml) | ✅ | ✅ | ✅ |
 | XRechnung CII (.xml) | ✅ | ✅ | ✅ |
 | ZUGFeRD / Factur-X (.pdf) | ✅ (aus eingebettetem XML) | ✅ | ✅ |
-| PDF ohne XML | — | — | — (Hinweis) |
+| PDF ohne XML | — | — | Hinweis |
 
 Die KoSIT-Prüfung nutzt `validator-configuration-xrechnung` (Schematron nach
 EN 16931 + XRechnung-CIUS). Der Prüfbericht wird sowohl aufbereitet
 (Liste mit Regel-ID, Fundstelle, Schweregrad) als auch als
 **Original-KoSIT-Report** (HTML + XML zum Download) angezeigt.
+Passt keine Szenario-Konfiguration (z. B. falsche `CustomizationID`), meldet
+die Seite „kein passendes Prüfszenario" statt eines falschen „konform".

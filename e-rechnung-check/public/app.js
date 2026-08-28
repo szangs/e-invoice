@@ -8,6 +8,8 @@
   }
 
   // API-Basis: <meta name="e-rechnung-api"> oder window.ERECHNUNG_API_BASE.
+  // Leer lassen, wenn Seite und Dienst auf derselben Domain liegen (Default) —
+  // dann wird /api/analyze relativ aufgerufen.
   var API_BASE = (window.ERECHNUNG_API_BASE || meta('e-rechnung-api')).replace(/\/+$/, '')
   var ANALYZE_URL = API_BASE + '/api/analyze'
   var API_TOKEN = meta('e-rechnung-api-token')
@@ -105,10 +107,6 @@
     }
     if (file.size > MAX_BYTES) {
       showError('Datei zu groß (max. 15 MB).')
-      return
-    }
-    if (!API_BASE) {
-      showError('Kein Prüfdienst konfiguriert (meta[name="e-rechnung-api"] fehlt).')
       return
     }
     if (TS_SITEKEY && !turnstileToken) {

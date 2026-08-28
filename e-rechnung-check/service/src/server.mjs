@@ -24,7 +24,8 @@ const PORT = Number(process.env.PORT || 8787)
 const HOST = process.env.HOST || '127.0.0.1'
 const MAX_BYTES = Number(process.env.MAX_BYTES || 15 * 1024 * 1024)
 const ALLOWED_ORIGINS = list(
-  process.env.ALLOWED_ORIGINS || 'https://www.deltaplus.de,https://deltaplus.de',
+  process.env.ALLOWED_ORIGINS ||
+    'https://e-rechnung.deltaplus.de,https://www.deltaplus.de,https://deltaplus.de',
 )
 const REQUIRE_ORIGIN = process.env.REQUIRE_ORIGIN !== 'false'
 const TRUST_PROXY = process.env.TRUST_PROXY !== 'false'

@@ -8,8 +8,10 @@
       name="description"
       content="ZUGFeRD-, Factur-X- und XRechnung-Dateien lesbar machen und nach KoSIT prüfen — kostenlos, ohne Anmeldung. Von Delta Plus Systemhaus GmbH."
     />
-    <!-- API-Basis des KoSIT-Prüfdienstes (vServer). Bei Bedarf hier anpassen. -->
-    <meta name="e-rechnung-api" content="https://e-rechnung-api.deltaplus.de" />
+    <!-- API-Basis des KoSIT-Prüfdienstes. LEER = gleiche Domain (Standard,
+         Seite + Dienst auf dem vServer). Nur setzen, wenn die Seite woanders
+         liegt, z.B. content="https://e-rechnung.deltaplus.de". -->
+    <meta name="e-rechnung-api" content="" />
     <!-- Optionaler Missbrauchsschutz — leer = aus.
          Turnstile-Sitekey (Cloudflare, kostenlos) muss zum TURNSTILE_SECRET des Dienstes passen. -->
     <meta name="e-rechnung-turnstile-sitekey" content="" />

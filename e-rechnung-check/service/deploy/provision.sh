@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# Richtet den E-Rechnung-Check-Dienst auf einem frischen Debian/Ubuntu-vServer ein.
-# Auf dem SERVER als root ausfuehren, nachdem der Ordner service/ nach
-# /opt/e-rechnung-check/service kopiert wurde (siehe README, Schritt 2).
+# Richtet die E-Rechnung-Teaser-Seite + KoSIT-Prüfdienst auf einem frischen
+# Debian/Ubuntu-vServer ein (All-in-one: statische Seite UND Dienst auf einer
+# Domain). Auf dem SERVER als root ausfuehren, nachdem service/ nach
+# /opt/e-rechnung-check/service und public/ nach /opt/e-rechnung-check/public
+# kopiert wurden (siehe README).
 #
 #   bash /opt/e-rechnung-check/service/deploy/provision.sh
 set -euo pipefail
 
 APP_DIR=/opt/e-rechnung-check/service
+PUBLIC_DIR=/opt/e-rechnung-check/public
 SERVICE_USER=erechnung
+DOMAIN="${E_RECHNUNG_DOMAIN:-e-rechnung.deltaplus.de}"
 
 echo "== Swap (kleiner vServer) =="
 if [ "$(swapon --show --noheadings | wc -l)" -eq 0 ] && [ ! -f /swapfile ]; then
@@ -57,18 +61,28 @@ sleep 1
 systemctl --no-pager --lines=10 status e-rechnung-check || true
 curl -fsS http://127.0.0.1:8787/healthz && echo
 
+echo "== statische Seite =="
+if [ -d "$PUBLIC_DIR" ]; then
+  chown -R "$SERVICE_USER:$SERVICE_USER" "$PUBLIC_DIR"
+  echo "  $PUBLIC_DIR ($(ls "$PUBLIC_DIR" | tr '\n' ' '))"
+else
+  echo "  WARNUNG: $PUBLIC_DIR fehlt — public/ noch hochladen (rsync, siehe README)."
+fi
+
 echo "== nginx =="
-cp "$APP_DIR/deploy/nginx-e-rechnung-api.conf" /etc/nginx/sites-available/e-rechnung-api
-ln -sf /etc/nginx/sites-available/e-rechnung-api /etc/nginx/sites-enabled/e-rechnung-api
+sed "s/e-rechnung\.deltaplus\.de/$DOMAIN/g" "$APP_DIR/deploy/nginx-e-rechnung.conf" \
+  > /etc/nginx/sites-available/e-rechnung
+ln -sf /etc/nginx/sites-available/e-rechnung /etc/nginx/sites-enabled/e-rechnung
+rm -f /etc/nginx/sites-enabled/e-rechnung-api
 nginx -t && systemctl reload nginx
 
-cat <<'EOF'
+cat <<EOF
 
 Fertig. Naechste Schritte:
-  1. DNS: A-Record  e-rechnung-api.deltaplus.de  ->  diese Server-IP
-  2. TLS:  apt-get install -y certbot python3-certbot-nginx
-           certbot --nginx -d e-rechnung-api.deltaplus.de
-  3. Test: curl https://e-rechnung-api.deltaplus.de/healthz
-  4. In public/app.js die Konstante API_BASE auf die Domain setzen und
-     public/ auf den Webspace hochladen.
+  1. DNS: A-Record  $DOMAIN  ->  diese Server-IP
+  2. TLS:  certbot --nginx -d $DOMAIN --redirect \\
+             --non-interactive --agree-tos -m stefan.zangs@deltaplus.de
+  3. Test: curl https://$DOMAIN/healthz
+           Browser: https://$DOMAIN/
+  4. Auf www.deltaplus.de einen Menuepunkt/Link auf https://$DOMAIN/ setzen.
 EOF
