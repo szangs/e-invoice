@@ -218,7 +218,10 @@
         'Pflichtangaben unvollständig',
       ) +
       kositVerdict(kosit) +
-      '</span></div></div>'
+      '</span></div>' +
+      '<p class="result-disclaimer">Automatisierte Auswertung ohne Gewähr — keine Rechts- oder ' +
+      'Steuerberatung, ersetzt nicht die eigene Prüfung und Freigabe.</p>' +
+      '</div>'
 
     var hasOriginal = kosit.available && kosit.reportHtml
     var hasXml = !!r.xml
