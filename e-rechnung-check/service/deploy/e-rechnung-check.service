@@ -1,0 +1,24 @@
+[Unit]
+Description=E-Rechnung-Check Dienst (Delta Plus) — KoSIT-Prüfung fuer die Teaser-Seite
+After=network.target
+
+[Service]
+Type=simple
+User=erechnung
+Group=erechnung
+WorkingDirectory=/opt/e-rechnung-check/service
+EnvironmentFile=/opt/e-rechnung-check/service/.env
+ExecStart=/usr/bin/node src/server.mjs
+Restart=on-failure
+RestartSec=3
+
+# Haertung
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/e-rechnung-check/service
+# Java legt Temp-Dateien unter /tmp an (durch PrivateTmp isoliert)
+
+[Install]
+WantedBy=multi-user.target

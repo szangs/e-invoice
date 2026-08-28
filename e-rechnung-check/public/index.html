@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>E-Rechnung prüfen &amp; visualisieren · Delta Plus Systemhaus</title>
+    <meta
+      name="description"
+      content="ZUGFeRD-, Factur-X- und XRechnung-Dateien lesbar machen und nach KoSIT prüfen — kostenlos, ohne Anmeldung. Von Delta Plus Systemhaus GmbH."
+    />
+    <!-- API-Basis des KoSIT-Prüfdienstes (vServer). Bei Bedarf hier anpassen. -->
+    <meta name="e-rechnung-api" content="https://e-rechnung-api.deltaplus.de" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap">
+        <a class="brand" href="/e-rechnung/">
+          <span class="badge">€</span>
+          <span>
+            <strong>E-Rechnung-Werkzeug</strong>
+            <span>Delta Plus Systemhaus GmbH</span>
+          </span>
+        </a>
+        <a class="ext" href="https://www.deltaplus.de">deltaplus.de&nbsp;→</a>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="hero">
+        <span class="pill">Kostenlos · ohne Anmeldung · nichts wird gespeichert</span>
+        <h1>E-Rechnungen sichtbar machen und nach KoSIT prüfen</h1>
+        <p>
+          Laden Sie eine ZUGFeRD-/Factur-X-PDF oder eine XRechnung-XML hoch. Sie sehen sofort die
+          enthaltenen Rechnungsdaten als lesbares Rechnungsbild und das Ergebnis der
+          KoSIT-Validierung — mit vollständigem Prüfbericht.
+        </p>
+      </section>
+
+      <div
+        class="card dropzone"
+        id="dropzone"
+        role="button"
+        tabindex="0"
+        aria-label="Rechnungsdatei auswählen"
+      >
+        <p><strong>Rechnungsdatei hierher ziehen oder auswählen</strong></p>
+        <p class="hint">
+          ZUGFeRD / Factur-X (PDF mit XML) · XRechnung (UBL oder CII, reines XML) · max. 15 MB
+        </p>
+        <input
+          type="file"
+          id="fileInput"
+          accept=".pdf,.xml,application/pdf,application/xml,text/xml"
+          hidden
+        />
+        <button type="button" class="btn btn-primary" id="chooseBtn">Datei auswählen</button>
+        <p class="privacy">
+          Die Datei wird nur im Arbeitsspeicher verarbeitet und <strong>nicht gespeichert</strong>.
+        </p>
+      </div>
+
+      <div id="errorBox" class="error-box hidden" style="margin-top: 16px"></div>
+
+      <section id="result" class="section hidden"></section>
+
+      <section class="section">
+        <h2>Was das Werkzeug kann</h2>
+        <div class="features">
+          <div class="tile">
+            <h3>Rechnungsbild aus XML</h3>
+            <p>
+              ZUGFeRD, Factur-X und XRechnung (UBL wie CII) werden ausgelesen und als übersichtliche
+              Rechnung mit allen Positionen dargestellt — auch reine XML-Dateien ohne eigenes Layout.
+            </p>
+          </div>
+          <div class="tile">
+            <h3>Prüfung nach KoSIT</h3>
+            <p>
+              Validierung gegen den offiziellen Validator der Koordinierungsstelle für IT-Standards —
+              Schematron-Regeln nach EN&nbsp;16931 und der XRechnung-Spezifikation, inklusive
+              Annahme-Empfehlung.
+            </p>
+          </div>
+          <div class="tile">
+            <h3>Prüfbericht einsehen</h3>
+            <p>
+              Ergebnis als aufbereitete Liste (Fehler, Warnungen, Hinweise mit Regel-ID) und
+              zusätzlich der vollständige KoSIT-Originalbericht als HTML und XML zum Herunterladen.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section card cta">
+        <h2 style="font-family: Georgia, serif; margin-top: 0">
+          Vorschau auf unser Rechnungseingangs-Programm
+        </h2>
+        <p>
+          Diese Seite ist der Anfang einer vollständigen Lösung von Delta Plus Systemhaus für die
+          Verarbeitung eingehender Rechnungen: automatischer E-Mail-Eingang, Ablagekörbe mit
+          Vier-Augen-Prinzip, Dublettenerkennung, DATEV-Export, KI-gestützte Erfassung von
+          Papierrechnungen und Ende-zu-Ende-Verschlüsselung der Belege.
+        </p>
+        <a class="btn btn-primary" href="https://www.deltaplus.de">Kontakt aufnehmen</a>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p class="mono">© 2026 Delta Plus Systemhaus GmbH – EDV Lösungen</p>
+      <p>
+        Dorfstrasse 64 · 41372 Niederkrüchten · 02163&nbsp;/&nbsp;888&nbsp;45&nbsp;70 ·
+        <a href="https://www.deltaplus.de">www.deltaplus.de</a>
+      </p>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,4 @@
+node_modules/
+kosit/
+.env
+*.log

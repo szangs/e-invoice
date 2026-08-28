@@ -1,0 +1,19 @@
+{
+  "name": "e-rechnung-check-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "KoSIT-Prüfdienst für die öffentliche E-Rechnungs-Teaser-Seite (Delta Plus Systemhaus)",
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "scripts": {
+    "start": "node --env-file=.env src/server.mjs",
+    "setup:kosit": "node setup-kosit.mjs"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "fast-xml-parser": "^4.5.0",
+    "pdf-lib": "^1.17.1"
+  }
+}
