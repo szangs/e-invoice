@@ -314,6 +314,30 @@ a {
   text-decoration: none;
 }
 
+.brand .status-badge {
+  display: inline-block;
+  align-self: center;
+  background: var(--warn);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+@media (max-width: 560px) {
+  .brand .status-badge {
+    font-size: 8px;
+    padding: 2px 6px;
+  }
+  .site-header a.ext {
+    display: none;
+  }
+}
+
 .site-footer {
   border-top: 1px solid var(--line);
   text-align: center;
@@ -341,7 +365,11 @@ main {
   font-size: 12px;
   font-weight: 600;
   padding: 4px 12px;
-  margin-bottom: 14px;
+  margin: 0 8px 14px 0;
+}
+.pill-accent {
+  background: var(--accent);
+  color: #fff;
 }
 .hero h1 {
   font-family: Georgia, 'Times New Roman', serif;
