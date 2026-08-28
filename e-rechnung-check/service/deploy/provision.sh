@@ -11,7 +11,9 @@ set -euo pipefail
 APP_DIR=/opt/e-rechnung-check/service
 PUBLIC_DIR=/opt/e-rechnung-check/public
 SERVICE_USER=erechnung
-DOMAIN="${E_RECHNUNG_DOMAIN:-e-rechnung.deltaplus.de}"
+# Domain fuer den certbot-Hinweis am Ende; die nginx-Config hoert ohnehin auf
+# e-rechnung-api.deltaplus.de UND e-rechnung.deltaplus.de.
+DOMAIN="${E_RECHNUNG_DOMAIN:-e-rechnung-api.deltaplus.de}"
 
 echo "== Swap (kleiner vServer) =="
 if [ "$(swapon --show --noheadings | wc -l)" -eq 0 ] && [ ! -f /swapfile ]; then
@@ -70,8 +72,7 @@ else
 fi
 
 echo "== nginx =="
-sed "s/e-rechnung\.deltaplus\.de/$DOMAIN/g" "$APP_DIR/deploy/nginx-e-rechnung.conf" \
-  > /etc/nginx/sites-available/e-rechnung
+cp "$APP_DIR/deploy/nginx-e-rechnung.conf" /etc/nginx/sites-available/e-rechnung
 ln -sf /etc/nginx/sites-available/e-rechnung /etc/nginx/sites-enabled/e-rechnung
 rm -f /etc/nginx/sites-enabled/e-rechnung-api
 nginx -t && systemctl reload nginx

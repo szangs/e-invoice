@@ -20,12 +20,16 @@ e-rechnung-check/
 ```
 
 **Betriebsart: All-in-one** — statische Seite **und** Dienst laufen auf einem
-vServer unter einer Domain (`e-rechnung.deltaplus.de`). Keine getrennte
+vServer unter einer Domain (`e-rechnung-api.deltaplus.de`). Keine getrennte
 Webspace-Ablage, kein CORS, ein Zertifikat. Auf der Hauptwebsite nur ein Link.
 
+**Status:** live unter <https://e-rechnung-api.deltaplus.de/> (vServer
+`85.215.136.179`, TLS via Let's Encrypt). Der Alias `e-rechnung.deltaplus.de`
+ist in nginx vorbereitet, hat aber noch keinen DNS-Eintrag.
+
 ```
-Browser ──▶ https://e-rechnung.deltaplus.de/         (nginx: statische Seite)
-        └─▶ https://e-rechnung.deltaplus.de/api/...   (nginx → 127.0.0.1:8787 Node)
+Browser ──▶ https://e-rechnung-api.deltaplus.de/         (nginx: statische Seite)
+        └─▶ https://e-rechnung-api.deltaplus.de/api/...   (nginx → 127.0.0.1:8787 Node)
                                                           └─▶ java -jar validator.jar
 ```
 
@@ -54,23 +58,23 @@ bash /opt/e-rechnung-check/service/deploy/provision.sh
 
 Installiert Node 20, Java (JRE), nginx; legt 2 GB Swap an; Systembenutzer
 `erechnung`; `npm install`; lädt den KoSIT-Validator; startet den systemd-Dienst
-`e-rechnung-check`; richtet den nginx-vHost `e-rechnung.deltaplus.de` ein
+`e-rechnung-check`; richtet den nginx-vHost `e-rechnung-api.deltaplus.de` ein
 (andere Domain: `E_RECHNUNG_DOMAIN=... bash .../provision.sh`).
 
 ### 3. DNS + TLS
 
 ```bash
-# DNS: A-Record  e-rechnung.deltaplus.de  ->  85.215.136.179   (beim Provider)
-ssh root@85.215.136.179 'certbot --nginx -d e-rechnung.deltaplus.de --redirect \
+# DNS: A-Record  e-rechnung-api.deltaplus.de  ->  85.215.136.179   (beim Provider)
+ssh root@85.215.136.179 'certbot --nginx -d e-rechnung-api.deltaplus.de --redirect \
   --non-interactive --agree-tos -m stefan.zangs@deltaplus.de'
 ```
 
-Test: `curl https://e-rechnung.deltaplus.de/healthz` →
-`{"ok":true,"kosit":{"configured":true}}` · Browser: `https://e-rechnung.deltaplus.de/`
+Test: `curl https://e-rechnung-api.deltaplus.de/healthz` →
+`{"ok":true,"kosit":{"configured":true}}` · Browser: `https://e-rechnung-api.deltaplus.de/`
 
 ### 4. Auf www.deltaplus.de verlinken
 
-Menüpunkt / Button „E-Rechnung prüfen" → `https://e-rechnung.deltaplus.de/`.
+Menüpunkt / Button „E-Rechnung prüfen" → `https://e-rechnung-api.deltaplus.de/`.
 (Alternativ per `<iframe>` einbetten.)
 
 ---
@@ -102,7 +106,7 @@ ssh root@85.215.136.179 'cd /opt/e-rechnung-check/service \
 
 | Variable | Zweck | Default |
 |---|---|---|
-| `ALLOWED_ORIGINS` | Domains, die die API aufrufen dürfen | `e-rechnung.deltaplus.de`, `www.deltaplus.de`, `deltaplus.de` |
+| `ALLOWED_ORIGINS` | Domains, die die API aufrufen dürfen | `e-rechnung-api.deltaplus.de`, `www.deltaplus.de`, `deltaplus.de` |
 | `PORT` / `HOST` | lokale Bindung hinter nginx | `127.0.0.1:8787` |
 | `KOSIT_VALIDATOR_JAR`, `KOSIT_SCENARIOS` | von `setup:kosit` gesetzt | – |
 | `KOSIT_JAVA_XMX` | JVM-Heap-Limit | `512m` |
@@ -136,9 +140,9 @@ Optional zuschaltbar:
 
 Wenn die Seite doch auf dem QualityHosting-Webspace liegen soll:
 
-1. `public/index.html`: `<meta name="e-rechnung-api" content="https://e-rechnung.deltaplus.de" />`
+1. `public/index.html`: `<meta name="e-rechnung-api" content="https://e-rechnung-api.deltaplus.de" />`
 2. `public/` per FTP in den Webspace (z. B. `deltaplus.de/e-rechnung/`).
-3. `e-rechnung.deltaplus.de` bleibt der API-Endpunkt; CORS ist im Dienst
+3. `e-rechnung-api.deltaplus.de` bleibt der API-Endpunkt; CORS ist im Dienst
    bereits umgesetzt (`ALLOWED_ORIGINS`).
 
 ---

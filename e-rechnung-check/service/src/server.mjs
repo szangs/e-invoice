@@ -25,7 +25,7 @@ const HOST = process.env.HOST || '127.0.0.1'
 const MAX_BYTES = Number(process.env.MAX_BYTES || 15 * 1024 * 1024)
 const ALLOWED_ORIGINS = list(
   process.env.ALLOWED_ORIGINS ||
-    'https://e-rechnung.deltaplus.de,https://www.deltaplus.de,https://deltaplus.de',
+    'https://e-rechnung-api.deltaplus.de,https://e-rechnung.deltaplus.de,https://www.deltaplus.de,https://deltaplus.de',
 )
 const REQUIRE_ORIGIN = process.env.REQUIRE_ORIGIN !== 'false'
 const TRUST_PROXY = process.env.TRUST_PROXY !== 'false'
@@ -163,7 +163,7 @@ const server = createServer(async (req, res) => {
 
   const url = new URL(req.url, `http://${req.headers.host}`)
 
-  if (req.method === 'GET' && url.pathname === '/healthz') {
+  if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/healthz') {
     const cfg = await kositConfig()
     json(res, 200, {
       ok: true,
