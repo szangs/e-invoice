@@ -778,6 +778,39 @@ pre.raw {
   margin: 10px 0 0 !important;
 }
 
+/* Kostenlose Basisversion – Callout in der eigenen Spalte */
+.preview-free {
+  font-size: 13px !important;
+  color: var(--ink) !important;
+  background: var(--surface);
+  border: 1px solid var(--accent-border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0 0 14px !important;
+}
+.preview-free-badge {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  padding: 2px 9px;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+.preview-more-label {
+  font-size: 11px !important;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+  margin: 0 0 6px !important;
+}
+
 .spinner {
   display: inline-block;
   width: 15px;
