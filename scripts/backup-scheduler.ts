@@ -1,9 +1,12 @@
 // Sicherungs- und Berichts-Zeitplan (§17 + revisionssicherer Hash-Bericht) +
-// Korb-/Fälligkeits-Benachrichtigungen: eigener Prozess, prüft stündlich,
-// welche Mandanten-/System-Sicherungen UND welche Hash-Berichte fällig sind
+// Korb-Benachrichtigungen: eigener Prozess, prüft stündlich, welche
+// Mandanten-/System-Sicherungen UND welche Hash-Berichte fällig sind
 // (Tage/Wochen/Monate/Jahre), stellt sie zu (E-Mail und/oder
-// Sicherungsziel-Verzeichnis), und verschickt fällige Korb-Sammel- sowie
-// Fälligkeits-Benachrichtigungen (lib/dueReminders.ts).
+// Sicherungsziel-Verzeichnis), und verschickt fällige Korb-Sammel-
+// Benachrichtigungen (lib/baskets.ts runDueBasketNotifications) — diese
+// enthalten seit Stefan 2026-08-26 auch die Fälligkeits-Hervorhebung
+// (vorher eine separate Mail, lib/dueReminders.ts, jetzt entfernt: "eine
+// Benachrichtigung statt zwei").
 // Start:  npm run backup   (Produktion: als pm2-Prozess)
 import { readFileSync } from 'fs'
 
@@ -20,7 +23,6 @@ try {
 import { runDueBackups } from '../src/lib/backup'
 import { runBackupReminders } from '../src/lib/backupPackage'
 import { runDueBasketNotifications } from '../src/lib/baskets'
-import { runDueReminders } from '../src/lib/dueReminders'
 import { runDueReports } from '../src/lib/report'
 
 const INTERVAL_MS = 60 * 60 * 1000 // stündliche Fälligkeitsprüfung
@@ -54,12 +56,6 @@ async function tick() {
     else log.forEach((l) => console.log(`[${stamp}] ${l}`))
   } catch (e) {
     console.error('Sicherungs-Erinnerungslauf fehlgeschlagen:', e)
-  }
-  try {
-    const log = await runDueReminders()
-    log.forEach((l) => console.log(`[${stamp}] ${l}`))
-  } catch (e) {
-    console.error('Fälligkeits-Benachrichtigungslauf fehlgeschlagen:', e)
   }
 }
 

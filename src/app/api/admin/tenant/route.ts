@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
+import { COLOR_THEME_KEYS } from '@/lib/colorThemes'
 import { prisma } from '@/lib/db'
 import { hasFeature } from '@/lib/license'
 
@@ -16,6 +17,9 @@ const schema = z.object({
   aiAllowed: z.boolean().optional(),
   ipLoggingAllowed: z.boolean().optional(),
   defaultLanguage: z.string().optional(),
+  // Erscheinungsbild (Stefan 2026-08-27) — Whitelist statt freiem String,
+  // gegen einen unbekannten/erfundenen [data-theme]-Wert (siehe globals.css).
+  colorTheme: z.enum(COLOR_THEME_KEYS as [string, ...string[]]).optional(),
   backupEnabled: z.boolean().optional(),
   mailAllowedDomains: z.string().max(500).optional(),
   mailInGraphEnabled: z.boolean().optional(),
@@ -28,6 +32,26 @@ const schema = z.object({
   mailInGraphTenantId: z.string().max(200).optional(),
   mailInGraphClientId: z.string().max(200).optional(),
   mailInGraphClientSecret: z.string().max(500).optional(),
+  // E-Mail-Eingang per POP3/IMAP (Stefan 2026-08-27)
+  mailInPop3Enabled: z.boolean().optional(),
+  mailInPop3Host: z.string().max(300).optional(),
+  mailInPop3Port: z.coerce.number().int().min(1).max(65535).optional(),
+  mailInPop3Secure: z.boolean().optional(),
+  mailInPop3User: z.string().max(300).optional(),
+  mailInPop3Pass: z.string().max(500).optional(),
+  mailInImapEnabled: z.boolean().optional(),
+  mailInImapHost: z.string().max(300).optional(),
+  mailInImapPort: z.coerce.number().int().min(1).max(65535).optional(),
+  mailInImapSecure: z.boolean().optional(),
+  mailInImapUser: z.string().max(300).optional(),
+  mailInImapPass: z.string().max(500).optional(),
+  mailInImapFolder: z.string().max(300).optional(),
+  mailInImapMoveToFolder: z.string().max(300).optional(),
+  // Eigenes Poll-Intervall (Stefan 2026-08-27, "bei Mailabholung müssen wir
+  // die Pollrate einstellen können") — leer/0 = globaler Betreiber-Standard,
+  // siehe lib/mailinSchedule.ts. Untergrenze 30s, damit ein Tippfehler nicht
+  // versehentlich Sekundentakt-Dauerabrufe auslöst.
+  mailInPollSeconds: z.coerce.number().int().min(0).max(86400).optional(),
   backupFrequency: z.enum(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY']).optional(),
   backupEmail: z.string().email().optional().or(z.literal('')),
   // Sicherungs-Umstellung (Stefan 2026-07-08): Download-Link + Erinnerung + optionales WebDAV-Ziel
@@ -47,11 +71,15 @@ const schema = z.object({
   datevGegenkonto: z.string().max(20).optional(),
   datevWjBeginn: z.string().regex(/^\d{4}$/).optional().or(z.literal('')),
   datevFibuEmail: z.string().email().optional().or(z.literal('')),
+  // Zahlungsverkehr (Stefan 2026-08-27, SEPA-Sammelüberweisung) — Format
+  // (Prüfziffer) wird erst beim tatsächlichen Export geprüft (lib/sepa.ts),
+  // hier nur grob die Länge begrenzt, damit ein Speichern nicht an einer
+  // Formatprüfung während des Tippens hängen bleibt.
+  sepaOwnName: z.string().max(200).optional(),
+  sepaOwnIban: z.string().max(40).optional(),
+  sepaOwnBic: z.string().max(20).optional(),
   costCenterEnabled: z.boolean().optional(),
   costCarrierEnabled: z.boolean().optional(),
-  // Fälligkeits-Benachrichtigung (Stefan 2026-08-24): leerer String = aus (null in der DB)
-  dueReminderDaysAfterReceipt: z.number().int().min(1).max(365).nullable().optional(),
-  dueReminderDaysBeforeDue: z.number().int().min(1).max(365).nullable().optional(),
 })
 
 export async function PATCH(req: NextRequest) {
@@ -65,6 +93,23 @@ export async function PATCH(req: NextRequest) {
         throw new ApiError(403, 'Kostenstellen/Kostenträger sind im aktuellen Tarif nicht enthalten.')
       }
     }
+    // E-Mail-Verfahren-Auswahl (Stefan 2026-08-27): immer nur EIN Abrufweg
+    // gleichzeitig aktiv (Weiterleitung/SMTP läuft ohnehin immer parallel,
+    // hat kein eigenes Ein/Aus) — wird hier eines der drei per Toggle
+    // eingeschaltet, schaltet der Server die anderen beiden aus, statt sich
+    // auf die UI zu verlassen (die das zwar schon als Radio-Auswahl
+    // umsetzt, siehe SettingsHub.tsx, aber ein direkter API-Aufruf könnte es
+    // sonst umgehen).
+    if (data.mailInGraphEnabled) {
+      data.mailInPop3Enabled = false
+      data.mailInImapEnabled = false
+    } else if (data.mailInPop3Enabled) {
+      data.mailInGraphEnabled = false
+      data.mailInImapEnabled = false
+    } else if (data.mailInImapEnabled) {
+      data.mailInGraphEnabled = false
+      data.mailInPop3Enabled = false
+    }
     await prisma.tenant.update({
       where: { id: tenantId },
       data: {
@@ -76,6 +121,17 @@ export async function PATCH(req: NextRequest) {
         mailInGraphTenantId: data.mailInGraphTenantId === '' ? null : data.mailInGraphTenantId,
         mailInGraphClientId: data.mailInGraphClientId === '' ? null : data.mailInGraphClientId,
         mailInGraphClientSecret: data.mailInGraphClientSecret === '' ? null : data.mailInGraphClientSecret,
+        mailInPop3Host: data.mailInPop3Host === '' ? null : data.mailInPop3Host,
+        mailInPop3User: data.mailInPop3User === '' ? null : data.mailInPop3User,
+        mailInPop3Pass: data.mailInPop3Pass === '' ? null : data.mailInPop3Pass,
+        mailInImapHost: data.mailInImapHost === '' ? null : data.mailInImapHost,
+        mailInImapUser: data.mailInImapUser === '' ? null : data.mailInImapUser,
+        mailInImapPass: data.mailInImapPass === '' ? null : data.mailInImapPass,
+        mailInImapFolder: data.mailInImapFolder === '' ? null : data.mailInImapFolder,
+        mailInImapMoveToFolder: data.mailInImapMoveToFolder === '' ? null : data.mailInImapMoveToFolder,
+        // 0/leer = globaler Standard (null); sonst mit 30s-Untergrenze
+        // klemmen, damit ein Tippfehler keinen Sekundentakt-Dauerabruf auslöst.
+        mailInPollSeconds: data.mailInPollSeconds === undefined ? undefined : data.mailInPollSeconds ? Math.max(30, data.mailInPollSeconds) : null,
         backupEmail: data.backupEmail === '' ? null : data.backupEmail,
         backupWebdavUrl: data.backupWebdavUrl === '' ? null : data.backupWebdavUrl,
         backupWebdavUser: data.backupWebdavUser === '' ? null : data.backupWebdavUser,
@@ -83,10 +139,13 @@ export async function PATCH(req: NextRequest) {
         reportEmail: data.reportEmail === '' ? null : data.reportEmail,
         datevWjBeginn: data.datevWjBeginn === '' ? null : data.datevWjBeginn,
         datevFibuEmail: data.datevFibuEmail === '' ? null : data.datevFibuEmail,
+        sepaOwnName: data.sepaOwnName === '' ? null : data.sepaOwnName,
+        sepaOwnIban: data.sepaOwnIban === '' ? null : data.sepaOwnIban?.replace(/\s+/g, '').toUpperCase(),
+        sepaOwnBic: data.sepaOwnBic === '' ? null : data.sepaOwnBic?.replace(/\s+/g, '').toUpperCase(),
       },
     })
     // Passwort nie im Klartext ins (für mehrere Personen einsehbare) Audit-Protokoll schreiben
-    const SECRET_FIELDS = new Set(['backupWebdavPass', 'mailInGraphClientSecret'])
+    const SECRET_FIELDS = new Set(['backupWebdavPass', 'mailInGraphClientSecret', 'mailInPop3Pass', 'mailInImapPass'])
     await audit({
       tenantId,
       actorId: ctx.userId,

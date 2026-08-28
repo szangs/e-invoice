@@ -4,6 +4,7 @@
 // angegebenen Korb, markiert sie danach als übergeben/exportiert (damit ein
 // erneuter Export dieselben Rechnungen nicht doppelt bucht) und protokolliert
 // den Vorgang im Audit-Log. Nur aus dem Übergabekorb möglich (kind=HANDOVER).
+import AdmZip from 'adm-zip'
 import { NextRequest, NextResponse } from 'next/server'
 import { BasketKind, InvoiceStatus } from '@prisma/client'
 import { z } from 'zod'
@@ -11,7 +12,7 @@ import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
 import { hasBasketRight } from '@/lib/basketRights'
 import { ensureSystemBaskets } from '@/lib/baskets'
-import { buildDatevExport } from '@/lib/datev'
+import { buildDatevExport, findCp1252Losses, toCp1252Bytes, validateDatevSettings } from '@/lib/datev'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { hasFeature } from '@/lib/license'
@@ -21,6 +22,17 @@ import { readInvoiceFile } from '@/lib/storage'
 const schema = z.object({
   basketId: z.string().min(1),
   sendIndividualMails: z.boolean().optional(),
+  // Belegbilder-ZIP (Stefan 2026-08-27, Review-Fund "welche Export-Module an
+  // Fibu noch wichtig wären") — viele Steuerbüros erwarten neben der reinen
+  // Buchungs-CSV auch das Belegbild je Buchung. Statt einer vollen DATEV-
+  // Beleglink-API-Integration (großer, separater Aufwand) hier die naheliegende
+  // Erweiterung des bestehenden Exports: ein ZIP mit CSV + Original-Dateien,
+  // je Datei mit dem docId (= Belegfeld 2 in der CSV, siehe lib/datev.ts)
+  // im Dateinamen benannt — darüber lässt sich Beleg und Buchung von Hand
+  // oder per Import-Regel in der Fibu-Software zuordnen. Nur für
+  // unverschlüsselte Mandanten (Server kann Chiffrat nicht lesen, Zero-
+  // Knowledge) — bei Verschlüsselung bleibt die Option in der UI ausgeblendet.
+  withDocuments: z.boolean().optional(),
   // Inhalts-Verschlüsselung (Stefan 2026-07-09): bei verschlüsselten
   // Mandanten baut der CLIENT die CSV selbst (er hat als Einziger die
   // entschlüsselten Beträge/Lieferanten) — hier wird dann nur noch anhand
@@ -85,6 +97,11 @@ export async function GET(req: NextRequest) {
         amountTax: i.contentEnc ? null : i.amountTax !== null ? Number(i.amountTax) : null,
         amountGross: i.contentEnc ? null : i.amountGross !== null ? Number(i.amountGross) : null,
         currency: i.currency,
+        // Kostenstellen/-träger bleiben auch bei Inhalts-Verschlüsselung
+        // Klartext-Workflow-Felder (siehe Invoice.costCenterCode in
+        // schema.prisma) — der Client muss sie nicht entschlüsseln.
+        costCenterCode: i.costCenterCode,
+        costCarrierCode: i.costCarrierCode,
       })),
       settings: {
         datevBeraternr: tenant.datevBeraternr,
@@ -93,6 +110,7 @@ export async function GET(req: NextRequest) {
         datevKreditorenkonto: tenant.datevKreditorenkonto,
         datevGegenkonto: tenant.datevGegenkonto,
         datevWjBeginn: tenant.datevWjBeginn,
+        datevSkr: tenant.datevSkr,
       },
       vendorAccounts,
       exportedBy: ctx.email,
@@ -106,7 +124,7 @@ export async function POST(req: NextRequest) {
   try {
     const ctx = await getContext()
     const tenantId = requireTenant(ctx)
-    const { basketId, sendIndividualMails, invoiceIds } = schema.parse(await req.json())
+    const { basketId, sendIndividualMails, withDocuments, invoiceIds } = schema.parse(await req.json())
 
     const [basket, tenant] = await Promise.all([
       prisma.basket.findFirst({ where: { id: basketId, tenantId } }),
@@ -120,6 +138,16 @@ export async function POST(req: NextRequest) {
     if (!hasFeature(tenant, 'DATEV')) throw new ApiError(403, 'DATEV-Export ist im aktuellen Tarif nicht enthalten.')
     if (!(await hasBasketRight(ctx.userId, ctx.role, basket.id, 'FIBU'))) {
       throw new ApiError(403, 'Kein Recht zur Übergabe an die Fibu.')
+    }
+    // Stefan 2026-08-26 ("das sagt das DATEV-Prüftool"): lieber hier klar
+    // abbrechen als eine Datei mit leeren Mussfeldern (Berater-/Mandanten-
+    // nummer, Kontenrahmen, Sammelkonten) zu erzeugen, die DATEV ohnehin ablehnt.
+    const missingDatevSettings = validateDatevSettings(tenant)
+    if (missingDatevSettings.length > 0) {
+      throw new ApiError(
+        400,
+        `DATEV-Einstellungen unvollständig — bitte zuerst in den Mandanten-Einstellungen ergänzen: ${missingDatevSettings.join(', ')}.`,
+      )
     }
 
     // Client-seitiger Export bei Verschlüsselung (Stefan 2026-07-09): die CSV
@@ -188,6 +216,8 @@ export async function POST(req: NextRequest) {
         amountTax: i.amountTax !== null ? Number(i.amountTax) : null,
         amountGross: i.amountGross !== null ? Number(i.amountGross) : null,
         currency: i.currency,
+        costCenterCode: i.costCenterCode,
+        costCarrierCode: i.costCarrierCode,
       })),
       tenant,
       { exportedBy: ctx.email },
@@ -257,12 +287,66 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    return new NextResponse(csv, {
+    // Stefan 2026-08-26 ("Umlaute-Problem"): DATEV erwartet den Buchungsstapel
+    // in Windows-1252, nicht UTF-8 (siehe lib/datev.ts toCp1252Bytes).
+    // Review-Fund: Zeichen außerhalb von CP1252 wurden bisher stumm durch "?"
+    // ersetzt — hier als Header mitgeben, damit der Client warnen kann.
+    const lossyChars = findCp1252Losses(csv)
+    const csvBytes = Buffer.from(toCp1252Bytes(csv))
+    const dateStamp = now.toISOString().slice(0, 10)
+
+    // Belegbilder-ZIP (Stefan 2026-08-27, siehe Kommentar am withDocuments-
+    // Schema oben) — nur wenn angefragt, sonst bleibt es beim reinen CSV wie
+    // bisher (kein Verhaltenswechsel für bestehende Nutzung).
+    if (withDocuments) {
+      const zip = new AdmZip()
+      zip.addFile('Buchungsstapel.csv', csvBytes)
+      let included = 0
+      let skipped = 0
+      for (const inv of invoices) {
+        if (inv.encrypted || !inv.fileName) {
+          skipped++
+          continue
+        }
+        try {
+          const buffer = await readInvoiceFile(tenantId, inv.fileName)
+          const ext = (inv.originalName ?? inv.fileName).split('.').pop() || 'pdf'
+          const safeVendor = (inv.vendor ?? 'Beleg').replace(/[^\w.-]+/g, '_').slice(0, 40)
+          zip.addFile(`Belege/${inv.docId ?? inv.id}_${safeVendor}.${ext}`, buffer)
+          included++
+        } catch {
+          skipped++
+        }
+      }
+      zip.addFile(
+        'LIESMICH.txt',
+        Buffer.from(
+          `DATEV-Export mit Belegbildern — ${dateStamp}\n\n` +
+            `Buchungsstapel.csv: EXTF-Buchungsstapel (Windows-1252) mit ${invoices.length} Buchung(en).\n` +
+            `Belege/: Original-Belegdateien, benannt nach der Dokumenten-ID (= "Belegfeld 2" in der CSV) — ` +
+            `darüber lässt sich jeder Beleg eindeutig seiner Buchungszeile zuordnen.\n` +
+            `${included} Beleg(e) enthalten${skipped > 0 ? `, ${skipped} übersprungen (keine Datei bzw. verschlüsselt)` : ''}.\n`,
+          'utf8',
+        ),
+      )
+      return new NextResponse(new Uint8Array(zip.toBuffer()), {
+        headers: {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': `attachment; filename="EXTF_Buchungsstapel_mit_Belegen_${dateStamp}.zip"`,
+          'X-Mail-Sent': String(mailSent),
+          'X-Mail-Failed': String(mailFailed),
+          'X-Cp1252-Lossy-Chars': encodeURIComponent(lossyChars.join('')),
+        },
+      })
+    }
+
+    return new NextResponse(csvBytes, {
       headers: {
-        'Content-Type': 'text/csv; charset=utf-8',
-        'Content-Disposition': `attachment; filename="EXTF_Buchungsstapel_${now.toISOString().slice(0, 10)}.csv"`,
+        'Content-Type': 'text/csv; charset=windows-1252',
+        'Content-Disposition': `attachment; filename="EXTF_Buchungsstapel_${dateStamp}.csv"`,
         'X-Mail-Sent': String(mailSent),
         'X-Mail-Failed': String(mailFailed),
+        'X-Cp1252-Lossy-Chars': encodeURIComponent(lossyChars.join('')),
       },
     })
   } catch (e) {

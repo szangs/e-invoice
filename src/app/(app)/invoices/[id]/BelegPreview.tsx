@@ -135,9 +135,19 @@ export function BelegPreview({
   }
 
   if (isPdf) {
+    // #view=FitH (Stefan 2026-08-27, "PDF-Vorschau nutzt den Platz rechts und
+    // links nicht gut aus"): eingebettete PDF-Viewer (Chrome/Firefox) zeigen
+    // eine Portrait-Seite standardmäßig komplett auf einmal ("fit page") —
+    // bei einer breiteren Vorschau-Spalte als die Seite hoch ist bleiben dann
+    // links/rechts ungenutzte Ränder. Dieser Standard-PDF-Öffnungsparameter
+    // (von Chrome/Firefox' eingebautem Viewer unterstützt) skaliert
+    // stattdessen auf die volle Breite, auf Kosten von vertikalem Scrollen —
+    // funktioniert gleichermaßen bei der normalen Server-URL wie bei der im
+    // Browser entschlüsselten blob:-URL (verschlüsselte Belege).
+    const pdfSrc = `${src}#view=FitH`
     return (
       <div className="dp-card overflow-hidden !p-0">
-        <iframe src={src} title="Rechnungsbild (PDF)" className="h-[75vh] w-full lg:h-[calc(100vh-220px)]" />
+        <iframe src={pdfSrc} title="Rechnungsbild (PDF)" className="h-[75vh] w-full lg:h-[calc(100vh-220px)]" />
       </div>
     )
   }
@@ -145,8 +155,18 @@ export function BelegPreview({
   // Reine XML-Rechnung (XRechnung): kein PDF/Bild vorhanden, aber die
   // Nachbau-Visualisierung aus den gelesenen Daten (deutlich mit Wasserzeichen
   // als Nachbau gekennzeichnet — niemals mit dem Original verwechselbar).
+  // Dieselbe Mindesthöhe wie die PDF-/Bild-Vorschau oben (Stefan 2026-08-26,
+  // "unnötiger Sprung in der Dateiansicht zwischen E-Rechnung und PDF") —
+  // vorher war dieser Bereich nur so hoch wie der Inhalt selbst, während PDF/
+  // Bild fast bildschirmhoch sind: beim Wechsel zwischen einer reinen
+  // XRechnung (nur XML) und einer ZUGFeRD-/Scan-Rechnung sprang die ganze
+  // Seite dadurch spürbar in der Höhe.
   if (mockData && mockFormat) {
-    return <ERechnungMockInvoice data={mockData} format={mockFormat} />
+    return (
+      <div className="min-h-[75vh] lg:min-h-[calc(100vh-220px)]">
+        <ERechnungMockInvoice data={mockData} format={mockFormat} />
+      </div>
+    )
   }
 
   // Unbekannter/nicht darstellbarer Dateityp — kein Inline-Bild, aber

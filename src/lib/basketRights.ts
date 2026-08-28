@@ -9,6 +9,7 @@
 import { BasketRight, Role } from '@prisma/client'
 import { ApiError } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { getActiveHandoff } from '@/lib/invoiceHandoff'
 
 export const RIGHT_RANK: Record<BasketRight, number> = {
   VIEW: 1,
@@ -106,4 +107,28 @@ export async function requireInvoiceContentAccess(
   if (!(await hasBasketRight(ctx.userId, ctx.role, basketId, 'CONTENT'))) {
     throw new ApiError(403, 'Kein Recht, diese Rechnung einzusehen.')
   }
+}
+
+/**
+ * Wie requireInvoiceContentAccess, aber mit Ausnahme für den Empfänger
+ * einer noch offenen "Zur Prüfung weitergeben"-Übergabe (Stefan 2026-08-27,
+ * Fehlerbericht "weitergegebene Belege kommen nicht an") — die Übergabe
+ * verschiebt die Rechnung bewusst NICHT in einen anderen Korb (siehe
+ * lib/invoiceHandoff.ts), der Empfänger braucht also unabhängig von seinem
+ * Korb-Recht Zugriff auf GENAU diese eine Rechnung, solange die Übergabe
+ * läuft — sonst kann er weder die mitgeschickte Nachricht lesen noch die
+ * Rechnung überhaupt öffnen. Für alle Einzel-Rechnungs-Routen zu verwenden;
+ * requireInvoiceContentAccess bleibt für rein Korb-bezogene Stellen
+ * (Liste/Exporte) bestehen, wo eine einzelne Übergabe keine Ausnahme
+ * rechtfertigt.
+ */
+export async function requireInvoiceAccess(
+  ctx: { userId: string; role: Role },
+  invoice: { id: string; basketId: string | null },
+): Promise<void> {
+  if (!invoice.basketId) return
+  if (await hasBasketRight(ctx.userId, ctx.role, invoice.basketId, 'CONTENT')) return
+  const handoff = await getActiveHandoff(invoice.id)
+  if (handoff && handoff.toUserId === ctx.userId) return
+  throw new ApiError(403, 'Kein Recht, diese Rechnung einzusehen.')
 }

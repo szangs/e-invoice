@@ -5,7 +5,9 @@
 // öffnet darunter genau diesen Bereich, statt vorher alle Abschnitte
 // ununterschieden untereinander zu stapeln.
 import { useRouter } from 'next/navigation'
-import { useRef, useState, type ReactNode } from 'react'
+import { useRef, useState } from 'react'
+import { AzureGraphCredentialsFields, AzureGraphCredentialsGuide } from '@/components/settings/AzureGraphCredentials'
+import { ColorThemePicker } from './ColorThemePicker'
 import { CostCodesPanel } from './CostCodesPanel'
 import { DatevAccountsPanel } from './DatevAccountsPanel'
 import { VendorAddressesPanel } from './VendorAddressesPanel'
@@ -19,6 +21,7 @@ type Switches = {
   ipLoggingAllowed: boolean
   backupEnabled: boolean
   defaultLanguage: string
+  colorTheme: string
   mailAllowedDomains: string
   mailInGraphEnabled: boolean
   mailInGraphMailbox: string
@@ -30,6 +33,21 @@ type Switches = {
   mailInGraphTenantId: string
   mailInGraphClientId: string
   mailInGraphClientSecret: string
+  mailInPop3Enabled: boolean
+  mailInPop3Host: string
+  mailInPop3Port: number
+  mailInPop3Secure: boolean
+  mailInPop3User: string
+  mailInPop3Pass: string
+  mailInImapEnabled: boolean
+  mailInImapHost: string
+  mailInImapPort: number
+  mailInImapSecure: boolean
+  mailInImapUser: string
+  mailInImapPass: string
+  mailInImapFolder: string
+  mailInImapMoveToFolder: string
+  mailInPollSeconds: number
   backupFrequency: string
   backupEmail: string
   backupReminderDays: number
@@ -47,10 +65,11 @@ type Switches = {
   datevGegenkonto: string
   datevWjBeginn: string
   datevFibuEmail: string
+  sepaOwnName: string
+  sepaOwnIban: string
+  sepaOwnBic: string
   costCenterEnabled: boolean
   costCarrierEnabled: boolean
-  dueReminderDaysAfterReceipt: number | null
-  dueReminderDaysBeforeDue: number | null
 }
 
 const FREQUENCIES = [
@@ -60,14 +79,19 @@ const FREQUENCIES = [
   { value: 'YEARLY', label: 'jährlich' },
 ]
 
-type TabKey = 'tenant' | 'general' | 'backup' | 'report' | 'datev' | 'encryption' | 'tokens'
+// 'mailin' (Stefan 2026-08-27, "die Email Abholung soll ein eigener
+// Menüpunkt sein unter Einstellungen") — vorher als Unterabschnitt im Tab
+// "Allgemein" versteckt, jetzt eigener Themenbereich (Weiterleitung/Graph/
+// POP3/IMAP, Poll-Intervall, Dubletten & Versionen).
+type TabKey = 'tenant' | 'general' | 'mailin' | 'backup' | 'report' | 'datev' | 'encryption' | 'tokens'
 
 const TABS: { key: TabKey; label: string; hint: string }[] = [
   { key: 'tenant', label: 'Mandant', hint: 'Name, Kurzname, Lizenz, Einlieferungs-Adresse' },
-  { key: 'general', label: 'Allgemein', hint: 'KI-Nutzung, IP-Protokollierung, Sprache, E-Mail-Eingang' },
+  { key: 'general', label: 'Allgemein', hint: 'KI-Nutzung, IP-Protokollierung, Sprache' },
+  { key: 'mailin', label: 'Mail-Eingang', hint: 'Weiterleitung, Microsoft Graph, POP3, IMAP, Poll-Intervall, Dubletten & Versionen' },
   { key: 'backup', label: 'Datensicherung', hint: 'Zeitplan, Download-Link, Erinnerung, externes Ziel, Rücksicherung (§17)' },
   { key: 'report', label: 'Bericht', hint: 'Revisionssicherer Hash-Bericht (Rechnungsliste + Prüfsummen)' },
-  { key: 'datev', label: 'DATEV-Export', hint: 'Konten, Wirtschaftsjahr, Fibu-E-Mail, Lieferanten-Konten' },
+  { key: 'datev', label: 'DATEV-Export', hint: 'Konten, Wirtschaftsjahr, Fibu-E-Mail, Lieferanten-Konten, SEPA-Zahlungsverkehr' },
   { key: 'encryption', label: 'Verschlüsselung', hint: 'Zero-Knowledge Beleg-Verschlüsselung' },
   { key: 'tokens', label: 'API-Token', hint: 'Rechnungs-Catcher — Browser-Plugin' },
 ]
@@ -84,10 +108,22 @@ function TabIcon({ tab }: { tab: TabKey }) {
         </svg>
       )
     case 'general':
+      // Vereinfacht (Stefan 2026-08-27, "Icons wirken unaufgeräumt") — das
+      // vorherige, sehr detailreiche Zahnrad wirkte bei 19px deutlich
+      // unruhiger/dichter als die übrigen, bewusst schlichten Icons daneben.
+      // Schild passt inhaltlich auch besser: der Tab ist jetzt nur noch
+      // KI-Nutzung + Datenschutz (Mail-Eingang hat einen eigenen Tab).
       return (
         <svg {...common} aria-hidden="true">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 13a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.04 1.56V19a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.96 17.34a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 13a1.7 1.7 0 0 0-1.56-1.04H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 6.96a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1.04-1.56V1a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15.04 4.6a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1.04H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51.96z" />
+          <path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" />
+          <path d="M9.5 12l2 2 3.5-4" />
+        </svg>
+      )
+    case 'mailin':
+      return (
+        <svg {...common} aria-hidden="true">
+          <rect x="3" y="5" width="18" height="14" rx="2" />
+          <path d="M3 7l9 6 9-6" />
         </svg>
       )
     case 'backup':
@@ -135,10 +171,16 @@ export function SettingsHub({
   encryptionEnabled,
   lastBackupAt,
   tenant,
+  globalPollDefaults,
 }: {
   initial: Switches
   encryptionEnabled: boolean
   lastBackupAt: string | null
+  // Globale Betreiber-Standard-Poll-Intervalle (Stefan 2026-08-27, "bei
+  // Mailabholung müssen wir die Pollrate einstellen können") — nur zur
+  // Anzeige, was ohne eigenen Wert gilt (Systemeinstellungen, siehe
+  // lib/mailinSchedule.ts).
+  globalPollDefaults: { graph: number; pop3: number; imap: number }
   // Mandanten-Stammdaten (Stefan 2026-08-25) — eigener Tab statt einer
   // separaten, immer sichtbaren Karte über den Einstellungen (gehört genauso
   // zu den Mandanten-Einstellungen wie die übrigen Tabs).
@@ -153,6 +195,11 @@ export function SettingsHub({
     mailInGraphActive: boolean
     mailInGraphMailbox: string | null
     mailInGraphFolder: string | null
+    mailInPop3Active: boolean
+    mailInPop3Host: string | null
+    mailInImapActive: boolean
+    mailInImapHost: string | null
+    mailInImapFolder: string | null
   }
 }) {
   const router = useRouter()
@@ -163,6 +210,8 @@ export function SettingsHub({
   const [backupMsg, setBackupMsg] = useState('')
   const [reportMsg, setReportMsg] = useState('')
   const [graphMailinMsg, setGraphMailinMsg] = useState('')
+  const [pop3MailinMsg, setPop3MailinMsg] = useState('')
+  const [imapMailinMsg, setImapMailinMsg] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
   async function save() {
@@ -228,6 +277,44 @@ export function SettingsHub({
     setGraphMailinMsg(res.ok ? data.message : (data.error ?? 'Test fehlgeschlagen.'))
   }
 
+  async function testPop3Mailin() {
+    setBusy(true)
+    setPop3MailinMsg('Prüfe …')
+    await save()
+    const res = await fetch('/api/admin/tenant/mailin-pop3-test', { method: 'POST' })
+    const data = await res.json().catch(() => ({}))
+    setBusy(false)
+    setPop3MailinMsg(res.ok ? data.message : (data.error ?? 'Test fehlgeschlagen.'))
+  }
+
+  async function testImapMailin() {
+    setBusy(true)
+    setImapMailinMsg('Prüfe …')
+    await save()
+    const res = await fetch('/api/admin/tenant/mailin-imap-test', { method: 'POST' })
+    const data = await res.json().catch(() => ({}))
+    setBusy(false)
+    setImapMailinMsg(res.ok ? data.message : (data.error ?? 'Test fehlgeschlagen.'))
+  }
+
+  // E-Mail-Verfahren-Auswahl (Stefan 2026-08-27): eine Radio-Gruppe statt
+  // dreier unabhängiger Schalter — schaltet beim Wechsel die jeweils anderen
+  // beiden Wege aus (serverseitig zusätzlich erzwungen, siehe api/admin/tenant).
+  type MailMethod = 'FORWARDING' | 'GRAPH' | 'POP3' | 'IMAP'
+  const mailMethod: MailMethod = s.mailInGraphEnabled ? 'GRAPH' : s.mailInPop3Enabled ? 'POP3' : s.mailInImapEnabled ? 'IMAP' : 'FORWARDING'
+  // Eigenes Poll-Intervall je Mandant (Stefan 2026-08-27) — Standard-Wert je
+  // nach gewähltem Verfahren, nur zur Anzeige im Platzhalter.
+  const pollDefaultForMethod =
+    mailMethod === 'GRAPH' ? globalPollDefaults.graph : mailMethod === 'POP3' ? globalPollDefaults.pop3 : globalPollDefaults.imap
+  function setMailMethod(method: MailMethod) {
+    setS((p) => ({
+      ...p,
+      mailInGraphEnabled: method === 'GRAPH',
+      mailInPop3Enabled: method === 'POP3',
+      mailInImapEnabled: method === 'IMAP',
+    }))
+  }
+
   async function sendTestInvoicesGraph() {
     if (!window.confirm('10 Test-Rechnungen (PDF/XRechnung/ZUGFeRD gemischt) an Ihr Mail-Eingang-Postfach senden?')) return
     setBusy(true)
@@ -242,19 +329,6 @@ export function SettingsHub({
     setBusy(false)
     setGraphMailinMsg(res.ok ? data.message : (data.error ?? 'Senden fehlgeschlagen.'))
   }
-
-  const helpBox = (summary: string, steps: ReactNode[]) => (
-    <details className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 open:pb-3">
-      <summary className="cursor-pointer select-none text-xs font-semibold text-[var(--accent)]">
-        {summary}
-      </summary>
-      <ol className="mt-2 list-decimal space-y-1.5 pl-4 text-xs leading-relaxed text-gray-600">
-        {steps.map((step, i) => (
-          <li key={i}>{step}</li>
-        ))}
-      </ol>
-    </details>
-  )
 
   const toggle = (key: 'aiAllowed' | 'ipLoggingAllowed' | 'mailInGraphEnabled' | 'buyerNameMismatchBlocksHandover', label: string, hint?: string) => (
     <label className="flex items-start gap-2 text-sm text-gray-700">
@@ -331,6 +405,14 @@ export function SettingsHub({
             </p>
           </div>
 
+          <div className="border-t border-[var(--line)] pt-4">
+            <p className="dp-label mb-2">Erscheinungsbild</p>
+            <ColorThemePicker value={s.colorTheme} onChange={(colorTheme) => setS((p) => ({ ...p, colorTheme }))} />
+            <p className="mt-1.5 text-[10px] text-gray-400">
+              Sofort als Vorschau sichtbar — dauerhaft gespeichert wird die Wahl erst mit „Speichern" unten.
+            </p>
+          </div>
+
           <div className="border-t border-[var(--line)] pt-4 space-y-3">
             <div>
               <label className="dp-label" title="Exakte Firmenbezeichnung wie auf Ihren Rechnungen adressiert — wird mit dem Rechnungsempfänger jeder eingehenden E-Rechnung verglichen (Warnung bei Abweichung, z. B. bei einer versehentlich falsch adressierten Rechnung). Leer = keine Prüfung.">
@@ -365,7 +447,7 @@ export function SettingsHub({
                   bei Ihrem E-Mail-Provider dorthin ein. So behalten Sie die alleinige Kontrolle über
                   Ihr Rechnungspostfach.
                 </p>
-                {!tenant.mailInSmtpEnabled && !tenant.mailInGraphActive && (
+                {!tenant.mailInSmtpEnabled && !tenant.mailInGraphActive && !tenant.mailInPop3Active && !tenant.mailInImapActive && (
                   <p className="mt-2 rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-strong)]">
                     Der automatische Abruf ist derzeit deaktiviert — eingehende Mails werden gesammelt
                     und nach Aktivierung verarbeitet.
@@ -376,6 +458,17 @@ export function SettingsHub({
                     Zusätzlich aktiv: automatischer Abruf per Microsoft Graph aus Postfach{' '}
                     <span className="font-mono">{tenant.mailInGraphMailbox}</span>
                     {tenant.mailInGraphFolder ? <>, Ordner <span className="font-mono">{tenant.mailInGraphFolder}</span></> : null}.
+                  </p>
+                )}
+                {tenant.mailInPop3Active && (
+                  <p className="mt-2 rounded-lg bg-[var(--accent-bg)] px-3 py-2 text-xs text-[var(--accent)]">
+                    Zusätzlich aktiv: automatischer Abruf per POP3 von <span className="font-mono">{tenant.mailInPop3Host}</span>.
+                  </p>
+                )}
+                {tenant.mailInImapActive && (
+                  <p className="mt-2 rounded-lg bg-[var(--accent-bg)] px-3 py-2 text-xs text-[var(--accent)]">
+                    Zusätzlich aktiv: automatischer Abruf per IMAP von <span className="font-mono">{tenant.mailInImapHost}</span>
+                    {tenant.mailInImapFolder ? <>, Ordner <span className="font-mono">{tenant.mailInImapFolder}</span></> : null}.
                   </p>
                 )}
               </>
@@ -400,7 +493,33 @@ export function SettingsHub({
           </div>
 
           <div className="space-y-3 border-t border-[var(--line)] pt-5">
-            <p className="text-xs font-bold uppercase tracking-wide text-gray-400">Mail-Eingang</p>
+            <p className="text-xs font-bold uppercase tracking-wide text-gray-400">Sonstiges</p>
+            <div>
+              <label className="dp-label">Standardsprache</label>
+              <select className="dp-input mt-1 !w-auto" value={s.defaultLanguage}
+                onChange={(e) => setS((p) => ({ ...p, defaultLanguage: e.target.value }))}>
+                <option value="de">Deutsch</option>
+                <option value="en">Englisch</option>
+              </select>
+            </div>
+
+            <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] p-3 space-y-1">
+              <p className="dp-label">Fälligkeits-Hervorhebung</p>
+              <p className="text-[11px] text-gray-500">
+                Überfällige und bald fällige Rechnungen (Zahlungsziel in den nächsten 7 Tagen bzw. bereits
+                verstrichen) werden automatisch in der periodischen Korb-Sammelmail hervorgehoben — siehe
+                Korb-Einstellungen → Benachrichtigung für Ein/Aus und Intervall. Keine gesonderte Einstellung
+                nötig.
+              </p>
+            </div>
+          </div>
+          <SaveBar />
+        </section>
+      )}
+
+      {tab === 'mailin' && (
+        <section className="dp-card space-y-5">
+          <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">Mail-Eingang</h2>
           <div>
             <label className="dp-label">Nur Absender dieser Domänen</label>
             <input className="dp-input mt-1" value={s.mailAllowedDomains}
@@ -408,40 +527,72 @@ export function SettingsHub({
               onChange={(e) => setS((p) => ({ ...p, mailAllowedDomains: e.target.value }))} />
           </div>
 
-          <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] p-3 space-y-2">
-            {toggle('mailInGraphEnabled', 'E-Mail-Eingang per Microsoft Graph (Alternative)',
-              'Statt einer Weiterleitung auf unsere Einlieferungs-Adresse: ein Postfach + Ordner wird direkt bei Office 365 abgefragt. Der Betreiber muss den Abrufprozess global aktiviert haben (Systemeinstellungen) — Zugangsdaten unten sind Ihre eigenen.')}
-            {s.mailInGraphEnabled && (
+          {/* E-Mail-Verfahren-Auswahl (Stefan 2026-08-27, Review-Fund "unter Mail
+              noch eine Unterkategorie zur Auswahl des Email-Verfahrens — SMTP
+              Input und Office 365 API gibt es schon, jetzt fehlt noch POP und
+              IMAP") — vorher ein einzelner Ein/Aus-Schalter nur für Graph,
+              SMTP-Weiterleitung lief implizit parallel dazu; jetzt eine klare
+              Auswahl zwischen genau einem der vier Wege. */}
+          <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] p-3 space-y-3">
+            <p className="dp-label">E-Mail-Verfahren</p>
+            <div className="flex flex-col gap-1.5 text-sm text-gray-700">
+              <label className="flex items-center gap-2">
+                <input type="radio" name="mailMethod" className="accent-[var(--accent)]" checked={mailMethod === 'FORWARDING'}
+                  onChange={() => setMailMethod('FORWARDING')} />
+                Weiterleitung (Standard) — Einlieferungs-Adresse oben, keine weitere Einrichtung nötig
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="radio" name="mailMethod" className="accent-[var(--accent)]" checked={mailMethod === 'GRAPH'}
+                  onChange={() => setMailMethod('GRAPH')} />
+                Microsoft Graph API — eigene Azure-App-Registrierung, Postfach wird direkt bei Office 365 abgefragt
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="radio" name="mailMethod" className="accent-[var(--accent)]" checked={mailMethod === 'POP3'}
+                  onChange={() => setMailMethod('POP3')} />
+                POP3 — klassischer Postfach-Abruf, abgerufene Mails werden anschließend gelöscht
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="radio" name="mailMethod" className="accent-[var(--accent)]" checked={mailMethod === 'IMAP'}
+                  onChange={() => setMailMethod('IMAP')} />
+                IMAP — Postfach-Abruf, verarbeitete Mails bleiben erhalten (werden als gelesen markiert)
+              </label>
+            </div>
+            <p className="text-[11px] text-gray-400">
+              Der Betreiber muss den jeweiligen Abrufprozess global aktiviert haben (Systemeinstellungen) —
+              Zugangsdaten unten sind immer Ihre eigenen.
+            </p>
+            {mailMethod !== 'FORWARDING' && (
+              <div className="border-t border-[var(--line)] pt-3">
+                <label className="dp-label" title="Wie oft Ihr Postfach abgefragt wird — leer/0 = Standard des Betreibers">
+                  Poll-Intervall (Sekunden)
+                </label>
+                <input className="dp-input mt-1 !w-32" type="number" min={30} value={s.mailInPollSeconds || ''}
+                  placeholder={String(pollDefaultForMethod)}
+                  onChange={(e) => setS((p) => ({ ...p, mailInPollSeconds: e.target.value === '' ? 0 : Math.max(30, Number(e.target.value) || 0) }))} />
+                <p className="mt-0.5 text-[10px] text-gray-400">
+                  Leer = Standard des Betreibers (aktuell {pollDefaultForMethod} Sekunden). Mindestens 30 Sekunden.
+                </p>
+              </div>
+            )}
+            {mailMethod === 'GRAPH' && (
               <>
                 <p className="text-[11px] text-gray-500">
                   Wichtig: Das ist <strong>Ihre eigene</strong> Azure-App-Registrierung in Ihrem
                   eigenen Microsoft-365-Tenant — der Betreiber kann mit seinen Zugangsdaten nicht
                   auf Ihr Postfach zugreifen, das braucht zwingend Ihre eigene App.
                 </p>
-                {helpBox('Anleitung: eigene Azure-AD-App-Registrierung einrichten (braucht Ihren Microsoft-365-Admin, einmalig)', [
-                  <>
-                    Ihr Admin meldet sich auf <span className="font-mono">portal.azure.com</span> an (im
-                    Microsoft-365-Tenant Ihrer Firma!) → <strong>Azure Active Directory</strong> →{' '}
-                    <strong>App-Registrierungen</strong> → <strong>„Neue Registrierung"</strong>. Name frei
-                    wählbar (z. B. „E-Invoice Mail-Eingang").
-                  </>,
-                  <>Auf der Übersichtsseite <strong>Tenant-ID</strong> und <strong>Client-ID</strong> notieren — beide unten eintragen.</>,
-                  <>
-                    <strong>„Zertifikate &amp; Geheimnisse"</strong> → <strong>„Neuer geheimer Clientschlüssel"</strong> →
-                    den angezeigten <strong>Wert</strong> sofort kopieren (nicht die Geheimnis-ID) — das ist das Client-Secret unten.
-                  </>,
-                  <>
-                    <strong>„API-Berechtigungen"</strong> → <strong>„Berechtigung hinzufügen"</strong> → Microsoft Graph →{' '}
-                    <strong>„Anwendungsberechtigungen"</strong> (nicht „Delegiert") → <span className="font-mono">Mail.Read</span> hinzufügen.
-                  </>,
-                  <><strong>„Administratorzustimmung erteilen"</strong> klicken und bestätigen.</>,
-                  <>
-                    Optional, falls Sie unten auch „Verarbeitete Mails verschieben nach" nutzen: zusätzlich{' '}
-                    <span className="font-mono">Mail.ReadWrite</span> statt nur <span className="font-mono">Mail.Read</span> hinzufügen
-                    (Verschieben braucht Schreibzugriff) — sonst reicht <span className="font-mono">Mail.Read</span>.
-                  </>,
-                  <>Postfach + Ordner unten eintragen (das Postfach muss in Ihrem eigenen Tenant existieren), speichern, „Ordner testen".</>,
-                ])}
+                <AzureGraphCredentialsGuide
+                  registrationNameHint="E-Invoice Mail-Eingang"
+                  permission="Mail.Read"
+                  extraSteps={[
+                    <>
+                      Optional, falls Sie unten auch „Verarbeitete Mails verschieben nach" nutzen: zusätzlich{' '}
+                      <span className="font-mono">Mail.ReadWrite</span> statt nur <span className="font-mono">Mail.Read</span> hinzufügen
+                      (Verschieben braucht Schreibzugriff) — sonst reicht <span className="font-mono">Mail.Read</span>.
+                    </>,
+                    <>Postfach + Ordner unten eintragen (das Postfach muss in Ihrem eigenen Tenant existieren), speichern, „Ordner testen".</>,
+                  ]}
+                />
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div>
                     <label className="dp-label">Postfach</label>
@@ -466,23 +617,16 @@ export function SettingsHub({
                       statt nur „Mail.Read" in der App-Registrierung, siehe Anleitung oben.
                     </p>
                   </div>
-                  <div>
-                    <label className="dp-label">Tenant-ID (Ihr Azure AD)</label>
-                    <input className="dp-input mt-1" value={s.mailInGraphTenantId}
-                      onChange={(e) => setS((p) => ({ ...p, mailInGraphTenantId: e.target.value }))} />
-                  </div>
-                  <div>
-                    <label className="dp-label">Client-ID (Ihre App-Registrierung)</label>
-                    <input className="dp-input mt-1" value={s.mailInGraphClientId}
-                      onChange={(e) => setS((p) => ({ ...p, mailInGraphClientId: e.target.value }))} />
-                  </div>
-                  <div>
-                    <label className="dp-label">Client-Secret</label>
-                    <input className="dp-input mt-1" value={s.mailInGraphClientSecret}
-                      placeholder="Nur ändern, wenn neu gesetzt werden soll"
-                      onChange={(e) => setS((p) => ({ ...p, mailInGraphClientSecret: e.target.value }))} />
-                  </div>
                 </div>
+                <AzureGraphCredentialsFields
+                  values={{ tenantId: s.mailInGraphTenantId, clientId: s.mailInGraphClientId, clientSecret: s.mailInGraphClientSecret }}
+                  onChange={(patch) => setS((p) => ({
+                    ...p,
+                    ...(patch.tenantId !== undefined ? { mailInGraphTenantId: patch.tenantId } : {}),
+                    ...(patch.clientId !== undefined ? { mailInGraphClientId: patch.clientId } : {}),
+                    ...(patch.clientSecret !== undefined ? { mailInGraphClientSecret: patch.clientSecret } : {}),
+                  }))}
+                />
                 <div className="flex flex-wrap items-center gap-3">
                   <button type="button" className="btn-secondary" onClick={testGraphMailin}
                     disabled={busy || !s.mailInGraphMailbox}
@@ -498,7 +642,123 @@ export function SettingsHub({
                 </div>
               </>
             )}
-          </div>
+            {mailMethod === 'POP3' && (
+              <>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="dp-label">Server</label>
+                    <input className="dp-input mt-1" value={s.mailInPop3Host}
+                      placeholder="z. B. pop.mandant-provider.de"
+                      onChange={(e) => setS((p) => ({ ...p, mailInPop3Host: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="dp-label">Port</label>
+                    <input className="dp-input mt-1" type="number" value={s.mailInPop3Port}
+                      onChange={(e) => setS((p) => ({ ...p, mailInPop3Port: Number(e.target.value) || 995 }))} />
+                  </div>
+                  <div>
+                    <label className="dp-label">Benutzer</label>
+                    <input className="dp-input mt-1" value={s.mailInPop3User}
+                      onChange={(e) => setS((p) => ({ ...p, mailInPop3User: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="dp-label">Passwort</label>
+                    <input className="dp-input mt-1" type="password" value={s.mailInPop3Pass}
+                      placeholder="Nur ändern, wenn neu gesetzt werden soll"
+                      onChange={(e) => setS((p) => ({ ...p, mailInPop3Pass: e.target.value }))} />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="flex items-center gap-2 text-sm text-gray-700">
+                      <input type="checkbox" className="accent-[var(--accent)]" checked={s.mailInPop3Secure}
+                        onChange={(e) => setS((p) => ({ ...p, mailInPop3Secure: e.target.checked }))} />
+                      Verschlüsselte Verbindung (TLS, Port 995) — nur implizites TLS unterstützt, kein STARTTLS auf Port 110
+                    </label>
+                  </div>
+                </div>
+                <p className="text-[11px] text-gray-500">
+                  Abgerufene Nachrichten werden nach erfolgreicher Verarbeitung vom Server gelöscht (POP3-üblich) —
+                  richten Sie dafür am besten ein eigenes, ausschließlich für den Rechnungseingang genutztes Postfach ein.
+                </p>
+                <p className="rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-[11px] text-[var(--warn-strong)]">
+                  ⚠ Bei einem Microsoft-365/Outlook-Postfach schlägt die Anmeldung meist mit
+                  „Basic authentication is disabled" fehl — Microsoft hat Benutzername+Passwort-Anmeldung
+                  für POP3/IMAP seit 2022 standardmäßig abgeschaltet. Nutzen Sie für solche Postfächer
+                  stattdessen „Microsoft Graph API" oben.
+                </p>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button type="button" className="btn-secondary" onClick={testPop3Mailin}
+                    disabled={busy || !s.mailInPop3Host}
+                    title="Speichert die obigen Angaben und prüft die Anmeldung am POP3-Server">
+                    Verbindung testen
+                  </button>
+                  {pop3MailinMsg && <span className="text-xs text-gray-600">{pop3MailinMsg}</span>}
+                </div>
+              </>
+            )}
+            {mailMethod === 'IMAP' && (
+              <>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="dp-label">Server</label>
+                    <input className="dp-input mt-1" value={s.mailInImapHost}
+                      placeholder="z. B. imap.mandant-provider.de"
+                      onChange={(e) => setS((p) => ({ ...p, mailInImapHost: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="dp-label">Port</label>
+                    <input className="dp-input mt-1" type="number" value={s.mailInImapPort}
+                      onChange={(e) => setS((p) => ({ ...p, mailInImapPort: Number(e.target.value) || 993 }))} />
+                  </div>
+                  <div>
+                    <label className="dp-label">Benutzer</label>
+                    <input className="dp-input mt-1" value={s.mailInImapUser}
+                      onChange={(e) => setS((p) => ({ ...p, mailInImapUser: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="dp-label">Passwort</label>
+                    <input className="dp-input mt-1" type="password" value={s.mailInImapPass}
+                      placeholder="Nur ändern, wenn neu gesetzt werden soll"
+                      onChange={(e) => setS((p) => ({ ...p, mailInImapPass: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="dp-label">Ordner</label>
+                    <input className="dp-input mt-1" value={s.mailInImapFolder}
+                      placeholder="leer = INBOX" onChange={(e) => setS((p) => ({ ...p, mailInImapFolder: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="dp-label">Verarbeitete Mails verschieben nach (optional)</label>
+                    <input className="dp-input mt-1" value={s.mailInImapMoveToFolder}
+                      placeholder="leer = nicht verschieben, nur als gelesen markieren"
+                      onChange={(e) => setS((p) => ({ ...p, mailInImapMoveToFolder: e.target.value }))} />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="flex items-center gap-2 text-sm text-gray-700">
+                      <input type="checkbox" className="accent-[var(--accent)]" checked={s.mailInImapSecure}
+                        onChange={(e) => setS((p) => ({ ...p, mailInImapSecure: e.target.checked }))} />
+                      Verschlüsselte Verbindung (TLS, Port 993) — nur implizites TLS unterstützt, kein STARTTLS auf Port 143
+                    </label>
+                  </div>
+                </div>
+                <p className="text-[11px] text-gray-500">
+                  Verarbeitete Nachrichten werden als gelesen markiert (nicht gelöscht) — optional zusätzlich in
+                  einen Zielordner verschoben.
+                </p>
+                <p className="rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-[11px] text-[var(--warn-strong)]">
+                  ⚠ Bei einem Microsoft-365/Outlook-Postfach schlägt die Anmeldung meist mit
+                  „Basic authentication is disabled" fehl — Microsoft hat Benutzername+Passwort-Anmeldung
+                  für POP3/IMAP seit 2022 standardmäßig abgeschaltet. Nutzen Sie für solche Postfächer
+                  stattdessen „Microsoft Graph API" oben.
+                </p>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button type="button" className="btn-secondary" onClick={testImapMailin}
+                    disabled={busy || !s.mailInImapHost}
+                    title="Speichert die obigen Angaben und prüft, ob Postfach/Ordner mit Ihren Zugangsdaten erreichbar sind">
+                    Verbindung testen
+                  </button>
+                  {imapMailinMsg && <span className="text-xs text-gray-600">{imapMailinMsg}</span>}
+                </div>
+              </>
+            )}
           </div>
 
           {/* Dubletten & Spam-Antwort (Stefan 2026-08-25): vorher nur sichtbar,
@@ -554,48 +814,6 @@ export function SettingsHub({
                 normale Dubletten-Markierung zur manuellen Entscheidung.
               </p>
             </div>
-          </div>
-
-          <div className="space-y-3 border-t border-[var(--line)] pt-5">
-            <p className="text-xs font-bold uppercase tracking-wide text-gray-400">Sonstiges</p>
-          <div>
-            <label className="dp-label">Standardsprache</label>
-            <select className="dp-input mt-1 !w-auto" value={s.defaultLanguage}
-              onChange={(e) => setS((p) => ({ ...p, defaultLanguage: e.target.value }))}>
-              <option value="de">Deutsch</option>
-              <option value="en">Englisch</option>
-            </select>
-          </div>
-
-          <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] p-3 space-y-3">
-            <p className="dp-label">Fälligkeits-Benachrichtigung ("Bearbeitungswarnung")</p>
-            <p className="text-[11px] text-gray-500">
-              Verschickt automatisch eine Mail an die für den jeweiligen Korb hinterlegten Mitarbeiter
-              (Korb-Einstellungen → Benachrichtigung), sobald eine Rechnung fällig wird oder — falls die
-              Fälligkeit unbekannt ist — seit dem Eingang zu lange unbearbeitet liegt. Jeweils leer lassen,
-              um die Benachrichtigung auszuschalten.
-            </p>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="dp-label" title="Betrifft Rechnungen ohne bekannte Fälligkeit (weder E-Rechnung noch KI-Erkennung hatte ein Datum)">
-                  Ohne bekannte Fälligkeit: Tage nach Eingang
-                </label>
-                <input className="dp-input mt-1" type="number" min={1} max={365}
-                  value={s.dueReminderDaysAfterReceipt ?? ''}
-                  placeholder="z. B. 14"
-                  onChange={(e) => setS((p) => ({ ...p, dueReminderDaysAfterReceipt: e.target.value === '' ? null : Number(e.target.value) }))} />
-              </div>
-              <div>
-                <label className="dp-label" title="Betrifft Rechnungen mit bekannter Fälligkeit — E-Rechnung oder von der KI erkanntes Datum werden hier gleich behandelt">
-                  Mit bekannter Fälligkeit: Tage davor
-                </label>
-                <input className="dp-input mt-1" type="number" min={1} max={365}
-                  value={s.dueReminderDaysBeforeDue ?? ''}
-                  placeholder="z. B. 5"
-                  onChange={(e) => setS((p) => ({ ...p, dueReminderDaysBeforeDue: e.target.value === '' ? null : Number(e.target.value) }))} />
-              </div>
-            </div>
-          </div>
           </div>
           <SaveBar />
         </section>
@@ -815,6 +1033,36 @@ export function SettingsHub({
                   🔒 Beleg-Verschlüsselung ist für diesen Mandanten aktiv (Zero-Knowledge) — der Server
                   kann verschlüsselte Belege nicht entschlüsseln, um sie an eine E-Mail anzuhängen.
                   Einzel-Mails enthalten für solche Belege nur die Daten, ohne Dokumenten-Anhang.
+                </p>
+              )}
+            </div>
+            <div className="border-t border-[var(--line)] pt-3">
+              <p className="dp-label mb-1">Zahlungsverkehr (SEPA-Sammelüberweisung)</p>
+              <p className="mb-2 text-[10px] text-gray-400">
+                Ihr eigenes Auftraggeberkonto — daraus werden die Zahlungen im{' '}
+                <a href="/invoices" className="underline">SEPA-Export</a> im Übergabekorb ausgeführt.
+                Lieferanten-Kontoverbindungen werden getrennt im Lieferanten-Register unten gepflegt.
+              </p>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <label className="dp-label">Kontoinhaber</label>
+                  <input className="dp-input mt-1" value={s.sepaOwnName} placeholder="z. B. Delta Plus Systemhaus GmbH"
+                    onChange={(e) => setS((p) => ({ ...p, sepaOwnName: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="dp-label">IBAN</label>
+                  <input className="dp-input mt-1 font-mono" value={s.sepaOwnIban} placeholder="DE…"
+                    onChange={(e) => setS((p) => ({ ...p, sepaOwnIban: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="dp-label">BIC</label>
+                  <input className="dp-input mt-1 font-mono" value={s.sepaOwnBic}
+                    onChange={(e) => setS((p) => ({ ...p, sepaOwnBic: e.target.value }))} />
+                </div>
+              </div>
+              {encryptionEnabled && (
+                <p className="mt-1.5 rounded-lg bg-[var(--warn-bg)] px-2.5 py-1.5 text-[11px] text-[var(--warn-strong)]">
+                  🔒 SEPA-Export ist für verschlüsselte Mandanten noch nicht verfügbar.
                 </p>
               )}
             </div>

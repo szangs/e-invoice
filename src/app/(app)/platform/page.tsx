@@ -9,6 +9,7 @@ import { prisma } from '@/lib/db'
 import { getSettings } from '@/lib/settings'
 import { KositPanel } from './KositPanel'
 import { MailinPanel } from './MailinPanel'
+import { MetricsPanel } from './MetricsPanel'
 import { OpsControls } from './OpsControls'
 import { SupportOps } from './SupportOps'
 import { TenantActions } from './TenantActions'
@@ -59,6 +60,8 @@ export default async function PlatformPage() {
           </div>
         ))}
       </div>
+
+      <MetricsPanel />
 
       <OpsControls
         maintenanceLock={settings.MAINTENANCE_LOCK === '1'}

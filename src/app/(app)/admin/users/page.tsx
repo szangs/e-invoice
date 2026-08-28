@@ -5,6 +5,7 @@ import { de } from 'date-fns/locale'
 import { redirect } from 'next/navigation'
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { getEffectiveRoleActionMatrix } from '@/lib/roleActions'
 import { UserAdmin } from './UserAdmin'
 
 export const dynamic = 'force-dynamic'
@@ -52,6 +53,7 @@ export default async function UsersPage() {
           lastLogin: u.lastLoginAt ? format(u.lastLoginAt, 'dd.MM.yyyy HH:mm', { locale: de }) : '—',
         }))}
         groups={groups}
+        roleActionMatrix={getEffectiveRoleActionMatrix(tenant?.roleActions)}
       />
     </div>
   )

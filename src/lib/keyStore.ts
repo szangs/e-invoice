@@ -23,6 +23,18 @@ export async function getCachedDek(): Promise<CryptoKey | null> {
   }
 }
 
+/**
+ * Rohe DEK-Bytes statt eines importierten CryptoKey (Stefan 2026-08-27,
+ * Blind-Index für die Suche bei Verschlüsselung) — getCachedDek() importiert
+ * NICHT-extrahierbar (siehe importDek), daraus lässt sich kein zweiter
+ * Zweck-Schlüssel mehr ableiten. Die Rohbytes liegen ohnehin schon (Base64)
+ * im selben sessionStorage-Eintrag, hier nur direkt dekodiert statt importiert.
+ */
+export function getCachedDekRaw(): Uint8Array | null {
+  const raw = sessionStorage.getItem(STORAGE_KEY)
+  return raw ? b64decode(raw) : null
+}
+
 /** Entsperrt mit der Kunden-Passphrase. Wirft Error bei falscher Passphrase. */
 export async function unlockWithPassphrase(passphrase: string, cfg?: EncConfig): Promise<CryptoKey> {
   const config = cfg ?? (await fetchEncConfig())

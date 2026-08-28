@@ -5,12 +5,15 @@ import { z } from 'zod'
 import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
 import { isInvoiceLockedByClosure } from '@/lib/auditClosure'
+import { assertNotHandedOffToSomeoneElse } from '@/lib/invoiceHandoff'
 import { alwaysFullAccess, hasBasketRight, requireInvoiceContentAccess } from '@/lib/basketRights'
 import { ensureSystemBaskets, requestMove } from '@/lib/baskets'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { EINVOICE_FORMATS } from '@/lib/docFormat'
+import { getApprovalBlockers } from '@/lib/erechnung'
 import { CONTENT_ENC_VENDOR_PLACEHOLDER, toDTO } from '@/lib/invoices'
+import { hasRoleAction } from '@/lib/roleActions'
 import { upsertVendorAddress } from '@/lib/vendorMemory'
 
 // Steuerlich relevante Felder — bei ZUGFeRD/XRechnung ist das XML das
@@ -68,6 +71,14 @@ const schema = z.object({
   // amount*/currency/tags/notes oben durch ein einziges Chiffrat — siehe
   // clientCrypto.ts encryptJson / /invoices/[id]/InvoiceEditForm.tsx.
   contentEnc: z.string().optional(),
+  // Blind-Index für die Suche bei Verschlüsselung (Stefan 2026-08-27, siehe
+  // schema.prisma InvoiceSearchToken + lib/clientCrypto.ts computeSearchTokens)
+  // — nur Hex-Hashes, nie Klartext. Ersetzt bei jedem Speichern ALLE
+  // bisherigen Tokens dieser Rechnung (siehe unten). Bewusst NICHT
+  // "searchTokens" genannt — das ist bereits der Name der Prisma-Relation
+  // auf Invoice, eine Namensgleichheit hier würde beim Spreaden in
+  // Prisma.InvoiceUpdateInput zu einem Typkonflikt führen.
+  searchTokenHashes: z.array(z.string().min(8).max(128)).max(64).optional(),
   // Dubletten-Kennzeichnung aufheben ("keine Dublette")
   duplicateOfId: z.null().optional(),
   // Abweichung Rechnungsempfänger/Firmenbezeichnung akzeptiert (Stefan 2026-08-25)
@@ -83,6 +94,15 @@ const schema = z.object({
   // wer/wann (siehe unten), Client kann sich nicht als jemand anderen ausgeben
   checkElectronic: z.boolean().optional(),
   checkFormal: z.boolean().optional(),
+  // Stefan 2026-08-26 (Review-Fund "Auto-Bestätigung hebelt KoSIT-Rückzieher-
+  // Schutz aus"): nur zusammen mit checkFormal:true — stempelt checkFormalBy
+  // als "System (automatisch …)" statt der Nutzer-E-Mail, wenn dieser Haken
+  // eine reine FOLGE der abgeschlossenen KI-Feld-Bestätigung ist (siehe
+  // InvoiceEditForm.tsx useEffect), kein bewusster einzelner Klick auf den
+  // F-Punkt. Nur so bleibt kositValidator.ts' wasAutoSet-Erkennung wirksam —
+  // sonst sieht dieser Automatik-Haken für eine spätere KoSIT-Ablehnung wie
+  // eine echte Menschen-Bestätigung aus und wird nie zurückgenommen.
+  checkFormalAuto: z.literal(true).optional(),
   checkSubstantive: z.boolean().optional(),
   checkAccounting: z.boolean().optional(),
   // Wiederherstellen einer weich gelöschten Rechnung (siehe DELETE-Handler)
@@ -108,7 +128,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     const tenantId = requireTenant(ctx)
     const existing = await findOwn(params.id, tenantId)
     const {
-      checkElectronic, checkFormal, checkSubstantive, checkAccounting, restore, confirmAi, lineItems,
+      checkElectronic, checkFormal, checkFormalAuto, checkSubstantive, checkAccounting, restore, confirmAi, lineItems,
       pflichtangabenIgnored, pflichtangabenIgnoredReason, ...rest
     } = schema.parse(await req.json())
     const data = { ...rest } as typeof rest
@@ -139,9 +159,12 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     // lib/auditClosure.ts, api/platform/audit/period-close). Defense in
     // depth wie bei den GoBD-Feldern unten: die UI sperrt bereits, aber ein
     // direkter API-Aufruf darf es ebenfalls nicht umgehen können.
-    if (await isInvoiceLockedByClosure(existing.createdAt)) {
+    if (await isInvoiceLockedByClosure(tenantId, existing.createdAt)) {
       throw new ApiError(423, `Diese Rechnung gehört zum abgeschlossenen Prüfungszeitraum ${existing.createdAt.getFullYear()} und ist schreibgeschützt.`)
     }
+    // "Zur Prüfung weitergeben" (Stefan 2026-08-27, siehe lib/invoiceHandoff.ts)
+    // — solange aktiv, darf nur der Empfänger die Rechnung bearbeiten.
+    await assertNotHandedOffToSomeoneElse(existing.id, ctx.userId)
     // Rechnungsversionierung (Stefan 2026-08-25): eine ältere, bereits
     // überholte Version ist ebenfalls schreibgeschützt (siehe schema.prisma
     // Invoice.supersededAt) — Ausnahme wie beim Perioden-Abschluss keine.
@@ -166,6 +189,11 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     // damit kein alter Klartext neben dem neuen Chiffrat liegen bleibt (z. B.
     // wenn eine vorher unverschlüsselte Rechnung jetzt erstmals verschlüsselt
     // gespeichert wird).
+    // searchTokenHashes ist kein Invoice-Feld (eigene Tabelle, siehe unten) —
+    // muss vor dem Spreaden in Prisma.InvoiceUpdateInput raus.
+    const searchTokens = data.searchTokenHashes
+    delete data.searchTokenHashes
+
     if (data.contentEnc) {
       data.vendor = CONTENT_ENC_VENDOR_PLACEHOLDER
       data.invoiceNumber = null
@@ -187,28 +215,62 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       ? await prisma.basket.findUnique({ where: { id: existing.basketId }, select: { kind: true } })
       : null
 
+    // Formal-Rücknahme sperren, sobald schon an die Fibu übergeben (Stefan
+    // 2026-08-26, Review-Fund "Formal-Rücknahme ohne besonderes Recht
+    // möglich"): checkFormal:false hatte bisher keine eigene Sperre über das
+    // Basis-Korb-Recht CONTENT hinaus, anders als checkSubstantive (APPROVE)
+    // und checkAccounting (HANDOVER, in der Ablage nur Admin) — jeder Nutzer
+    // mit bloßem CONTENT-Recht konnte so eine bereits übergebene Rechnung in
+    // den widersprüchlichen Zustand "an Buchhaltung übergeben, aber formal
+    // nicht geprüft" versetzen.
+    if (checkFormal === false && existing.checkAccountingAt) {
+      throw new ApiError(400, '"Formal richtig" kann nicht mehr zurückgenommen werden — die Rechnung ist bereits an die Buchhaltung übergeben.')
+    }
+
     if (existing.basketId) {
       if (checkSubstantive !== undefined && !(await hasBasketRight(ctx.userId, ctx.role, existing.basketId, 'APPROVE'))) {
         throw new ApiError(403, 'Kein Recht, "Sachlich richtig" freizugeben.')
       }
       if (checkAccounting !== undefined) {
+        // Stefan 2026-08-26 ("wir machen so immer mehr Buchungsstapel"): die
+        // Übergabe an die Fibu (checkAccounting: true) lässt sich hier NICHT
+        // mehr einzeln auslösen — nur noch über die Sammelfunktion (DATEV-
+        // Export im Übergabekorb, siehe api/invoices/export/datev/route.ts),
+        // die tatsächlich einen Buchungsstapel erzeugt. Vorher setzte dieser
+        // Weg nur checkAccountingAt und verschob direkt in die Ablage, OHNE
+        // je eine DATEV-CSV zu erzeugen — die Rechnung galt als "übergeben",
+        // tauchte aber nie in einem Buchungsstapel auf.
+        if (checkAccounting) {
+          throw new ApiError(
+            400,
+            'Die Übergabe an die Fibu ist hier nicht mehr einzeln möglich — bitte die Sammel-Übergabe (DATEV-Export) im Übergabekorb nutzen.',
+          )
+        }
         if (!(await hasBasketRight(ctx.userId, ctx.role, existing.basketId, 'HANDOVER'))) {
           throw new ApiError(403, 'Kein Recht zur Übergabe an den Übergabekorb.')
         }
-        if (checkAccounting) {
-          // Stefan 2026-07-09: die Übergabe an die Fibu darf nur passieren,
-          // während die Rechnung TATSÄCHLICH im Übergabekorb liegt — sonst
-          // könnte jemand mit HANDOVER-Recht auf einem anderen Korb die
-          // Rechnung schon dort als "übergeben" markieren.
-          if (currentBasket?.kind !== 'HANDOVER') {
-            throw new ApiError(400, 'Übergabe an die Fibu ist nur im Übergabekorb möglich.')
-          }
-        } else if (currentBasket?.kind === 'ARCHIVE' && !alwaysFullAccess(ctx.role)) {
+        if (currentBasket?.kind === 'ARCHIVE' && !alwaysFullAccess(ctx.role)) {
           // Rechnung liegt schon in der Ablage (automatisch nach der
           // Übergabe) — das Zurücknehmen ist wie das Herausverschieben aus
           // der Ablage Admins vorbehalten.
           throw new ApiError(403, 'Nur der Mandanten-Admin kann die Übergabe aus der Ablage zurücknehmen.')
         }
+      }
+    }
+
+    // Serverseitige Freigabe-Sperre (Stefan 2026-08-26, Review-Fund "S-Punkt/
+    // API umgehen die 'Klärung nötig'-Sperre") — dieselbe Regel wie clientseitig
+    // in InvoiceEditForm.tsx primaryAction, hier zusätzlich erzwungen, damit
+    // weder der S-Punkt in der Rechnungsliste (CheckBadges.tsx) noch ein
+    // direkter API-Aufruf die Prüfung umgehen kann.
+    if (checkFormal === true || checkSubstantive === true) {
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { legalName: true, buyerNameMismatchBlocksHandover: true },
+      })
+      const blockers = getApprovalBlockers(existing, tenant ?? { legalName: null, buyerNameMismatchBlocksHandover: false })
+      if (blockers.length > 0) {
+        throw new ApiError(400, `Freigabe nicht möglich, solange ungeklärte Punkte offen sind: ${blockers.join(' ')}`)
       }
     }
 
@@ -219,47 +281,33 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     const effectiveSubstantive = checkSubstantive !== undefined ? checkSubstantive : !!existing.checkSubstantiveAt
     const allPriorChecksDone = effectiveElectronic && effectiveFormal && effectiveSubstantive
 
-    if (checkAccounting && !allPriorChecksDone) {
-      throw new ApiError(400, 'Elektronische Vorprüfung, Formal richtig und Sachlich richtig müssen zuerst abgeschlossen sein.')
-    }
-
-    // Automatische Übergabe (Stefan 2026-07-09, wie bei HS): sobald alle drei
-    // vorherigen Häkchen stehen UND die Rechnung im Übergabekorb liegt, wird
-    // "An Buchhaltung übergeben" automatisch mitgesetzt — kein 4. Klick nötig.
-    // Nur wenn der HANDELNDE Nutzer selbst auch das HANDOVER-Recht hat, sonst
-    // bleibt die Rechnung fertig geprüft, aber offen, bis jemand mit dem
-    // passenden Recht (oder der DATEV-Export) sie übergibt.
-    let effectiveAccounting = checkAccounting
-    if (
-      checkAccounting === undefined &&
-      allPriorChecksDone &&
-      !existing.checkAccountingAt &&
-      currentBasket?.kind === 'HANDOVER' &&
-      existing.basketId &&
-      (await hasBasketRight(ctx.userId, ctx.role, existing.basketId, 'HANDOVER'))
-    ) {
-      effectiveAccounting = true
-    }
+    // checkAccounting kann an dieser Stelle nur noch `false` oder `undefined`
+    // sein (siehe Ablehnung von `true` weiter oben) — kein Auto-Fire mehr
+    // (Stefan 2026-08-26): vorher wurde "An Buchhaltung übergeben" automatisch
+    // mitgesetzt, sobald E/F/S fertig waren UND die Rechnung im Übergabekorb
+    // lag, OHNE dass je ein DATEV-Buchungsstapel entstand — die Rechnung
+    // landete direkt in der Ablage und war für die Sammel-Übergabe verloren.
 
     // Prüfschritte: Server stempelt wer (angemeldeter Nutzer) + wann; ein
     // "false" hebt die Prüfung wieder auf (beide Felder zurück auf null)
     const checkData: Record<string, Date | string | null> = {}
-    const intents = { checkElectronic, checkFormal, checkSubstantive, checkAccounting: effectiveAccounting }
+    const intents = { checkElectronic, checkFormal, checkSubstantive, checkAccounting }
     for (const [key, atField, byField] of Object.entries(CHECK_MAP).map(([k, [a, b]]) => [k, a, b] as const)) {
       const intent = intents[key as keyof typeof intents]
       if (intent === undefined) continue
       checkData[atField] = intent ? new Date() : null
-      checkData[byField] = intent ? ctx.email : null
+      checkData[byField] = !intent
+        ? null
+        : key === 'checkFormal' && checkFormalAuto
+          ? 'System (automatisch: KI-Bestätigung abgeschlossen)'
+          : ctx.email
     }
 
-    // Ablage (Stefan 2026-07-09): bei Übergabe automatisch in den festen
-    // Ablagekorb verschieben, beim Zurücknehmen (nur Admin) zurück in den
-    // Übergabekorb.
+    // Ablage (Stefan 2026-07-09): die Sammel-Übergabe (DATEV-Export) verschiebt
+    // selbst in die Ablage — hier nur noch das Zurücknehmen (nur Admin)
+    // zurück in den Übergabekorb.
     let basketMove: { basketId?: string } = {}
-    if (effectiveAccounting === true) {
-      const { archiveId } = await ensureSystemBaskets(tenantId)
-      basketMove = { basketId: archiveId }
-    } else if (effectiveAccounting === false && currentBasket?.kind === 'ARCHIVE') {
+    if (checkAccounting === false && currentBasket?.kind === 'ARCHIVE') {
       const { handoverId } = await ensureSystemBaskets(tenantId)
       basketMove = { basketId: handoverId }
     }
@@ -267,8 +315,16 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     // "Prüfung ignorieren" (Stefan 2026-08-25): Begründung ist beim Setzen
     // Pflicht — reine Anzeige-Ausnahme, aber GoBD-Nachvollziehbarkeit über
     // Grund/wer/wann bleibt erhalten (siehe audit() unten zusätzlich).
-    if (pflichtangabenIgnored === true && !pflichtangabenIgnoredReason?.trim()) {
-      throw new ApiError(400, 'Für "Prüfung ignorieren" wird eine kurze Begründung benötigt.')
+    // Rollen-Recht IGNORE_CHECK (Stefan 2026-08-27) — vorher über das
+    // bloße Korb-Recht CONTENT hinaus komplett ungeregelt.
+    if (pflichtangabenIgnored === true) {
+      if (!pflichtangabenIgnoredReason?.trim()) {
+        throw new ApiError(400, 'Für "Prüfung ignorieren" wird eine kurze Begründung benötigt.')
+      }
+      const tenantForIgnore = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { roleActions: true } })
+      if (!hasRoleAction(tenantForIgnore, ctx.role, 'IGNORE_CHECK')) {
+        throw new ApiError(403, 'Ihre Rolle darf die Pflichtangaben-Prüfung nicht ignorieren.')
+      }
     }
 
     // Als eigene, explizit getypte Variable statt eines großen Inline-Spreads
@@ -295,12 +351,30 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       where: { id: params.id },
       data: updateData,
     })
+    // Blind-Index-Tokens ersetzen (Stefan 2026-08-27, siehe schema.prisma
+    // InvoiceSearchToken) — nur wenn dieser Aufruf welche mitgeliefert hat
+    // (contentEnc gesetzt, DEK im Browser verfügbar). Komplett ersetzt statt
+    // ergänzt, damit ein geänderter Lieferant/Rechnungsnummer nicht unter dem
+    // alten Wort weiter auffindbar bleibt.
+    if (searchTokens !== undefined) {
+      await prisma.$transaction([
+        prisma.invoiceSearchToken.deleteMany({ where: { invoiceId: invoice.id } }),
+        ...(searchTokens.length > 0
+          ? [prisma.invoiceSearchToken.createMany({
+              data: searchTokens.map((token) => ({ tenantId, invoiceId: invoice.id, token })),
+            })]
+          : []),
+      ])
+    }
     // Lieferanten-Adressregister nachführen (Stefan 2026-08-26) — nur wenn
     // dieser Aufruf tatsächlich eine Klartext-Anschrift mitgeliefert hat
     // (bei aktiver Inhalts-Verschlüsselung sendet der Client stattdessen
     // contentEnc, sellerAddress bleibt hier undefined).
     if (updateData.sellerAddress !== undefined) {
-      await upsertVendorAddress(tenantId, invoice.vendor, invoice.sellerAddress)
+      await upsertVendorAddress(
+        tenantId, invoice.vendor, invoice.sellerAddress, undefined, undefined,
+        invoice.sellerVatId, invoice.sellerTaxNumber, invoice.sellerCountryCode,
+      )
     }
     await audit({
       tenantId,
@@ -318,10 +392,11 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
     // Automatischer Wechsel in den Übergabekorb (Stefan 2026-07-09): sobald
     // alle drei Prüf-Häkchen stehen, muss die Rechnung nicht mehr von Hand
-    // (Drag&Drop) dorthin verschoben werden — das war der letzte manuelle
-    // Schritt vor der eigentlichen Fibu-Übergabe (die dort ja bereits
-    // automatisch feuert, siehe effectiveAccounting oben). Nur wenn der
-    // HANDELNDE Nutzer selbst das HANDOVER-Recht auf dem AKTUELLEN Korb hat
+    // (Drag&Drop) dorthin verschoben werden. Dort WARTET sie dann auf die
+    // Sammel-Übergabe (DATEV-Export, Stefan 2026-08-26 — vorher gab es hier
+    // noch einen automatischen Einzel-Übergabe-Schritt, der entfernt wurde,
+    // siehe Kommentar bei checkAccounting oben). Nur wenn der HANDELNDE
+    // Nutzer selbst das HANDOVER-Recht auf dem AKTUELLEN Korb hat
     // (dieselbe Regel wie bei einem manuellen Verschieben) — sonst bleibt die
     // Rechnung fertig geprüft liegen, bis jemand mit dem passenden Recht sie
     // verschiebt. Läuft über dieselbe requestMove-Funktion wie Drag&Drop, das
@@ -375,9 +450,10 @@ export async function DELETE(_req: NextRequest, { params }: { params: { id: stri
     if (existing.basketId && !(await hasBasketRight(ctx.userId, ctx.role, existing.basketId, 'APPROVE'))) {
       throw new ApiError(403, 'Kein Recht zum Löschen in diesem Korb.')
     }
-    if (await isInvoiceLockedByClosure(existing.createdAt)) {
+    if (await isInvoiceLockedByClosure(tenantId, existing.createdAt)) {
       throw new ApiError(423, `Diese Rechnung gehört zum abgeschlossenen Prüfungszeitraum ${existing.createdAt.getFullYear()} und ist schreibgeschützt.`)
     }
+    await assertNotHandedOffToSomeoneElse(existing.id, ctx.userId)
     if (existing.supersededAt) {
       throw new ApiError(423, 'Diese Rechnung wurde durch eine neuere Version ersetzt und ist schreibgeschützt.')
     }

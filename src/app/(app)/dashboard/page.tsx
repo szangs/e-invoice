@@ -41,7 +41,7 @@ export default async function DashboardPage() {
     prisma.invoice.count({ where: { tenantId, deletedAt: null, ...contentWhere } }),
     prisma.invoice.groupBy({ by: ['status'], where: { tenantId, deletedAt: null, ...contentWhere }, _count: true }),
     prisma.invoice.findMany({ where: { tenantId, deletedAt: null, ...contentWhere }, orderBy: { createdAt: 'desc' }, take: 8 }),
-    getBasketCounts(tenantId, ctx.userId),
+    getBasketCounts(tenantId, ctx.userId, ctx.role),
   ])
   const count = (s: InvoiceStatus) => byStatus.find((b) => b.status === s)?._count ?? 0
 
@@ -132,7 +132,7 @@ export default async function DashboardPage() {
                 <td className="dp-td">
                   <Link className="text-[var(--accent)] hover:underline" href={`/invoices/${i.id}`}>{i.vendor}</Link>
                   {unreadNoteInvoiceIds.has(i.id) && (
-                    <span className="ml-1.5" title="Ungelesene Nachricht an Sie — Rechnung öffnen zum Lesen">💬</span>
+                    <span className="ml-1.5" title="Offene Nachricht an Sie — Rechnung öffnen zum Lesen/Erledigen">💬</span>
                   )}
                 </td>
                 <td className="dp-td font-mono text-xs">{i.invoiceNumber ?? '—'}</td>

@@ -1,12 +1,17 @@
-// E-Mail-Eingang: zwei Zustellwege teilen sich dieselbe Verarbeitung
+// E-Mail-Eingang: vier Zustellwege teilen sich dieselbe Verarbeitung
 // (processInboundAttachments) — W1/W2 per eigenem SMTP-Empfänger auf der
 // Subdomain (scripts/smtp-server.ts, Catch-All, Mandanten-Auflösung über die
-// Empfängeradresse) und alternativ per Microsoft Graph (scripts/graph-mailin-poller.ts,
+// Empfängeradresse), per Microsoft Graph (scripts/graph-mailin-poller.ts,
 // src/lib/graphMailin.ts, Mandant ist beim Polling bereits über die Tenant-Konfiguration
-// bekannt — kein Adress-Parsing nötig). IMAP-Postfachabruf wurde am 2026-07-08 auf
-// Stefans Wunsch entfernt. Absender-Beschränkung gilt für beide Wege: global
-// (MAIL_IN_ALLOWED_DOMAINS) und je Mandant (mailAllowedDomains). Hinweis:
-// E-Mail-Eingang ist prinzipbedingt nicht Ende-zu-Ende-verschlüsselbar.
+// bekannt — kein Adress-Parsing nötig), sowie seit 2026-08-27 per POP3
+// (src/lib/pop3Mailin.ts) und IMAP (src/lib/imapMailin.ts) — klassischer
+// Postfachabruf ohne eigene Azure-App-Registrierung, für Mandanten ohne
+// Office-365. (Ein früherer, einfacherer IMAP-Abruf wurde am 2026-07-08
+// entfernt; diese Fassung ist Teil der Mail-Verfahren-Auswahl in den
+// Mandanten-Einstellungen und läuft — wie Graph — als eigener Poll-Prozess.)
+// Absender-Beschränkung gilt für alle Wege: global (MAIL_IN_ALLOWED_DOMAINS)
+// und je Mandant (mailAllowedDomains). Hinweis: E-Mail-Eingang ist
+// prinzipbedingt nicht Ende-zu-Ende-verschlüsselbar.
 import { InvoiceStatus, type Tenant } from '@prisma/client'
 import { type AddressObject, type ParsedMail } from 'mailparser'
 import { type AiExtractedInvoice, extractInvoiceFromImage, isAiConfigured } from '@/lib/aiExtract'
@@ -14,7 +19,7 @@ import { audit } from '@/lib/audit'
 import { ensureSystemBaskets } from '@/lib/baskets'
 import { prisma } from '@/lib/db'
 import { nextDocId } from '@/lib/docId'
-import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
+import { detectDuplicate, hashBuffer, resolveDuplicateOrVersion, supersedeOlderVersions } from '@/lib/duplicates'
 import { analyzeInvoiceFile, autoElectronicCheck, autoFormalCheckForEInvoice } from '@/lib/erechnung'
 import { renderHtmlToPdf } from '@/lib/htmlToPdf'
 import { scheduleKositCheck } from '@/lib/kositValidator'
@@ -168,7 +173,7 @@ export async function processInboundAttachments(
   toAddress: string,
   subject: string,
   attachments: InboundAttachment[],
-  via: 'SMTP' | 'GRAPH',
+  via: 'SMTP' | 'GRAPH' | 'POP3' | 'IMAP',
   sourceMessageId?: string,
   // HTML-/Text-Mailtext als Rückfallebene, wenn kein verwertbarer Anhang da
   // ist (Stefan 2026-08-25): manche Auslands-/Drittland-Lieferanten schicken
@@ -346,14 +351,13 @@ export async function processInboundAttachments(
       invoiceNumber: invoiceNumberValue,
       vendor: vendorName,
     })
-    // Rechnungsversionierung (Stefan 2026-08-25, Tenant.autoSupersedeInvoiceVersions)
-    // — EIGENES Konzept, KEINE Dublette: bei einem reinen Rechnungsnummer+
-    // Lieferant-Treffer (exact=false, siehe lib/duplicates.ts) mit
-    // eingeschaltetem Schalter wird NICHT als möglicher Dublette markiert,
-    // sondern automatisch als neuere Version behandelt — die älteren
-    // Versionen werden gleich nach dem Anlegen schreibgeschützt (unten).
-    const isVersioningCase = duplicateMatch !== null && !duplicateMatch.exact && tenant.autoSupersedeInvoiceVersions
-    const duplicateOfId = isVersioningCase ? null : (duplicateMatch?.id ?? null)
+    // Rechnungsversionierung (Stefan 2026-08-25, Tenant.autoSupersedeInvoiceVersions,
+    // siehe lib/duplicates.ts resolveDuplicateOrVersion) — EIGENES Konzept,
+    // KEINE Dublette: bei einem reinen Rechnungsnummer+Lieferant-Treffer
+    // (exact=false) mit eingeschaltetem Schalter wird NICHT als möglicher
+    // Dublette markiert, sondern automatisch als neuere Version behandelt —
+    // die älteren Versionen werden gleich nach dem Anlegen schreibgeschützt (unten).
+    const { duplicateOfId, isVersioningCase } = resolveDuplicateOrVersion(duplicateMatch, tenant.autoSupersedeInvoiceVersions)
     const fileName = await saveInvoiceFile(tenant.id, att.filename ?? 'beleg.pdf', buffer)
     const docId = await nextDocId(tenant.id)
     const electronicCheck = autoElectronicCheck(analysis.format, analysis.validation?.valid)
@@ -460,7 +464,10 @@ export async function processInboundAttachments(
     // die strukturierte XML-Anschrift (E-Rechnung, zuverlässigste Quelle),
     // sonst die KI-erkannte (nackte PDF). Bei aktiver Inhalts-Verschlüsselung
     // ist hier ohnehin nichts Auswertbares vorhanden (kein Klartext serverseitig).
-    await upsertVendorAddress(tenant.id, vendorName, d?.sellerAddress ?? ai?.sellerAddress)
+    await upsertVendorAddress(
+      tenant.id, vendorName, d?.sellerAddress ?? ai?.sellerAddress, d?.sellerIban, d?.sellerBic,
+      d?.sellerVatId ?? ai?.sellerVatId, d?.sellerTaxNumber ?? ai?.sellerTaxNumber, d?.sellerCountryCode ?? ai?.sellerCountryCode,
+    )
 
     // Rechnungsversionierung fortsetzen (Stefan 2026-08-25): ALLE bisherigen,
     // noch nicht überholten Versionen mit derselben Rechnungsnummer+Lieferant
@@ -474,17 +481,7 @@ export async function processInboundAttachments(
     // verwirrend. requestMove() kann hier nicht verwendet werden (die lehnt
     // schreibgeschützte Rechnungen genau deshalb ab), daher direktes Update.
     if (isVersioningCase && invoiceNumberValue) {
-      await prisma.invoice.updateMany({
-        where: {
-          tenantId: tenant.id,
-          id: { not: invoice.id },
-          invoiceNumber: invoiceNumberValue,
-          vendor: vendorName,
-          deletedAt: null,
-          supersededAt: null,
-        },
-        data: { supersededAt: new Date(), supersededByInvoiceId: invoice.id, basketId: archiveId },
-      })
+      await supersedeOlderVersions(tenant.id, invoice.id, invoiceNumberValue, vendorName, archiveId)
     }
 
     await prisma.mailIntake.create({

@@ -27,11 +27,31 @@ type Note = {
   doneAt: string | null
   doneBy: string | null
   masked: boolean
+  // "Zur Prüfung weitergeben" (Stefan 2026-08-27) — siehe lib/invoiceHandoff.ts.
+  isHandoff: boolean
+  // Vom Server berechnet (Stefan 2026-08-27): bei isHandoff Empfänger ODER
+  // Absender, sonst dieselbe Sichtbarkeitsregel wie masked — vermeidet, die
+  // eigene Nutzer-ID zum Vergleichen ins Frontend geben zu müssen.
+  canToggle: boolean
+  // Nur für die Beschriftung ("Zurückgeben" vs. "Zurückholen"), keine
+  // eigene Rechteprüfung — die macht bereits canToggle/der Server.
+  handoffRole: 'recipient' | 'sender' | null
+  // Wer eine bereits geschlossene Übergabe beendet hat — für die
+  // Beschriftung im erledigt-Zustand (kann von handoffRole abweichen, z. B.
+  // sieht der Absender hier, DASS der Empfänger zurückgegeben hat).
+  closedByRole: 'recipient' | 'sender' | null
+}
+
+/** "Zurückgegeben" (Empfänger) vs. "Zurückgeholt" (Absender) — siehe closedByRole. */
+function closedHandoffLabel(note: Note): string {
+  return note.closedByRole === 'sender' ? 'Zurückgeholt' : 'Zurückgegeben'
 }
 
 function NoteItem({ note, onToggleDone }: { note: Note; onToggleDone: (noteId: string, done: boolean) => void }) {
+  const canToggle = note.canToggle
   return (
-    <li className={`rounded-lg px-3 py-2 text-sm ${note.doneAt ? 'bg-gray-50 opacity-60' : 'bg-[var(--surface-muted)]'}`}>
+    <li className={`rounded-lg px-3 py-2 text-sm ${note.doneAt ? 'bg-gray-50 opacity-60' : note.isHandoff ? 'bg-[var(--accent-bg)]' : 'bg-[var(--surface-muted)]'}`}>
+      {note.isHandoff && <p className="mb-1 text-[10px] font-bold uppercase tracking-wide text-[var(--accent)]">📤 Zur Prüfung weitergeben</p>}
       {note.masked ? (
         <p className="italic text-gray-400">🔒 Nachricht {note.toUserName ? `an ${note.toUserName}` : ''} — nur für den Adressaten sichtbar</p>
       ) : (
@@ -43,7 +63,13 @@ function NoteItem({ note, onToggleDone }: { note: Note; onToggleDone: (noteId: s
       <p className="mt-1 text-[10px] text-gray-400">
         {note.authorName}{note.toUserName ? ` → ${note.toUserName}` : ' → alle'} · {new Date(note.createdAt).toLocaleString('de-DE')}
       </p>
-      {note.masked ? (
+      {!canToggle ? (
+        note.doneAt && (
+          <p className="mt-1.5 text-xs text-[var(--accent)]">
+            ↩ {closedHandoffLabel(note)} ({note.doneBy ?? '—'}, {new Date(note.doneAt).toLocaleString('de-DE')})
+          </p>
+        )
+      ) : note.masked ? (
         note.doneAt && <p className="mt-1.5 text-xs text-[var(--accent)]">✓ Erledigt</p>
       ) : (
         <label className="mt-1.5 flex items-center gap-1.5 text-xs text-gray-600">
@@ -53,9 +79,13 @@ function NoteItem({ note, onToggleDone }: { note: Note; onToggleDone: (noteId: s
             checked={Boolean(note.doneAt)}
             onChange={(e) => onToggleDone(note.id, e.target.checked)}
           />
-          {note.doneAt
-            ? `Erledigt (${note.doneBy ?? '—'}, ${new Date(note.doneAt).toLocaleString('de-DE')})`
-            : 'Als erledigt markieren'}
+          {note.isHandoff
+            ? note.doneAt
+              ? `${closedHandoffLabel(note)} (${note.doneBy ?? '—'}, ${new Date(note.doneAt).toLocaleString('de-DE')})`
+              : note.handoffRole === 'sender' ? '↩ Zurückholen' : '↩ Zurückgeben'
+            : note.doneAt
+              ? `Erledigt (${note.doneBy ?? '—'}, ${new Date(note.doneAt).toLocaleString('de-DE')})`
+              : 'Als erledigt markieren'}
         </label>
       )}
     </li>

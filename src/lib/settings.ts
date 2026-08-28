@@ -64,6 +64,13 @@ export const SETTING_KEYS = [
   // §24) fallen Mandanten ohne eigene Graph-Zugangsdaten auf die Betreiber-
   // Zugangsdaten zurück, statt übersprungen zu werden (siehe graphMailin.ts) —
   // funktioniert nur für Postfächer im EIGENEN Azure-AD-Tenant des Betreibers.
+  // Mail-Eingang per POP3/IMAP (Stefan 2026-08-27) — global nur An/Aus + Poll-
+  // Intervall wie bei Graph; Postfach-Zugangsdaten trägt jeder Mandant selbst
+  // ein (Tenant.mailInPop3*/mailInImap*), siehe lib/pop3Mailin.ts/imapMailin.ts.
+  'MAIL_IN_POP3_ENABLED', // "1" = POP3-Poller aktiv (Prozess: npm run mailin-pop3)
+  'MAIL_IN_POP3_POLL_SECONDS', // Poll-Intervall, Standard 300
+  'MAIL_IN_IMAP_ENABLED', // "1" = IMAP-Poller aktiv (Prozess: npm run mailin-imap)
+  'MAIL_IN_IMAP_POLL_SECONDS', // Poll-Intervall, Standard 180
   // Datensicherung Gesamtsystem (§17)
   'BACKUP_SYSTEM_ENABLED', // "1" = automatische System-Sicherung aktiv
   'BACKUP_SYSTEM_FREQ', // DAILY | WEEKLY | MONTHLY | YEARLY

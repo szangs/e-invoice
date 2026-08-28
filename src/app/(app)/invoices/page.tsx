@@ -13,9 +13,11 @@ import { STATUS_LABELS, toDTO } from '@/lib/invoices'
 import { ColumnSettingsButton } from './ColumnSettingsButton'
 import { ColumnVisibilityProvider } from './columnVisibility'
 import { DatevExportButton } from './DatevExportButton'
+import { SepaExportButton } from './SepaExportButton'
 import { InterfaceRequestForm } from './InterfaceRequestForm'
 import { InvoiceTableHead } from './InvoiceTableHead'
 import { CONTENT_SORT_FIELDS, InvoiceRows, type InvoiceRowData } from './InvoiceRows'
+import { SearchInput } from './SearchInput'
 import { BulkActionBar, InvoiceSelectionProvider } from './InvoiceSelection'
 
 export const dynamic = 'force-dynamic'
@@ -38,16 +40,54 @@ function orderByFor(field: string, dir: 'asc' | 'desc'): Prisma.InvoiceOrderByWi
   }
 }
 
+// Volltextsuche für unverschlüsselte Mandanten (Stefan 2026-08-27, "eine
+// Volltextsuche kann ich mit der Verschlüsselung vergessen oder?") — nutzt
+// die generierte tsvector-Spalte (Invoice.searchVector, deckt Lieferant/
+// Rechnungsnummer/Tags/Notizen/Mailtext ab) PLUS weiterhin ILIKE auf
+// Lieferant/Rechnungsnummer (Teilstring-Treffer, z. B. eine unvollständig
+// getippte Rechnungsnummer — das kann eine reine Wort-Volltextsuche nicht).
+async function getFullTextMatchIds(tenantId: string, q: string): Promise<string[]> {
+  const rows = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id FROM "Invoice"
+    WHERE "tenantId" = ${tenantId}
+      AND (
+        "searchVector" @@ websearch_to_tsquery('german', ${q})
+        OR vendor ILIKE '%' || ${q} || '%'
+        OR "invoiceNumber" ILIKE '%' || ${q} || '%'
+      )
+    LIMIT 500
+  `
+  return rows.map((r) => r.id)
+}
+
+// Blind-Index-Suche für VERSCHLÜSSELTE Mandanten (Stefan 2026-08-27) — der
+// Browser hat die Suchbegriffe bereits zu Hashes verarbeitet (siehe
+// lib/clientCrypto.ts computeSearchTokens); hier nur noch Hash-gegen-Hash-
+// Abgleich, nie Klartext. UND-Verknüpfung bei mehreren Tokens (Mehrwort-
+// Suche): eine Rechnung muss ALLE übergebenen Tokens tragen.
+async function getBlindIndexMatchIds(tenantId: string, tokens: string[]): Promise<string[]> {
+  if (tokens.length === 0) return []
+  const rows = await prisma.invoiceSearchToken.groupBy({
+    by: ['invoiceId'],
+    where: { tenantId, token: { in: tokens } },
+    _count: { token: true },
+  })
+  return rows.filter((r) => r._count.token === tokens.length).map((r) => r.invoiceId)
+}
+
 export default async function InvoicesPage({
   searchParams,
 }: {
-  searchParams: { q?: string; status?: string; dup?: string; trash?: string; basket?: string; sort?: string; dir?: string }
+  searchParams: { q?: string; token?: string; status?: string; dup?: string; trash?: string; basket?: string; sort?: string; dir?: string }
 }) {
   const ctx = await getContext()
   if (!ctx.tenantId) redirect('/platform')
   const tenantId = ctx.tenantId
   await ensureSystemBaskets(tenantId)
   const q = searchParams.q ?? ''
+  // Blind-Index-Tokens (Stefan 2026-08-27) — kommagetrennte Hex-Hashes, vom
+  // Browser bereits aus dem Suchtext berechnet (siehe SearchForm.tsx).
+  const blindTokens = (searchParams.token ?? '').split(',').map((t) => t.trim()).filter(Boolean)
   const status = Object.values(InvoiceStatus).includes(searchParams.status as InvoiceStatus)
     ? (searchParams.status as InvoiceStatus)
     : undefined
@@ -64,10 +104,10 @@ export default async function InvoicesPage({
   // Eingangskorb zurück (dort landet jede neue Rechnung ohnehin zuerst).
   const [basketsRaw, basketCounts, rightMap, tenantRow, closedYears] = await Promise.all([
     prisma.basket.findMany({ where: { tenantId, deletedAt: null } }),
-    getBasketCounts(tenantId, ctx.userId),
+    getBasketCounts(tenantId, ctx.userId, ctx.role),
     getBasketRightMap(tenantId, ctx.userId, ctx.role),
     prisma.tenant.findUnique({ where: { id: tenantId }, select: { datevFibuEmail: true, encryptionEnabled: true } }),
-    getClosedYears(),
+    getClosedYears(tenantId),
   ])
   const tenantEncryptionEnabled = Boolean(tenantRow?.encryptionEnabled)
   // Suche/Sortierung bei Inhalts-Verschlüsselung (Stefan 2026-07-09, #109):
@@ -103,16 +143,12 @@ export default async function InvoicesPage({
   const activeRank = rank(basketFilter)
   const canMove = activeRank >= RIGHT_RANK.MOVE
   const canApprove = activeRank >= RIGHT_RANK.APPROVE
-  // "An Buchhaltung übergeben" darf nur im Übergabekorb selbst passieren
-  // (Stefan 2026-07-09) — das HANDOVER-Recht allein reicht nicht, sonst
-  // könnte jemand mit diesem Recht auf einem anderen Korb die Rechnung schon
-  // dort als "übergeben" markieren, bevor sie den Übergabekorb je erreicht hat.
-  const canHandover = activeRank >= RIGHT_RANK.HANDOVER && activeBasket?.kind === 'HANDOVER'
   const canFibu = activeRank >= RIGHT_RANK.FIBU
 
   // Basis-Query-Parameter für Sortier-/Papierkorb-Links — bestehende Filter erhalten
   const baseParams: Record<string, string> = {
     ...(q ? { q } : {}),
+    ...(blindTokens.length > 0 ? { token: blindTokens.join(',') } : {}),
     ...(status ? { status } : {}),
     ...(hideDuplicates ? { dup: 'hide' } : {}),
     ...(basketFilter ? { basket: basketFilter } : {}),
@@ -126,6 +162,17 @@ export default async function InvoicesPage({
     if (sortField !== field) return ''
     return sortDir === 'asc' ? ' ▲' : ' ▼'
   }
+  // Suche (Stefan 2026-08-27, siehe getFullTextMatchIds/getBlindIndexMatchIds
+  // oben): für unverschlüsselte Mandanten eine echte Volltextsuche (tsvector,
+  // deckt jetzt auch Notizen/Mailtext ab, nicht mehr nur drei Spalten); für
+  // verschlüsselte Mandanten ein Blind-Index-Abgleich über bereits vom
+  // Browser gehashte Suchbegriffe — beide liefern nur eine ID-Liste, die wie
+  // jeder andere Filter unten in die normale Abfrage einfließt (Sortierung/
+  // Korb-/Status-Filter bleiben unverändert erhalten, egal welcher Suchweg).
+  const fullTextMatchIds = q && !tenantEncryptionEnabled ? await getFullTextMatchIds(tenantId, q) : null
+  const blindMatchIds = blindTokens.length > 0 && tenantEncryptionEnabled ? await getBlindIndexMatchIds(tenantId, blindTokens) : null
+  const searchMatchIds = fullTextMatchIds ?? blindMatchIds
+
   const where: Prisma.InvoiceWhereInput = {
     tenantId: ctx.tenantId,
     deletedAt: showTrash ? { not: null } : null,
@@ -135,18 +182,7 @@ export default async function InvoicesPage({
     ...(hideDuplicates ? { duplicateOfId: null } : {}),
     ...(status ? { status } : {}),
     ...(basketFilter ? { basketId: basketFilter } : {}),
-    // Bei verschlüsselten Mandanten stehen vendor/invoiceNumber/tags nur als
-    // Platzhalter/null in der DB — die SQL-Suche würde nie etwas finden.
-    // InvoiceRows.tsx übernimmt die Suche in dem Fall stattdessen client-seitig.
-    ...(q && !tenantEncryptionEnabled
-      ? {
-          OR: [
-            { vendor: { contains: q, mode: 'insensitive' } },
-            { invoiceNumber: { contains: q, mode: 'insensitive' } },
-            { tags: { contains: q, mode: 'insensitive' } },
-          ],
-        }
-      : {}),
+    ...(searchMatchIds ? { id: { in: searchMatchIds } } : {}),
   }
   const [invoices, trashCount] = await Promise.all([
     prisma.invoice.findMany({ where, orderBy, take: 200 }),
@@ -192,6 +228,24 @@ export default async function InvoicesPage({
       })
     : []
   const unreadNoteInvoiceIds = new Set(unreadNoteRows.map((r) => r.invoiceId))
+
+  // "Zur Prüfung weitergeben" (Stefan 2026-08-27, siehe lib/invoiceHandoff.ts)
+  // — Status in der Liste sichtbar machen, nicht erst beim Öffnen der
+  // Rechnung. Höchstens ein aktiver Handoff je Rechnung (serverseitig
+  // erzwungen, siehe api/invoices/[id]/notes/route.ts POST).
+  const activeHandoffRows = await prisma.invoiceNote.findMany({
+    where: { invoiceId: { in: invoices.map((i) => i.id) }, isHandoff: true, doneAt: null },
+    select: { invoiceId: true, toUserId: true, toUser: { select: { email: true, firstName: true, lastName: true } } },
+  })
+  const handoffByInvoiceId = new Map(
+    activeHandoffRows.map((r) => [
+      r.invoiceId,
+      {
+        toUserName: [r.toUser?.firstName, r.toUser?.lastName].filter(Boolean).join(' ') || r.toUser?.email || '—',
+        isRecipient: r.toUserId === ctx.userId,
+      },
+    ]),
+  )
 
   const pendingApprovals = showTrash
     ? []
@@ -247,8 +301,12 @@ export default async function InvoicesPage({
     // Rechnungsversionierung: eine überholte, ältere Version ist ebenfalls
     // gesperrt (siehe schema.prisma Invoice.supersededAt) — unterscheidet
     // sich in InvoiceRows.tsx nur im Icon/Tooltip.
-    locked: closedYears.has(i.createdAt.getFullYear()) || i.supersededAt !== null,
+    locked:
+      closedYears.has(i.createdAt.getFullYear()) ||
+      i.supersededAt !== null ||
+      Boolean(handoffByInvoiceId.get(i.id) && !handoffByInvoiceId.get(i.id)!.isRecipient),
     hasSiblings: Boolean(i.sourceMessageId) && (siblingCountMap.get(i.sourceMessageId!) ?? 0) > 1,
+    handoff: handoffByInvoiceId.get(i.id) ?? null,
   }))
 
   const exportUrl = `/api/invoices/export?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`
@@ -286,14 +344,17 @@ export default async function InvoicesPage({
       <form className="dp-card flex flex-wrap items-end gap-3" method="get">
         {basketFilter && <input type="hidden" name="basket" value={basketFilter} />}
         <div className="min-w-[220px] flex-1">
-          <label className="dp-label" htmlFor="q" title="Durchsucht Lieferant, Rechnungsnummer und Tags gleichzeitig">
-            Suche (Lieferant, Nummer, Tags)
+          <label className="dp-label" htmlFor="q"
+            title={tenantEncryptionEnabled
+              ? 'Durchsucht Lieferant und Rechnungsnummer (Wort-Treffer)'
+              : 'Durchsucht Lieferant, Rechnungsnummer, Tags und Notizen'}>
+            {tenantEncryptionEnabled ? 'Suche (Lieferant, Nummer)' : 'Suche (Lieferant, Nummer, Tags, Notizen)'}
           </label>
-          <input id="q" name="q" className="dp-input mt-1" defaultValue={q}
-            title="Durchsucht Lieferant, Rechnungsnummer und Tags gleichzeitig" />
+          <SearchInput q={q} encryptionEnabled={tenantEncryptionEnabled} />
           {tenantEncryptionEnabled && (
             <p className="mt-1 text-[10px] text-gray-400">
-              Bei Verschlüsselung wirkt die Suche erst, sobald oben die Passphrase eingegeben wurde.
+              Bei Verschlüsselung wirkt die Suche erst, sobald oben die Passphrase eingegeben wurde — dann als
+              Wort-Treffer (kein Teilstring wie bei unverschlüsselten Mandanten).
             </p>
           )}
         </div>
@@ -330,12 +391,15 @@ export default async function InvoicesPage({
           </>
         )}
         {!showTrash && activeBasket?.kind === 'HANDOVER' && canFibu && (
-          <DatevExportButton
-            basketId={activeBasket.id}
-            count={datevExportCount}
-            fibuEmailConfigured={fibuEmailConfigured}
-            encryptionEnabled={tenantEncryptionEnabled}
-          />
+          <>
+            <DatevExportButton
+              basketId={activeBasket.id}
+              count={datevExportCount}
+              fibuEmailConfigured={fibuEmailConfigured}
+              encryptionEnabled={tenantEncryptionEnabled}
+            />
+            <SepaExportButton basketId={activeBasket.id} encryptionEnabled={tenantEncryptionEnabled} />
+          </>
         )}
         {!showTrash && activeBasket?.kind === 'HANDOVER' && !canFibu && (
           <span className="text-xs text-gray-400" title="Kein Recht zur Übergabe an die Fibu — in der Körbe-Verwaltung einstellbar">
@@ -406,8 +470,8 @@ export default async function InvoicesPage({
               showTrash={showTrash}
               canMove={canMove}
               canApprove={canApprove}
-              canHandover={canHandover}
               q={q}
+              serverMatched={blindMatchIds !== null}
               sortField={sortField}
               sortDir={sortDir}
               encryptionEnabled={tenantEncryptionEnabled}

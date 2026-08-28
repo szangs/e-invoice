@@ -6,12 +6,13 @@ import { InvoiceStatus } from '@prisma/client'
 import { jsonError } from '@/lib/api'
 import { resolveToken } from '@/lib/apiToken'
 import { audit } from '@/lib/audit'
-import { getInboxBasketId } from '@/lib/baskets'
+import { ensureSystemBaskets } from '@/lib/baskets'
 import { ApiError } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { nextDocId } from '@/lib/docId'
-import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
+import { detectDuplicate, hashBuffer, resolveDuplicateOrVersion, supersedeOlderVersions } from '@/lib/duplicates'
 import { analyzeInvoiceFile, autoElectronicCheck, autoFormalCheckForEInvoice, type Analysis } from '@/lib/erechnung'
+import { scheduleKositCheck } from '@/lib/kositValidator'
 import { hasFeature } from '@/lib/license'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
 
@@ -85,14 +86,21 @@ export async function POST(req: NextRequest) {
     const fileHash = isEncrypted
       ? (/^[a-f0-9]{64}$/i.test(suppliedHash) ? suppliedHash : null)
       : hashBuffer(buffer)
-    const duplicateOfId = (await detectDuplicate(tenant.id, {
+    const invoiceNumberForDupCheck = d?.number ?? null
+    const vendorForDupCheck = d?.sellerName ?? null
+    const duplicateMatch = await detectDuplicate(tenant.id, {
       fileHash,
-      invoiceNumber: d?.number ?? null,
-      vendor: d?.sellerName ?? null,
-    }))?.id ?? null
+      invoiceNumber: invoiceNumberForDupCheck,
+      vendor: vendorForDupCheck,
+    })
+    // Rechnungsversionierung (Stefan 2026-08-26, Review-Fund "Manueller
+    // Upload/Catcher ohne Spam-Filter"): respektiert jetzt dieselbe
+    // Mandanten-Einstellung wie der Mail-Eingang, siehe lib/duplicates.ts
+    // resolveDuplicateOrVersion.
+    const { duplicateOfId, isVersioningCase } = resolveDuplicateOrVersion(duplicateMatch, tenant.autoSupersedeInvoiceVersions)
 
     const docId = await nextDocId(tenant.id)
-    const basketId = await getInboxBasketId(tenant.id)
+    const { inboxId: basketId, archiveId } = await ensureSystemBaskets(tenant.id)
     const electronicCheck = autoElectronicCheck(analysis?.format ?? 'PDF', analysis?.validation?.valid)
     const formalCheck = autoFormalCheckForEInvoice(analysis?.format ?? 'PDF', analysis?.validation?.valid)
     const invoice = await prisma.invoice.create({
@@ -130,12 +138,20 @@ export async function POST(req: NextRequest) {
         source: 'EXTENSION',
       },
     })
+    if (isVersioningCase && invoiceNumberForDupCheck && vendorForDupCheck) {
+      await supersedeOlderVersions(tenant.id, invoice.id, invoiceNumberForDupCheck, vendorForDupCheck, archiveId)
+    }
     await audit({
       tenantId: tenant.id,
       actorName: `Plugin-Token "${token.label}"`,
       action: 'INVOICE_CREATE',
       details: `Rechnungs-Catcher: ${vendor} (${filename})${isEncrypted ? ' · verschlüsselt' : ''}`,
     })
+    // Automatische KoSIT-Prüfung (Stefan 2026-08-26, Review-Fund "Browser-
+    // Erweiterung löst nie eine KoSIT-Prüfung aus") — läuft im Hintergrund
+    // weiter, ohne die Antwort auf diese Anfrage zu verzögern, wie beim
+    // Mail-Eingang und dem Web-Upload.
+    if (invoice.xmlData) scheduleKositCheck(invoice.id)
     return NextResponse.json({ ok: true, invoiceId: invoice.id, vendor })
   } catch (e) {
     return jsonError(e)

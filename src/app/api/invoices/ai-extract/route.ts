@@ -16,6 +16,7 @@ import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { hasFeature } from '@/lib/license'
 import { rasterizeFirstPage } from '@/lib/pdfRaster'
+import { hasRoleAction } from '@/lib/roleActions'
 
 const MAX_BYTES = 10 * 1024 * 1024
 
@@ -26,6 +27,7 @@ export async function POST(req: NextRequest) {
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } })
     if (!tenant?.aiAllowed) throw new ApiError(403, 'KI-Funktionen sind für Ihren Mandanten deaktiviert.')
     if (!tenant || !hasFeature(tenant, 'AI')) throw new ApiError(403, 'KI-Erkennung ist im aktuellen Tarif nicht enthalten.')
+    if (!hasRoleAction(tenant, ctx.role, 'AI_EXTRACT')) throw new ApiError(403, 'Ihre Rolle darf keine KI-Erkennung nutzen.')
     const form = await req.formData()
     const file = form.get('file')
     if (!(file instanceof File) || file.size === 0) throw new ApiError(400, 'Keine Datei erhalten.')

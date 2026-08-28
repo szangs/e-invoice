@@ -16,7 +16,7 @@ function printCertificate(passphrase: string, tenantName: string | null) {
   const w = window.open('', '_blank', 'width=650,height=820')
   if (!w) return
   const now = new Date().toLocaleString('de-DE')
-  w.document.write(`<!DOCTYPE html><html><head><title>Passphrase-Zertifikat</title><meta charset="utf-8"><style>
+  w.document.write(`<!DOCTYPE html><html><head><title>Notfallblatt — Passphrase</title><meta charset="utf-8"><style>
     body{font-family:Arial,Helvetica,sans-serif;padding:48px;color:#111}
     h1{font-size:18px;margin:0 0 4px}
     .sub{font-size:12px;color:#666;margin:0 0 24px}
@@ -25,7 +25,7 @@ function printCertificate(passphrase: string, tenantName: string | null) {
     .warn{border:1px solid #d97706;background:#fffbeb;color:#92400e;padding:14px;border-radius:8px;font-size:13px;line-height:1.5}
     .meta{font-size:11px;color:#999;margin-top:32px}
   </style></head><body>
-    <h1>E-Invoice — Passphrase-Zertifikat</h1>
+    <h1>E-Invoice — Notfallblatt (Passphrase-Zertifikat)</h1>
     <p class="sub">${tenantName ? `${tenantName} — ` : ''}erzeugt am ${now}</p>
     <div class="pass">${passphrase}</div>
     <div class="warn"><strong>Wichtig:</strong> Diese Passphrase schützt Ihre verschlüsselten Belege
@@ -100,6 +100,17 @@ export function EncryptionSetup() {
       cacheDekRaw(dekRaw)
       setCfg({ enabled: true, salt, wrappedDek, tenantName: cfg?.tenantName ?? null })
       setMsg('Verschlüsselung aktiviert. Neue Belege werden ab jetzt im Browser verschlüsselt.')
+      // Notfallblatt AUCH bei frei getippter Passphrase anbieten (Stefan
+      // 2026-08-27, "wir müssen ein Notfallblatt … haben") — vorher wurde
+      // `revealed` bei jedem Tippen in die Felder sofort wieder geleert
+      // (siehe onChange unten), das Zertifikat ließ sich dadurch nur bei der
+      // per Knopf zufällig erzeugten Passphrase drucken, nie bei einer
+      // selbst gewählten. Jetzt: nach erfolgreicher Aktivierung IMMER die
+      // gerade aktivierte Passphrase zum Drucken anbieten — das ist der
+      // einzige Moment, in dem der Server/Browser sie überhaupt kennt
+      // (Zero-Knowledge, siehe Warnhinweis oben: kein Wiederherstellungsweg
+      // danach, auch nicht durch den Betreiber).
+      setRevealed(pass1)
       setPass1('')
       setPass2('')
     } finally {
@@ -139,6 +150,8 @@ export function EncryptionSetup() {
       cacheDekRaw(dekRaw)
       setCfg({ enabled: true, salt, wrappedDek, tenantName: cfg?.tenantName ?? null })
       setMsg('Passphrase geändert — bestehende Belege bleiben ohne Umschlüsselung lesbar.')
+      // Notfallblatt für die NEUE Passphrase (siehe Kommentar in enable() oben).
+      setRevealed(pass1)
       setOldPass('')
       setPass1('')
       setPass2('')
@@ -154,13 +167,23 @@ export function EncryptionSetup() {
       </h2>
       <p className="text-xs text-gray-500">
         Belege werden in Ihrem Browser mit AES-256 verschlüsselt, bevor sie den Server erreichen.
-        Weder der Betreiber noch der Server können sie lesen. Workflow-Daten (Beträge, Lieferant,
-        Status) bleiben unverschlüsselt und durchsuchbar.
+        Weder der Betreiber noch der Server können sie lesen. Nur reine Workflow-Daten (Status,
+        Fälligkeitsdatum, Prüf-Häkchen, Korb) bleiben unverschlüsselt — Lieferant, Beträge,
+        Rechnungsnummer, Notizen &amp; Co. stehen serverseitig nur noch als Chiffrat.
       </p>
       <div className="rounded-lg border border-[var(--warn-border)] bg-[var(--warn-bg)] p-3 text-xs text-[var(--warn-strong)]">
         <strong>Wichtig:</strong> Geht die Passphrase verloren, sind die verschlüsselten Belege
         unwiederbringlich verloren. Es gibt keinen Wiederherstellungsweg — auch nicht durch den
         Betreiber. Bewahren Sie die Passphrase sicher auf (z. B. Passwort-Manager).
+      </div>
+      <div className="rounded-lg border border-[var(--warn-border)] bg-[var(--warn-bg)] p-3 text-xs text-[var(--warn-strong)]">
+        <strong>Auch wichtig — Suche:</strong> eine echte Volltext-/Teilstring-Suche ("enthält
+        irgendwo diese Zeichenfolge", wie sie unverschlüsselte Mandanten haben) geht mit aktiver
+        Verschlüsselung grundsätzlich nicht mehr — der Server kann in Chiffrat nicht suchen. Es
+        gibt einen Ersatz (Blind-Index): nach Eingabe der Passphrase lassen sich Lieferant und
+        Rechnungsnummer durchsuchen, aber nur als GANZE WÖRTER (kein Teilstring wie bisher — "Muster"
+        findet dann z. B. NICHT mehr "Mustermann") und NICHT über Notizen, Tags oder Mailtext.
+        Wer viel über Notizen/Mailtext sucht, sollte das vor der Aktivierung bedenken.
       </div>
 
       {!cfg.enabled ? (
@@ -239,7 +262,8 @@ function PassphraseReveal({
   return (
     <div className="rounded-lg border border-[var(--accent-soft)] bg-[var(--accent-bg)] p-3 space-y-2">
       <p className="text-[11px] font-medium text-[var(--accent)]">
-        Generierte Passphrase — jetzt notieren/drucken, sie wird hier nicht noch einmal angezeigt:
+        Notfallblatt jetzt drucken oder Passphrase notieren — das ist die einzige Gelegenheit dazu,
+        sie wird danach nirgends mehr angezeigt (auch dem Betreiber ist sie nicht bekannt):
       </p>
       <p className="break-all rounded bg-white px-3 py-2 font-mono text-sm">{revealed}</p>
       <div className="flex flex-wrap items-center gap-2">
@@ -248,8 +272,8 @@ function PassphraseReveal({
         </button>
         <button type="button" className="btn-secondary !px-2 !py-1 text-xs"
           onClick={() => printCertificate(revealed, tenantName)}
-          title="Öffnet ein druckbares Zertifikat mit dieser Passphrase — zum Ausdrucken und sicher Verwahren (z. B. Tresor)">
-          🖨 Zertifikat drucken
+          title="Öffnet ein druckbares Notfallblatt mit dieser Passphrase — zum Ausdrucken und sicher Verwahren (z. B. Tresor). Einzige Gelegenheit dafür: die Passphrase ist danach nirgends mehr abrufbar.">
+          🖨 Notfallblatt drucken
         </button>
         {copyMsg && <span className="text-[11px] text-gray-500">{copyMsg}</span>}
       </div>

@@ -2,7 +2,17 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ── Theme "marine" — E-Invoice Akzent #1e477a (DP-Designsystem) ── */
+/* ── Farbschemata (Stefan 2026-08-27, "mach mal noch eine Farbauswahl") ──
+   Jeder Mandant kann eines dieser Schemata wählen (Mandanten-Einstellungen
+   → Mandant → Erscheinungsbild, siehe ColorThemePicker.tsx) — angewendet
+   über [data-theme] auf <html> (siehe layout.tsx). Nur der Akzent + der
+   dazu passende Verlaufshintergrund unterscheiden sich je Schema; Warn-/
+   Gefahr-Farben (--warn/--danger) und die neutrale Karten-/Linienfarbe
+   bleiben überall gleich — das sind feste Bedeutungsfarben (Warnung/Fehler),
+   kein Gestaltungselement, das mit dem Akzent wechseln sollte. "marine" ist
+   das bisherige, unveränderte DP-Standardschema und bleibt der Standard für
+   neue Mandanten sowie überall ohne Mandanten-Kontext (Login, Betreiber-
+   Bereich ohne aktive Identitätsübernahme). */
 :root,
 [data-theme='marine'] {
   --accent: #1e477a;
@@ -17,6 +27,106 @@
   --bg-from: #dbe5f1;
   --bg-via: #f3f6fa;
   --bg-to: #e7edf5;
+  --warn: #c98a2b;
+  --warn-strong: #b07d2b;
+  --warn-bg: #fbf4e8;
+  --warn-border: #e7d6b8;
+  --danger: #b3261e;
+}
+
+[data-theme='forest'] {
+  --accent: #1e6b4f;
+  --accent-strong: #17573f;
+  --accent-soft: #4f9a7d;
+  --accent-bg: #edf6f1;
+  --accent-border: #cde3d6;
+  --surface: #ffffff;
+  --surface-warm: #f2f4f8;
+  --surface-muted: #f8fafc;
+  --line: #e2e6ee;
+  --bg-from: #dbeee2;
+  --bg-via: #f2f8f4;
+  --bg-to: #e5f2ea;
+  --warn: #c98a2b;
+  --warn-strong: #b07d2b;
+  --warn-bg: #fbf4e8;
+  --warn-border: #e7d6b8;
+  --danger: #b3261e;
+}
+
+[data-theme='bordeaux'] {
+  --accent: #7a2236;
+  --accent-strong: #641b2c;
+  --accent-soft: #a55b6d;
+  --accent-bg: #f8edf0;
+  --accent-border: #e6cdd4;
+  --surface: #ffffff;
+  --surface-warm: #f2f4f8;
+  --surface-muted: #f8fafc;
+  --line: #e2e6ee;
+  --bg-from: #f1dbe1;
+  --bg-via: #f9f3f5;
+  --bg-to: #f4e7ea;
+  --warn: #c98a2b;
+  --warn-strong: #b07d2b;
+  --warn-bg: #fbf4e8;
+  --warn-border: #e7d6b8;
+  --danger: #b3261e;
+}
+
+[data-theme='graphite'] {
+  --accent: #3a4551;
+  --accent-strong: #2c3540;
+  --accent-soft: #64707d;
+  --accent-bg: #f1f3f5;
+  --accent-border: #d8dde2;
+  --surface: #ffffff;
+  --surface-warm: #f2f4f8;
+  --surface-muted: #f8fafc;
+  --line: #e2e6ee;
+  --bg-from: #e2e6ea;
+  --bg-via: #f4f6f8;
+  --bg-to: #eaeef1;
+  --warn: #c98a2b;
+  --warn-strong: #b07d2b;
+  --warn-bg: #fbf4e8;
+  --warn-border: #e7d6b8;
+  --danger: #b3261e;
+}
+
+[data-theme='teal'] {
+  --accent: #0f6b72;
+  --accent-strong: #0c565c;
+  --accent-soft: #4f9aa0;
+  --accent-bg: #edf6f7;
+  --accent-border: #cde4e6;
+  --surface: #ffffff;
+  --surface-warm: #f2f4f8;
+  --surface-muted: #f8fafc;
+  --line: #e2e6ee;
+  --bg-from: #dbeef0;
+  --bg-via: #f2f8f9;
+  --bg-to: #e5f2f3;
+  --warn: #c98a2b;
+  --warn-strong: #b07d2b;
+  --warn-bg: #fbf4e8;
+  --warn-border: #e7d6b8;
+  --danger: #b3261e;
+}
+
+[data-theme='violet'] {
+  --accent: #5b3a8a;
+  --accent-strong: #492e70;
+  --accent-soft: #8a71ac;
+  --accent-bg: #f3eff9;
+  --accent-border: #dcd0ea;
+  --surface: #ffffff;
+  --surface-warm: #f2f4f8;
+  --surface-muted: #f8fafc;
+  --line: #e2e6ee;
+  --bg-from: #e6dbf1;
+  --bg-via: #f6f3f9;
+  --bg-to: #ede7f4;
   --warn: #c98a2b;
   --warn-strong: #b07d2b;
   --warn-bg: #fbf4e8;

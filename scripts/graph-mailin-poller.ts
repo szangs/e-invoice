@@ -14,7 +14,15 @@ try {
 
 /* eslint-disable import/first */
 import { runGraphMailinPoll } from '../src/lib/graphMailin'
-import { getSettings } from '../src/lib/settings'
+
+// Fester, feiner Grundtakt statt des früheren MAIL_IN_GRAPH_POLL_SECONDS-
+// Intervalls (Stefan 2026-08-27, "bei Mailabholung müssen wir die Pollrate
+// einstellen können"): das Poll-Intervall ist jetzt JE MANDANT einstellbar
+// (Tenant.mailInPollSeconds, sonst der globale Standard) — runGraphMailinPoll
+// selbst entscheidet pro Tick, welche Mandanten schon fällig sind (siehe
+// lib/mailinSchedule.ts). Der Prozess muss deshalb nur noch feiner ticken
+// als das kürzeste sinnvolle Mandanten-Intervall.
+const BASE_TICK_MS = 30_000
 
 async function tick() {
   const stamp = new Date().toISOString()
@@ -29,9 +37,7 @@ async function tick() {
 async function main() {
   console.log('E-Invoice Graph-Mail-Eingang-Poller läuft.')
   await tick()
-  const s = await getSettings()
-  const intervalMs = Math.max(30, Number(s.MAIL_IN_GRAPH_POLL_SECONDS) || 120) * 1000
-  setInterval(tick, intervalMs)
+  setInterval(tick, BASE_TICK_MS)
 }
 
 main()

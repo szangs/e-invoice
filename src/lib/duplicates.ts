@@ -18,6 +18,20 @@ export type DuplicateMatch = {
   exact: boolean
 }
 
+// TODO (Stefan 2026-08-26, Review-Fund "Wettlaufsituation kann Dubletten-
+// Erkennung umgehen", bewusst zurückgestellt): detectDuplicate prüft per
+// SELECT, bevor die Rechnung an jedem der drei Aufrufer (lib/mailin.ts,
+// api/invoices/route.ts, api/ingest/extension/route.ts) per INSERT angelegt
+// wird — ohne Transaktion/Sperre und ohne Unique-Constraint auf fileHash
+// (nur ein Index). Kommt dieselbe Datei zweimal quasi gleichzeitig an
+// (Doppel-Zustellung oder zwei sich überlappende Graph-Poll-Durchläufe),
+// können beide SELECTs vor dem jeweils anderen INSERT laufen — beide
+// Rechnungen werden dann als "Original" angelegt statt als erkannte
+// Dublette. Sauberer Fix: Prüfung+Anlage an allen drei Aufrufstellen mit
+// einem Postgres-Advisory-Lock auf (tenantId, fileHash) serialisieren.
+// Zurückgestellt, weil es die Create-Pfade in drei Dateien anfasst und ein
+// bestehendes Sicherheitsnetz (Tenant.autoDeleteExactDuplicates) exakte
+// Dubletten im Nachhinein automatisch bereinigt.
 export async function detectDuplicate(
   tenantId: string,
   opts: { fileHash?: string | null; invoiceNumber?: string | null; vendor?: string | null },
@@ -43,6 +57,44 @@ export async function detectDuplicate(
     if (heuristic) return { id: heuristic.id, exact: false }
   }
   return null
+}
+
+// Rechnungsversionierung (Stefan 2026-08-25, Tenant.autoSupersedeInvoiceVersions)
+// — EIGENES Konzept, KEINE Dublette: bei einem reinen Rechnungsnummer+
+// Lieferant-Treffer (exact=false) mit eingeschaltetem Schalter wird NICHT als
+// mögliche Dublette markiert, sondern automatisch als neuere Version
+// behandelt. War bisher nur in lib/mailin.ts (Mail-Eingang) umgesetzt (Stefan
+// 2026-08-26, Review-Fund "Manueller Upload/Catcher ohne Spam-Filter") —
+// jetzt als gemeinsame Funktion, damit der manuelle Upload und der
+// Rechnungs-Catcher (Browser-Erweiterung) dieselbe Mandanten-Einstellung
+// respektieren statt sie stillschweigend zu ignorieren.
+export function resolveDuplicateOrVersion(
+  match: DuplicateMatch | null,
+  autoSupersedeInvoiceVersions: boolean,
+): { duplicateOfId: string | null; isVersioningCase: boolean } {
+  const isVersioningCase = match !== null && !match.exact && autoSupersedeInvoiceVersions
+  return { duplicateOfId: isVersioningCase ? null : (match?.id ?? null), isVersioningCase }
+}
+
+/**
+ * Schreibt alle bisherigen, noch nicht überholten Versionen mit derselben
+ * Rechnungsnummer+Lieferant schreibgeschützt und verschiebt sie in die
+ * Ablage — normalerweise nur eine, aber bei einer Versionskette
+ * (mehrfach nachgesendet/hochgeladen) sicherheitshalber alle.
+ */
+export async function supersedeOlderVersions(
+  tenantId: string,
+  newInvoiceId: string,
+  invoiceNumber: string,
+  vendor: string,
+  archiveId: string,
+): Promise<void> {
+  await prisma.invoice.updateMany({
+    where: {
+      tenantId, id: { not: newInvoiceId }, invoiceNumber, vendor, deletedAt: null, supersededAt: null,
+    },
+    data: { supersededAt: new Date(), supersededByInvoiceId: newInvoiceId, basketId: archiveId },
+  })
 }
 
 export type DuplicateCandidate = {

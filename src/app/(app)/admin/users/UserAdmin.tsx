@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
+import { CONFIGURABLE_ROLES, ROLE_ACTIONS, ROLE_ACTION_LABELS, ROLE_LABELS, type RoleAction } from '@/lib/roleActions'
 
 type UserRow = {
   id: string
@@ -30,6 +31,7 @@ const ROLES: { value: string; label: string }[] = [
   { value: 'USER', label: 'Nutzer' },
 ]
 
+
 const EMPTY = { email: '', firstName: '', lastName: '', department: '', jobTitle: '', role: 'EDITOR' }
 
 // Neues Passwort (Stefan 2026-08-26, "Passwort neu ist nicht logisch"):
@@ -54,12 +56,15 @@ export function UserAdmin({
   currentCount,
   selfId,
   groups,
+  roleActionMatrix,
 }: {
   users: UserRow[]
   maxUsers: number
   currentCount: number
   selfId: string
   groups: GroupRow[]
+  /** Rolle → Aktion → erlaubt, bereits mit den Vorgaben zusammengeführt (siehe lib/roleActions.ts). */
+  roleActionMatrix: Record<string, Record<RoleAction, boolean>>
 }) {
   const router = useRouter()
   const [f, setF] = useState(EMPTY)
@@ -132,6 +137,10 @@ export function UserAdmin({
     return data
   }
 
+  async function setRoleAction(role: string, action: RoleAction, enabled: boolean) {
+    await call('/api/admin/role-actions', 'PUT', { role, action, enabled })
+  }
+
   // Name wird erst beim Klicken abgefragt (wie beim Korb-Anlegen) statt
   // eines dauerhaft sichtbaren Eingabefelds — das Anlegen ist ein seltener
   // Vorgang, der so viel Platz nicht rechtfertigt.
@@ -189,7 +198,7 @@ export function UserAdmin({
             onChange={(e) => setF((p) => ({ ...p, jobTitle: e.target.value }))} />
         </div>
         <div>
-          <label className="dp-label" title="Bestimmt, welche Bereiche der Benutzer sehen und bearbeiten darf">Rolle</label>
+          <label className="dp-label" title="Legt den Administrator-/Prüfer-Status fest — welche Körbe jemand sehen/bearbeiten darf, wird separat in der Körbe-Verwaltung je Mitarbeiter zugeteilt (siehe Rollen-Übersicht unten)">Rolle</label>
           <select className="dp-input mt-1" value={f.role} onChange={(e) => setF((p) => ({ ...p, role: e.target.value }))}>
             {ROLES.map((r) => (
               <option key={r.value} value={r.value}>{r.label}</option>
@@ -206,6 +215,38 @@ export function UserAdmin({
         </p>
         {msg && <p className="w-full text-sm text-[var(--danger)]">{msg}</p>}
       </form>
+
+      <div className="dp-card space-y-2 overflow-x-auto">
+        <p className="dp-label">Rollen-Rechte — was darf welche Rolle (grob)?</p>
+        <p className="text-[11px] text-gray-500">
+          Ergänzt die Korb-Rechte (welche Rechnungen/Körbe darf jemand sehen/bearbeiten, siehe
+          Körbe-Verwaltung) um querschnittliche Fähigkeiten, unabhängig vom einzelnen Korb. Administrator
+          und Betreiber haben immer alle Aktionen und stehen deshalb nicht in der Tabelle.
+        </p>
+        <table className="text-xs">
+          <thead>
+            <tr className="dp-tr">
+              <th className="pb-1 pr-4 text-left font-normal text-gray-400">Rolle</th>
+              {ROLE_ACTIONS.map((a) => (
+                <th key={a} className="pb-1 px-2 text-center font-normal text-gray-400" title={ROLE_ACTION_LABELS[a]}>
+                  {ROLE_ACTION_LABELS[a]}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {CONFIGURABLE_ROLES.map((role) => (
+              <tr key={role} className="dp-tr">
+                <td className="py-1 pr-4 font-semibold text-gray-700">{ROLE_LABELS[role]}</td>
+                {ROLE_ACTIONS.map((a) => (
+                  <RoleActionCell key={a} role={role} action={a} enabled={roleActionMatrix[role][a]} disabled={busy}
+                    onToggle={() => setRoleAction(role, a, !roleActionMatrix[role][a])} />
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       <div className="dp-card overflow-x-auto p-0">
         <table className="w-full min-w-[900px]">
@@ -375,5 +416,36 @@ export function UserAdmin({
         </div>
       )}
     </>
+  )
+}
+
+/** Eine an-/ausschaltbare Zelle in der Rollen-Rechte-Tabelle — anders als
+ * RightCell bei den Korb-Rechten (BasketAdmin.tsx) rein boolesch, keine
+ * kumulative Rangfolge: jede Aktion ist unabhängig von den anderen. */
+function RoleActionCell({
+  role, action, enabled, disabled, onToggle,
+}: {
+  role: string
+  action: RoleAction
+  enabled: boolean
+  disabled: boolean
+  onToggle: () => void
+}) {
+  return (
+    <td className="px-2 py-1 text-center">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onToggle}
+        title={`${ROLE_LABELS[role as keyof typeof ROLE_LABELS]} — ${ROLE_ACTION_LABELS[action]}: ${enabled ? 'erlaubt (klicken zum Sperren)' : 'gesperrt (klicken zum Erlauben)'}`}
+        className={`flex h-5 w-5 items-center justify-center rounded-full border text-[10px] font-bold transition ${
+          enabled
+            ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+            : 'border-gray-300 bg-white text-gray-400 hover:border-[var(--accent-soft)]'
+        }`}
+      >
+        {enabled ? '✓' : ''}
+      </button>
+    </td>
   )
 }

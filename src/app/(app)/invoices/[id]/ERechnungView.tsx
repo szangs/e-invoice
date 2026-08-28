@@ -27,6 +27,12 @@ export type EditableFieldConfig = {
   // wie z. B. USt-IdNr./Anschrift, sonst sieht ein optionales Feld genauso
   // dringend aus wie eine echte Pflichtangabe.
   optional?: boolean
+  // Stefan 2026-08-27 (Pflichtangaben-Schnellausfüllung): warn ist bisher
+  // IMMER eine KI-Vermutung gewesen, daher der feste Hinweistext unten. Ein
+  // aus dem Lieferanten-Gedächtnis übernommener Wert ist keine KI-Vermutung
+  // — überschreibt den Text hier, statt fälschlich "KI ist sich unsicher" zu
+  // zeigen.
+  hintTitle?: string
 }
 
 // Direkte Eingabe in dieser ruhigen Kopfzeile statt eines zweiten, dichten
@@ -435,7 +441,7 @@ function EditField({
       <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
         <FieldDot empty={empty} blocking={blocking} />
         {label}
-        {config.warn && <span className="text-[var(--warn-strong)]" title="KI ist sich hier unsicher — bitte prüfen">⚠</span>}
+        {config.warn && <span className="text-[var(--warn-strong)]" title={config.hintTitle ?? 'KI ist sich hier unsicher — bitte prüfen'}>⚠</span>}
         {rs && <span className={rs.className} title={rs.title}>{rs.icon}</span>}
       </p>
       <input

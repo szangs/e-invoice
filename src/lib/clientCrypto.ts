@@ -153,4 +153,68 @@ export async function decryptJson<T = Record<string, unknown>>(dek: CryptoKey, b
   return JSON.parse(new TextDecoder().decode(plain)) as T
 }
 
+/**
+ * Blind-Index für die Suche bei aktiver Verschlüsselung (Stefan 2026-08-27,
+ * "eine Volltextsuche kann ich mit der Verschlüsselung vergessen oder?").
+ * Der Server sieht bei verschlüsselten Belegen nur Chiffrat — echte
+ * Volltextsuche ist ihm unmöglich. Notlösung: der Browser bildet beim
+ * Speichern für Lieferant/Rechnungsnummer je normalisiertem Wort einen
+ * deterministischen HMAC mit einem eigenen, vom DEK abgeleiteten Zweck-
+ * Schlüssel (siehe schema.prisma InvoiceSearchToken) und schickt NUR die
+ * Hashes; beim Suchen bildet er denselben Hash aus dem Suchbegriff. Der
+ * Server vergleicht Hash gegen Hash, sieht nie den Klartext.
+ * WICHTIG (Sicherheits-Kompromiss, siehe InvoiceSearchToken-Kommentar):
+ * der Hash MUSS deterministisch sein, sonst geht kein Abgleich — das
+ * bedeutet, gleicher Klartext erzeugt immer denselben Hash. Wer Zugriff auf
+ * die Tabelle hat, kann daraus Gleichheits-Muster ablesen (z. B. "diese
+ * beiden Rechnungen haben denselben Lieferanten"), auch ohne den Klartext
+ * selbst zu kennen — eine bewusste Abschwächung des sonst absoluten
+ * Zero-Knowledge-Versprechens.
+ * Eigener Zweck-Schlüssel per HKDF (NICHT der DEK selbst) — Verschlüsselung
+ * und Suchindex sollen unabhängige Schlüssel für unabhängige Zwecke nutzen.
+ */
+export async function deriveSearchKey(dekRaw: Uint8Array): Promise<CryptoKey> {
+  const material = await crypto.subtle.importKey('raw', dekRaw as unknown as BufferSource, 'HKDF', false, ['deriveKey'])
+  return crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new TextEncoder().encode('einvoice-blind-index-v1') },
+    material,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+}
+
+/**
+ * Normalisiert Text zu einzelnen Such-Wörtern — dieselbe Funktion wird beim
+ * Speichern (Indizieren) UND beim Suchen (Query) verwendet, sonst passen die
+ * Hashes nicht zueinander. Einzelne Buchstaben werden ausgelassen (zu viele
+ * Zufallstreffer, zu wenig Nutzen). Reine Wort-/Segment-Treffer, KEINE
+ * Teilstring-Suche wie bisher bei ILIKE (das bräuchte N-Gramm-Indizierung —
+ * bewusst nicht umgesetzt, deutlich mehr gespeicherte Hashes und damit auch
+ * mehr Gleichheits-Leck, siehe deriveSearchKey oben).
+ */
+function normalizeSearchWords(text: string): string[] {
+  return Array.from(
+    new Set(
+      text
+        .toLowerCase()
+        .normalize('NFKC')
+        .split(/[^a-z0-9äöüß]+/i)
+        .map((w) => w.trim())
+        .filter((w) => w.length >= 2),
+    ),
+  )
+}
+
+/** Hex-HMAC je Such-Wort — nie der Klartext selbst, siehe deriveSearchKey. */
+export async function computeSearchTokens(searchKey: CryptoKey, text: string): Promise<string[]> {
+  const words = normalizeSearchWords(text)
+  const tokens: string[] = []
+  for (const w of words) {
+    const sig = await crypto.subtle.sign('HMAC', searchKey, new TextEncoder().encode(w))
+    tokens.push(Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, '0')).join(''))
+  }
+  return tokens
+}
+
 export { b64encode, b64decode }

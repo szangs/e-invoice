@@ -4,10 +4,20 @@
 // (Stefan 2026-07-07: Häkchen sollen auch ohne Öffnen der Detailseite
 // sichtbar sein). "Elektronische Vorprüfung" und "Formal richtig" sind hier
 // nur Lesestatus (Bearbeitung bleibt auf der Detailseite) — "Sachlich
-// richtig" und "An Buchhaltung übergeben" sind Buchhaltungs-Schritte und
-// direkt in der Liste togglebar, ohne die Rechnung einzeln öffnen zu müssen.
-// 5. Badge "K" (Stefan 2026-08-26): Ergebnis der automatischen KoSIT-Prüfung
-// (lib/kositValidator.ts scheduleKositCheck), reiner Lesestatus wie E/F.
+// richtig" ist ein Buchhaltungs-Schritt und direkt in der Liste togglebar,
+// ohne die Rechnung einzeln öffnen zu müssen.
+// "B" = An Buchhaltung übergeben (Stefan 2026-08-26, "wir machen so immer
+// mehr Buchungsstapel"): NICHT mehr einzeln klickbar — reiner Lesestatus wie
+// E/F, wird ausschließlich durch die Sammelfunktion (DATEV-Export im
+// Übergabekorb, siehe DatevExportButton.tsx) gesetzt, damit Rechnungen
+// tatsächlich gemeinsam in EINEM Buchungsstapel landen statt einzeln und
+// ohne je in einer DATEV-CSV aufzutauchen.
+// "E" fasst jetzt Elektronische Vorprüfung UND KoSIT-Ergebnis zusammen
+// (Stefan 2026-08-26, "den grünen Punkt ganz links mit dem ganz rechts
+// zusammenfassen") — vorher zwei getrennte Punkte (E und K). Gelb = nur die
+// interne Pflichtangaben-Prüfung bestanden, KoSIT (offiziell) noch nicht
+// bestätigt; Grün = zusätzlich von KoSIT akzeptiert; Rot = von KoSIT
+// zurückgewiesen (echtes Problem, nicht nur "steht noch aus").
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 import { EINVOICE_FORMATS } from '@/lib/docFormat'
@@ -24,8 +34,6 @@ type Props = {
   accountingBy: string | null
   /** Korb-Recht APPROVE ("Sachlich freigeben") auf dem aktuellen Korb der Rechnung (Stefan 2026-07-08). */
   canApprove?: boolean
-  /** Korb-Recht HANDOVER ("Übergabe an den Übergabekorb") auf dem aktuellen Korb der Rechnung. */
-  canAccounting?: boolean
   /** Für die K-Badge (Stefan 2026-08-26) — nur bei echter E-Rechnung relevant. */
   docFormat: string | null
   kositCheckedAt: string | null
@@ -40,7 +48,7 @@ function fmt(at: string | null, by: string | null): string {
 export function CheckBadges({
   invoiceId, electronicAt, electronicBy, formalAt, formalBy,
   substantiveAt, substantiveBy, accountingAt, accountingBy,
-  canApprove = true, canAccounting = true,
+  canApprove = true,
   docFormat, kositCheckedAt, kositAccepted,
 }: Props) {
   const router = useRouter()
@@ -50,9 +58,17 @@ export function CheckBadges({
   // — kurzer, nicht-blockierender Hinweis statt window.alert, damit man
   // direkt weiterarbeiten kann.
   const [autoMoveNotice, setAutoMoveNotice] = useState<string | null>(null)
+  // Stefan 2026-08-26 (Review-Fund "kein Weg mehr, B zurückzunehmen"): B lässt
+  // sich wieder zurücknehmen (nicht mehr setzen — das bleibt der Sammel-
+  // Übergabe vorbehalten), sonst blieb eine versehentlich übergebene Rechnung
+  // für immer von jedem künftigen DATEV-Export ausgeschlossen. Serverseitig
+  // bleibt das Zurücknehmen aus der Ablage Admins vorbehalten (route.ts) —
+  // hier nur eine sichtbare Fehlermeldung statt eines stillen Fehlschlags.
+  const [error, setError] = useState<string | null>(null)
 
   async function toggle(key: 'checkSubstantive' | 'checkAccounting', value: boolean) {
     setBusy(true)
+    setError(null)
     const res = await fetch(`/api/invoices/${invoiceId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -60,6 +76,10 @@ export function CheckBadges({
     })
     const data = await res.json().catch(() => ({}))
     setBusy(false)
+    if (!res.ok) {
+      setError(data.error ?? 'Konnte nicht gespeichert werden.')
+      return
+    }
     // Vier-Augen-Korb (Stefan 2026-07-09): wenn alle drei Häkchen stehen,
     // versucht die Rechnung automatisch in den Übergabekorb zu wechseln — ist
     // der Ausgangskorb Vier-Augen-gesperrt, zählt das nur als eine von zwei
@@ -102,29 +122,26 @@ export function CheckBadges({
   // Nicht-E-Rechnung (Stefan 2026-08-25): "Elektronische Vorprüfung" nicht
   // anwendbar — eigenes, blasses "–" statt eines grünen Häkchens, das eine
   // bestandene Prüfung vortäuschen würde (siehe lib/erechnung.ts autoElectronicCheck).
-  const electronicNotApplicable = Boolean(electronicAt && electronicBy?.startsWith('System (entfällt'))
-  // K = automatische KoSIT-Prüfung (Stefan 2026-08-26) — nicht anwendbar bei
-  // Nicht-E-Rechnung, sonst grün/rot/gelb je nach Ergebnis, grau solange der
-  // Hintergrund-Check noch nicht durchgelaufen ist.
-  const kositApplicable = (EINVOICE_FORMATS as readonly string[]).includes(docFormat ?? '')
-  const kositStyle = !kositApplicable ? na
-    : !kositCheckedAt ? off
-      : kositAccepted === true ? on
-        : kositAccepted === false ? fail
-          : unclear
-  const kositLabel = !kositApplicable ? '–' : 'K'
-  const kositTitle = !kositApplicable
-    ? 'K = KoSIT-Prüfung — entfällt (kein E-Rechnungs-Format)'
-    : !kositCheckedAt
-      ? 'K = KoSIT-Prüfung — noch nicht geprüft'
-      : `K = KoSIT-Prüfung — ${kositAccepted === true ? 'akzeptabel' : kositAccepted === false ? 'zurückgewiesen' : 'Ergebnis unklar'} (${new Date(kositCheckedAt).toLocaleString('de-DE')})`
+  const isEInvoice = (EINVOICE_FORMATS as readonly string[]).includes(docFormat ?? '')
+  const electronicStyle = !isEInvoice ? na
+    : !electronicAt ? off
+      : kositAccepted === false ? fail
+        : kositAccepted === true ? on
+          : unclear // KoSIT noch nicht geprüft oder Ergebnis unklar
+  const electronicLabel = !isEInvoice ? '–' : 'E'
+  const electronicTitle = !isEInvoice
+    ? 'E = Elektronische Vorprüfung — entfällt (kein E-Rechnungs-Format)'
+    : !electronicAt
+      ? 'E = Elektronische Vorprüfung — noch nicht geprüft'
+      : `E = Elektronische Vorprüfung — ${fmt(electronicAt, electronicBy)} · KoSIT (offiziell): ${
+          kositAccepted === true ? `akzeptabel (${kositCheckedAt ? new Date(kositCheckedAt).toLocaleString('de-DE') : ''})`
+            : kositAccepted === false ? `zurückgewiesen (${kositCheckedAt ? new Date(kositCheckedAt).toLocaleString('de-DE') : ''})`
+              : kositCheckedAt ? 'Ergebnis unklar' : 'noch nicht geprüft'
+        }`
 
   return (
     <div className="flex items-center gap-1">
-      <span className={`${base} ${electronicNotApplicable ? na : electronicAt ? on : off}`}
-        title={`E = Elektronische Vorprüfung — ${electronicNotApplicable ? 'entfällt (kein E-Rechnungs-Format)' : fmt(electronicAt, electronicBy)}`}>
-        {electronicNotApplicable ? '–' : 'E'}
-      </span>
+      <span className={`${base} ${electronicStyle}`} title={electronicTitle}>{electronicLabel}</span>
       <span className={`${base} ${formalAt ? on : off}`} title={`F = Formal richtig — ${fmt(formalAt, formalBy)}`}>F</span>
       <button
         type="button"
@@ -137,14 +154,16 @@ export function CheckBadges({
       </button>
       <button
         type="button"
-        disabled={busy || !canAccounting}
-        onClick={() => toggle('checkAccounting', !accountingAt)}
-        className={`${base} ${accountingAt ? on : off} ${canAccounting ? 'cursor-pointer hover:opacity-75' : 'cursor-not-allowed opacity-50'}`}
-        title={canAccounting ? `B = An Buchhaltung übergeben — ${fmt(accountingAt, accountingBy)} (klicken zum Umschalten)` : 'B = An Buchhaltung übergeben — nur im Übergabekorb möglich (und nur mit dem passenden Recht)'}
+        disabled={busy || !accountingAt}
+        onClick={() => toggle('checkAccounting', false)}
+        className={`${base} ${accountingAt ? on : off} ${accountingAt ? 'cursor-pointer hover:opacity-75' : 'cursor-not-allowed'}`}
+        title={accountingAt
+          ? `B = An Buchhaltung übergeben — ${fmt(accountingAt, accountingBy)} (klicken zum Zurücknehmen — nur Admin, falls Rechnung schon in der Ablage liegt)`
+          : 'B = An Buchhaltung übergeben — offen, wird nur über die Sammel-Übergabe (DATEV-Export im Übergabekorb) gesetzt'}
       >
         B
       </button>
-      <span className={`${base} ${kositStyle}`} title={kositTitle}>{kositLabel}</span>
+      {error && <span className="text-[10px] text-[var(--danger)]">{error}</span>}
     </div>
   )
 }

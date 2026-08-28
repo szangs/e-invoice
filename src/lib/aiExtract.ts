@@ -126,12 +126,15 @@ export async function extractInvoiceFromImage(
       body: JSON.stringify({
         model: s.AI_MODEL,
         temperature: 0,
-        // 2000 statt knapp bemessener 500 (Stefan 2026-08-25): "denkende"
-        // Modelle (z. B. Gemini 3.x) verbrauchen einen Teil von max_tokens
+        // 4000 statt vorher 2000 (Stefan 2026-08-26, "demo-000355" — Rechnung
+        // mit 55 Positionen riss bei 2000 mitten in der lines-Liste ab,
+        // finish_reason "length", ungültiges JSON): "denkende" Modelle
+        // (z. B. Gemini 3.x) verbrauchen zusätzlich einen Teil von max_tokens
         // für unsichtbare interne Reasoning-Tokens, die nicht im sichtbaren
-        // content erscheinen aber trotzdem gegen das Limit zählen — bei 500
-        // riss die JSON-Antwort mitten im Feld ab (finish_reason "length").
-        max_tokens: 2000,
+        // content erscheinen, aber trotzdem gegen das Limit zählen. Die
+        // lines-Liste ist zusätzlich unten auf max. 30 Positionen gedeckelt,
+        // damit auch eine noch größere Rechnung nicht erneut abreißt.
+        max_tokens: 4000,
         messages: [
           {
             role: 'system',
@@ -195,7 +198,10 @@ export async function extractInvoiceFromImage(
                   'sonst null — NICHT mit dem allgemeinen Skonto der Gesamtrechnung verwechseln), ' +
                   'total (Zeilensumme NACH Abzug des Rabatts als Zahl oder null) — leeres Array wenn ' +
                   'keine einzelnen Positionen erkennbar sind, z. B. ' +
-                  'bei einer Pauschalrechnung ohne Aufschlüsselung). ' +
+                  'bei einer Pauschalrechnung ohne Aufschlüsselung. WICHTIG bei SEHR VIELEN Positionen ' +
+                  '(mehr als 30): nur die ERSTEN 30 auflisten und den Rest weglassen, statt die Antwort ' +
+                  'abzubrechen — vendor/invoiceNumber/Beträge/Steuersatz etc. oben bleiben davon ' +
+                  'UNBERÜHRT und werden immer vollständig ausgefüllt). ' +
                   'Unbekannte Felder als null. Keine weiteren Felder, kein Zusatztext.' +
                   (vendorHint ? `\n\n${vendorHint}` : ''),
               },
@@ -246,7 +252,18 @@ export async function extractInvoiceFromImage(
   try {
     parsed = JSON.parse(cleaned)
   } catch {
-    throw new ApiError(502, 'KI-Antwort konnte nicht als Rechnungsdaten gelesen werden.')
+    // Stefan 2026-08-26 ("demo-000355"): finish_reason "length" heißt, die
+    // Antwort wurde mitten im JSON abgeschnitten (max_tokens erreicht) —
+    // eigener Hinweis statt der generischen Meldung, damit der Grund beim
+    // nächsten Mal sofort erkennbar ist statt erneut mühsam rekonstruiert
+    // werden zu müssen.
+    const truncated = data?.choices?.[0]?.finish_reason === 'length'
+    throw new ApiError(
+      502,
+      truncated
+        ? 'KI-Antwort wurde mitten im JSON abgeschnitten (Antwort-Längenlimit erreicht) — die Rechnung ist vermutlich ungewöhnlich umfangreich.'
+        : 'KI-Antwort konnte nicht als Rechnungsdaten gelesen werden.',
+    )
   }
   const vendor = str(parsed.vendor)
   const invoiceNumber = str(parsed.invoiceNumber)

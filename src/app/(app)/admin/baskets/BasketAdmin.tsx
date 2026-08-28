@@ -39,13 +39,18 @@ type DeletedBasketRow = { id: string; name: string; kind: BasketRow['kind']; del
 // liegenden Rechte ein. Nur der Mandanten-Admin sieht und ändert diese Liste
 // — die ganze Seite /admin/baskets ist bereits auf TENANT_ADMIN/
 // OPERATOR_ADMIN beschränkt (siehe page.tsx).
-const RIGHT_OPTIONS: { value: string; label: string }[] = [
-  { value: 'VIEW', label: 'Korb sehen' },
-  { value: 'CONTENT', label: 'Inhalt anzeigen' },
-  { value: 'MOVE', label: 'Verschieben' },
-  { value: 'APPROVE', label: 'Sachlich freigeben' },
-  { value: 'HANDOVER', label: 'Übergabe an den Übergabekorb' },
-  { value: 'FIBU', label: 'Übergabe an die Fibu' },
+// Stefan 2026-08-26 (Review-Fund): explizites Kürzel je Recht statt aus dem
+// ersten Buchstaben des Labels abgeleitet — "Übergabe an den Übergabekorb"
+// und "Übergabe an die Fibu" fingen beide mit "Ü" an, zwei Spalten der
+// Rechte-Tabelle waren dadurch nicht mehr unterscheidbar (Risiko, versehentlich
+// das weitreichendere Fibu-Recht statt nur Übergabekorb zu vergeben).
+const RIGHT_OPTIONS: { value: string; label: string; short: string }[] = [
+  { value: 'VIEW', label: 'Korb sehen', short: 'S' },
+  { value: 'CONTENT', label: 'Inhalt anzeigen', short: 'I' },
+  { value: 'MOVE', label: 'Verschieben', short: 'V' },
+  { value: 'APPROVE', label: 'Sachlich freigeben', short: 'A' },
+  { value: 'HANDOVER', label: 'Übergabe an den Übergabekorb', short: 'Ü' },
+  { value: 'FIBU', label: 'Übergabe an die Fibu', short: 'F' },
 ]
 
 const KIND_LABEL: Record<BasketRow['kind'], string> = {
@@ -67,9 +72,9 @@ const KIND_STYLE: Record<BasketRow['kind'], { ring: string; iconBg: string; icon
 // Ablage (Stefan 2026-07-09): Verschieben und alles darüber lässt sich dort
 // niemandem außer Admin/Betreiber zuweisen (serverseitig ebenfalls erzwungen
 // in admin/baskets/[id]/rights/route.ts) — nur diese zwei Stufen sind sinnvoll.
-const ARCHIVE_RIGHT_OPTIONS: { value: string; label: string }[] = [
-  { value: 'VIEW', label: 'Korb sehen' },
-  { value: 'CONTENT', label: 'Inhalt anzeigen' },
+const ARCHIVE_RIGHT_OPTIONS: { value: string; label: string; short: string }[] = [
+  { value: 'VIEW', label: 'Korb sehen', short: 'S' },
+  { value: 'CONTENT', label: 'Inhalt anzeigen', short: 'I' },
 ]
 
 export function BasketAdmin({
@@ -268,7 +273,7 @@ export function BasketAdmin({
                       <th className="pb-1 text-left font-normal text-gray-400">Name</th>
                       {(active.kind === 'ARCHIVE' ? ARCHIVE_RIGHT_OPTIONS : RIGHT_OPTIONS).map((o) => (
                         <th key={o.value} className="pb-1 text-center font-normal text-gray-400" title={o.label}>
-                          {o.label.slice(0, 1)}
+                          {o.short}
                         </th>
                       ))}
                     </tr>
@@ -452,7 +457,7 @@ const FULL_RIGHT_ORDER = RIGHT_OPTIONS.map((o) => o.value)
 function RightCell({
   option, current, disabled, onClick,
 }: {
-  option: { value: string; label: string }
+  option: { value: string; label: string; short: string }
   current: string
   disabled: boolean
   onClick: () => void
@@ -471,7 +476,7 @@ function RightCell({
             : 'border-gray-300 bg-white text-gray-400 hover:border-[var(--accent-soft)]'
         }`}
       >
-        {option.label.slice(0, 1)}
+        {option.short}
       </button>
     </td>
   )

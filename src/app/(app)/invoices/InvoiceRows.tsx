@@ -38,6 +38,8 @@ export type InvoiceRowData = InvoiceDTO & {
   locked: boolean
   /** Weitere Rechnung(en) mit derselben sourceMessageId existieren (Sammel-Mail-Split). */
   hasSiblings: boolean
+  /** "Zur Prüfung weitergeben" (Stefan 2026-08-27) — aktiver Handoff, falls vorhanden, siehe lib/invoiceHandoff.ts. */
+  handoff: { toUserName: string; isRecipient: boolean } | null
 }
 
 type DecryptedContent = {
@@ -81,8 +83,8 @@ export function InvoiceRows({
   showTrash,
   canMove,
   canApprove,
-  canHandover,
   q,
+  serverMatched,
   sortField,
   sortDir,
   encryptionEnabled,
@@ -91,8 +93,16 @@ export function InvoiceRows({
   showTrash: boolean
   canMove: boolean
   canApprove: boolean
-  canHandover: boolean
   q: string
+  // Blind-Index-Suche bereits serverseitig angewendet (Stefan 2026-08-27,
+  // page.tsx getBlindIndexMatchIds — `rows` enthält dann schon nur Treffer).
+  // Der client-seitige Substring-Nachfilter unten wäre in dem Fall nicht nur
+  // überflüssig, sondern könnte bei mehrwortigen Suchbegriffen sogar korrekt
+  // (per Wort-Blind-Index) gefundene Zeilen wieder herausfiltern, weil er
+  // naiv nach dem GESAMTEN Suchtext als EINEM Teilstring sucht. Bleibt nur
+  // für den Übergangsfall relevant: Suchbegriff schon in der URL, Passphrase
+  // aber gerade erst im Browser entsperrt, ohne dass neu abgeschickt wurde.
+  serverMatched: boolean
   sortField: string | null
   sortDir: 'asc' | 'desc'
   encryptionEnabled: boolean
@@ -156,7 +166,7 @@ export function InvoiceRows({
 
   const visibleRows = useMemo(() => {
     let list = rows
-    if (encryptionEnabled && q && !decryptionPending) {
+    if (encryptionEnabled && q && !decryptionPending && !serverMatched) {
       const needle = q.toLowerCase()
       list = rows.filter((r) => {
         if (r.contentEnc) {
@@ -181,7 +191,7 @@ export function InvoiceRows({
     }
     return list
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, q, sortField, sortDir, encryptionEnabled, decrypted, decryptionPending])
+  }, [rows, q, serverMatched, sortField, sortDir, encryptionEnabled, decrypted, decryptionPending])
 
   const { visible } = useColumnVisibility()
 
@@ -234,7 +244,20 @@ export function InvoiceRows({
             </td>
           )}
           <td className="dp-td font-mono text-[11px] text-gray-500">
-            {i.locked && (
+            {/* "Zur Prüfung weitergeben" (Stefan 2026-08-27) — eigenes Icon,
+                unabhängig davon, ob DESHALB gerade gesperrt ist (für den
+                Empfänger selbst ja nicht) oder nicht (siehe
+                lib/invoiceHandoff.ts). Vorrang vor den übrigen Sperrgründen
+                in der Anzeige, da es der aktuellste/relevanteste Status ist. */}
+            {i.handoff ? (
+              <span title={
+                i.handoff.isRecipient
+                  ? 'Ihnen zur Prüfung übergeben — bearbeitbar, siehe "Zurückgeben" auf der Detailseite'
+                  : `Zur Prüfung an ${i.handoff.toUserName} übergeben — schreibgeschützt, bis zurückgegeben`
+              }>
+                {i.handoff.isRecipient ? '📥 ' : '📤 '}
+              </span>
+            ) : i.locked && (
               <span title={
                 i.supersededAt
                   ? 'Ältere Version — durch eine neuere, gleichlautende Rechnung ersetzt, schreibgeschützt'
@@ -442,7 +465,6 @@ export function InvoiceRows({
                 accountingAt={i.checkAccountingAt}
                 accountingBy={i.checkAccountingBy}
                 canApprove={canApprove}
-                canAccounting={canHandover}
                 docFormat={i.docFormat}
                 kositCheckedAt={i.kositCheckedAt}
                 kositAccepted={i.kositAccepted}

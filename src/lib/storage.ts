@@ -1,5 +1,5 @@
 // Dateiablage für Rechnungsbelege — mandantengetrennt unter uploads/{tenantId}/
-import { mkdir, readFile, unlink, writeFile } from 'fs/promises'
+import { mkdir, readFile, rm, unlink, writeFile } from 'fs/promises'
 import path from 'path'
 import { randomBytes } from 'crypto'
 
@@ -57,4 +57,26 @@ export async function writeThumbnailCache(tenantId: string, fileName: string, bu
   const dir = path.join(ROOT, tenantId, 'thumbs')
   await mkdir(dir, { recursive: true })
   await writeFile(path.join(dir, `${safe}.png`), buffer)
+}
+
+// Handy-Kamera-Kopplung (Stefan 2026-08-27, siehe lib/scanSession.ts): kurz
+// lebende Fotos einer ScanSession — eigener Unterordner pro Sitzung, damit
+// er beim Schließen/Ablauf der Sitzung komplett auf einmal gelöscht werden
+// kann, ohne einzelne Dateinamen zu kennen.
+export async function saveScanSessionPhoto(tenantId: string, sessionId: string, buffer: Buffer): Promise<string> {
+  const fileName = `${Date.now()}-${randomBytes(6).toString('hex')}.bin`
+  const dir = path.join(ROOT, tenantId, 'scan-sessions', path.basename(sessionId))
+  await mkdir(dir, { recursive: true })
+  await writeFile(path.join(dir, fileName), buffer)
+  return fileName
+}
+
+export async function readScanSessionPhoto(tenantId: string, sessionId: string, fileName: string): Promise<Buffer> {
+  const safe = path.basename(fileName)
+  return readFile(path.join(ROOT, tenantId, 'scan-sessions', path.basename(sessionId), safe))
+}
+
+export async function deleteScanSessionFiles(tenantId: string, sessionId: string): Promise<void> {
+  const dir = path.join(ROOT, tenantId, 'scan-sessions', path.basename(sessionId))
+  await rm(dir, { recursive: true, force: true }).catch(() => undefined)
 }

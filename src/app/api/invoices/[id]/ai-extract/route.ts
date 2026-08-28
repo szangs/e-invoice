@@ -22,6 +22,7 @@ import { prisma } from '@/lib/db'
 import { EINVOICE_FORMATS } from '@/lib/erechnung'
 import { hasFeature } from '@/lib/license'
 import { rasterizeFirstPage } from '@/lib/pdfRaster'
+import { hasRoleAction } from '@/lib/roleActions'
 import { readInvoiceFile } from '@/lib/storage'
 
 const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp']
@@ -33,6 +34,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } })
     if (!tenant?.aiAllowed) throw new ApiError(403, 'KI-Funktionen sind für Ihren Mandanten deaktiviert.')
     if (!tenant || !hasFeature(tenant, 'AI')) throw new ApiError(403, 'KI-Erkennung ist im aktuellen Tarif nicht enthalten.')
+    if (!hasRoleAction(tenant, ctx.role, 'AI_EXTRACT')) throw new ApiError(403, 'Ihre Rolle darf keine KI-Erkennung nutzen.')
 
     const invoice = await prisma.invoice.findFirst({ where: { id: params.id, tenantId } })
     if (!invoice) throw new ApiError(404, 'Rechnung nicht gefunden.')

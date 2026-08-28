@@ -35,14 +35,21 @@ export function BasketMoveButton({
   const [subject, setSubject] = useState('')
   const [message, setMessage] = useState('')
   const [toUserId, setToUserId] = useState('')
+  // Stefan 2026-08-26 ("nicht beim Klicken auf dem Korb abschicken, sondern
+  // einen Button 'Verschieben' einbauen"): Zielkorb erst auswählen (markiert
+  // ihn nur), tatsächlich verschoben wird erst über den eigenen Button unten
+  // — vorher löste der Klick auf den Korbnamen selbst direkt den Versand aus,
+  // was leicht zu einem versehentlichen Verschieben führen konnte.
+  const [selectedBasketId, setSelectedBasketId] = useState('')
 
-  async function move(targetBasketId: string) {
+  async function move() {
+    if (!selectedBasketId) return
     setBusy(true)
     setError('')
     const res = await fetch(`/api/invoices/${invoiceId}/move`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetBasketId }),
+      body: JSON.stringify({ targetBasketId: selectedBasketId }),
     })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
@@ -89,7 +96,7 @@ export function BasketMoveButton({
 
   return (
     <>
-      <button type="button" className="btn-secondary !px-2 !py-1 text-[11px]" onClick={() => setOpen(true)}
+      <button type="button" className="btn-secondary !px-2 !py-1 text-[11px]" onClick={() => { setSelectedBasketId(''); setOpen(true) }}
         disabled={busy || targets.length === 0} title="Diese Rechnung in einen anderen Korb verschieben">
         ↔ In anderen Korb verschieben
       </button>
@@ -104,8 +111,13 @@ export function BasketMoveButton({
             <h2 className="font-serif text-lg font-semibold text-gray-800">In welchen Korb verschieben?</h2>
             <div className="mt-3 max-h-56 space-y-1 overflow-y-auto">
               {targets.map((b) => (
-                <button key={b.id} type="button" disabled={busy} onClick={() => move(b.id)}
-                  className="block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface-muted)] disabled:cursor-not-allowed disabled:opacity-50">
+                <button key={b.id} type="button" disabled={busy} onClick={() => setSelectedBasketId(b.id)}
+                  aria-pressed={selectedBasketId === b.id}
+                  className={`block w-full rounded-lg px-3 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-50 ${
+                    selectedBasketId === b.id
+                      ? 'bg-[var(--accent)] text-white'
+                      : 'hover:bg-[var(--surface-muted)]'
+                  }`}>
                   {b.name}
                 </button>
               ))}
@@ -137,8 +149,12 @@ export function BasketMoveButton({
               </div>
             </div>
             {error && <p className="mt-2 text-xs text-[var(--danger)]">{error}</p>}
-            <div className="mt-4 flex justify-end">
-              <button type="button" className="btn-secondary" onClick={() => setOpen(false)}>Abbrechen</button>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" className="btn-secondary" onClick={() => setOpen(false)} disabled={busy}>Abbrechen</button>
+              <button type="button" className="btn-primary" onClick={move} disabled={busy || !selectedBasketId}
+                title={selectedBasketId ? undefined : 'Bitte zuerst einen Zielkorb auswählen'}>
+                {busy ? 'Verschiebe …' : 'Verschieben'}
+              </button>
             </div>
           </div>
         </div>

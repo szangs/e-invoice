@@ -10,10 +10,11 @@
 import { BasketKind, Role } from '@prisma/client'
 import { audit } from '@/lib/audit'
 import { isInvoiceLockedByClosure } from '@/lib/auditClosure'
-import { hasBasketRight } from '@/lib/basketRights'
+import { getBasketRightMap, hasBasketRight, RIGHT_RANK } from '@/lib/basketRights'
 import { ApiError } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { buyerNameMismatch, parseInvoiceXml } from '@/lib/erechnung'
+import { assertNotHandedOffToSomeoneElse } from '@/lib/invoiceHandoff'
 import { sendSystemMail } from '@/lib/mail'
 
 /** Legt Eingangs-/Übergabe-/Ablage-/Spam-Verdacht-Korb an, falls für den Mandanten noch nicht vorhanden. */
@@ -131,11 +132,20 @@ const DUE_SOON_DAYS = 7
  * Rechnungsliste, hier auf Korb-Ebene aggregiert, damit eine Nachricht
  * auffällt, ohne den Korb erst öffnen zu müssen. Zählt bewusst bis zum
  * Erledigt-Haken, nicht nur bis zum ersten Lesen.
+ *
+ * `role` (Stefan 2026-08-26, Review-Fund): Ergebnis wird auf Körbe mit
+ * mindestens CONTENT-Recht eingeschränkt — vorher lieferte diese Funktion
+ * ungefiltert Zahlen (unbearbeitet/überfällig/etc.) für ALLE Körbe des
+ * Mandanten, auch für Körbe, die der Nutzer nur mit VIEW (Kachel sichtbar,
+ * Inhalt aber gesperrt) sieht. Die Kacheln selbst wurden zwar schon nach
+ * VIEW gefiltert (dashboard/page.tsx, invoices/page.tsx), die angezeigten
+ * ZAHLEN darauf kamen aber weiterhin aus dieser ungefilterten Quelle — ein
+ * echtes Datenleck (Rückschluss auf Menge/Dringlichkeit fremder Rechnungen).
  */
-export async function getBasketCounts(tenantId: string, userId?: string): Promise<Record<string, BasketCounts>> {
+export async function getBasketCounts(tenantId: string, userId: string, role: Role): Promise<Record<string, BasketCounts>> {
   const now = new Date()
   const soonThreshold = new Date(now.getTime() + DUE_SOON_DAYS * 24 * 60 * 60 * 1000)
-  const [unprocessed, processed, readyForHandover, overdue, dueSoon, unreadNoteRows] = await Promise.all([
+  const [unprocessed, processed, readyForHandover, overdue, dueSoon, unreadNoteRows, rightMap] = await Promise.all([
     prisma.invoice.groupBy({
       by: ['basketId'],
       where: { tenantId, deletedAt: null, checkElectronicAt: null, checkFormalAt: null },
@@ -184,6 +194,7 @@ export async function getBasketCounts(tenantId: string, userId?: string): Promis
           select: { invoice: { select: { basketId: true } } },
         })
       : Promise.resolve([]),
+    getBasketRightMap(tenantId, userId, role),
   ])
   const result: Record<string, BasketCounts> = {}
   function ensure(basketId: string): BasketCounts {
@@ -216,6 +227,12 @@ export async function getBasketCounts(tenantId: string, userId?: string): Promis
     const basketId = row.invoice.basketId
     if (!basketId) continue
     ensure(basketId).unreadNotes += 1
+  }
+  // Rechte-Filter (Stefan 2026-08-26, Review-Fund) — siehe Kommentar oben an
+  // der Funktion: nur Körbe mit mindestens CONTENT-Recht behalten ihre Zahlen,
+  // alles andere raus, statt es den Aufrufern zu überlassen, das zu filtern.
+  for (const basketId of Object.keys(result)) {
+    if ((rightMap[basketId] ?? 0) < RIGHT_RANK.CONTENT) delete result[basketId]
   }
   return result
 }
@@ -251,9 +268,12 @@ export async function requestMove(
   // Perioden-Abschluss (§18, Stefan 2026-08-25): Belege aus einem
   // abgeschlossenen Jahr dürfen auch nicht mehr zwischen Körben verschoben
   // werden (siehe lib/auditClosure.ts).
-  if (await isInvoiceLockedByClosure(invoice.createdAt)) {
+  if (await isInvoiceLockedByClosure(tenantId, invoice.createdAt)) {
     throw new ApiError(423, `Diese Rechnung gehört zum abgeschlossenen Prüfungszeitraum ${invoice.createdAt.getFullYear()} und ist schreibgeschützt.`)
   }
+  // "Zur Prüfung weitergeben" (Stefan 2026-08-27, siehe lib/invoiceHandoff.ts)
+  // — solange aktiv, darf nur der Empfänger verschieben.
+  await assertNotHandedOffToSomeoneElse(invoice.id, userId)
   // Rechnungsversionierung (Stefan 2026-08-25): eine ältere, bereits
   // überholte Version darf ebenfalls nicht mehr verschoben werden — die
   // aktuelle Version übernimmt den Workflow.
@@ -304,8 +324,7 @@ export async function requestMove(
 
   // Korb-Rechte (Stefan 2026-07-08): Verschieben braucht mindestens MOVE auf
   // dem AUSGANGSKORB — bei Verschiebung IN den Übergabekorb sogar HANDOVER
-  // (das ist die höhere Stufe "Übergabe an den Übergabekorb"). Ohne
-  // Ausgangskorb (Bestandsrechnung ohne basketId) wird nicht eingeschränkt.
+  // (das ist die höhere Stufe "Übergabe an den Übergabekorb").
   if (fromBasket) {
     const required = target.kind === BasketKind.HANDOVER ? 'HANDOVER' : 'MOVE'
     const allowed = await hasBasketRight(userId, userRole, fromBasket.id, required)
@@ -324,6 +343,22 @@ export async function requestMove(
     })
     if (allowedTargets.length > 0 && !allowedTargets.some((t) => t.toBasketId === targetBasketId)) {
       throw new ApiError(400, `Verschieben von "${fromBasket.name}" nach "${target.name}" ist im Belegfluss nicht vorgesehen.`)
+    }
+  } else {
+    // Ohne Ausgangskorb (Bestandsrechnung ohne basketId, aus der Zeit vor den
+    // Körben) gibt es keinen Ausgangskorb, dessen Recht man prüfen könnte —
+    // vorher blieb das Verschieben deshalb komplett uneingeschränkt (Stefan
+    // 2026-08-26, Review-Fund "korblose Rechnungen umgehen Korb-Rechte"): ein
+    // Nutzer ganz ohne jedes Korb-Recht konnte so direkt in einen beliebigen
+    // Korb verschieben, inklusive Übergabekorb. Stattdessen jetzt mindestens
+    // dasselbe Recht auf dem ZIELKORB verlangen wie bei einem normalen
+    // Verschieben dorthin.
+    const required = target.kind === BasketKind.HANDOVER ? 'HANDOVER' : 'MOVE'
+    const allowed = await hasBasketRight(userId, userRole, target.id, required)
+    if (!allowed) {
+      throw new ApiError(403, target.kind === BasketKind.HANDOVER
+        ? 'Kein Recht zur Übergabe an den Übergabekorb.'
+        : 'Kein Recht, in diesen Korb zu verschieben.')
     }
   }
 
@@ -404,6 +439,7 @@ function dueForHours(last: Date | null, hours: number | null): boolean {
  */
 export async function runDueBasketNotifications(force = false): Promise<string[]> {
   const log: string[] = []
+  const now = new Date()
   const baskets = await prisma.basket.findMany({
     // ARCHIVE ausgeschlossen (Stefan 2026-07-09): fester Endlager-Korb ohne
     // Bearbeitung — eine Erinnerungsmail ergibt dort keinen Sinn. Bereits vor
@@ -425,13 +461,40 @@ export async function runDueBasketNotifications(force = false): Promise<string[]
     const invoices = await prisma.invoice.findMany({
       where: { basketId: b.id, deletedAt: null },
       orderBy: { createdAt: 'asc' },
-      select: { docId: true, vendor: true, invoiceNumber: true, createdAt: true },
+      select: { docId: true, vendor: true, invoiceNumber: true, createdAt: true, dueDate: true, directDebitByVendor: true, checkAccountingAt: true },
     })
+    // Fälligkeit direkt in die Korb-Sammelmail integriert (Stefan 2026-08-26,
+    // "eine Benachrichtigung statt zwei" — ersetzt die vorherige separate
+    // lib/dueReminders.ts) — dieselbe Definition von "überfällig"/"bald
+    // fällig" (DUE_SOON_DAYS, dieselben Ausnahmen) wie die Kachel-Zahlen in
+    // getBasketCounts oben, damit App-weit ein einheitlicher Maßstab gilt.
+    // Direktabbucher und schon an die Fibu übergebene Rechnungen zählen nie
+    // als fällig (kein Zahlungsziel, das WIR einhalten müssen, bzw. nicht
+    // mehr Sache der Körbe-Bearbeitung).
+    const soonThreshold = new Date(now.getTime() + DUE_SOON_DAYS * 24 * 60 * 60 * 1000)
+    const urgency = (i: (typeof invoices)[number]): 'overdue' | 'soon' | null => {
+      if (!i.dueDate || i.directDebitByVendor || i.checkAccountingAt) return null
+      if (i.dueDate < now) return 'overdue'
+      if (i.dueDate <= soonThreshold) return 'soon'
+      return null
+    }
+    const overdueList = invoices.filter((i) => urgency(i) === 'overdue')
+    const soonList = invoices.filter((i) => urgency(i) === 'soon')
+    const restList = invoices.filter((i) => urgency(i) === null)
+    const line = (i: (typeof invoices)[number]): string => {
+      const u = urgency(i)
+      const mark = u === 'overdue' ? '⚠ ÜBERFÄLLIG — ' : u === 'soon' ? '⚠ bald fällig — ' : ''
+      const due = i.dueDate ? ` (fällig ${i.dueDate.toISOString().slice(0, 10)})` : ''
+      return `- ${mark}${i.docId ?? '—'} · ${i.vendor}${i.invoiceNumber ? ' · ' + i.invoiceNumber : ''}${due}`
+    }
+    const urgencyNote =
+      overdueList.length > 0 || soonList.length > 0
+        ? `Davon ${overdueList.length} überfällig, ${soonList.length} bald fällig.\n\n`
+        : ''
     const body =
       `Guten Tag,\n\nin Korb "${b.name}" (${b.tenant.name}) liegen aktuell ${invoices.length} Rechnung(en):\n\n` +
-      invoices
-        .map((i) => `- ${i.docId ?? '—'} · ${i.vendor}${i.invoiceNumber ? ' · ' + i.invoiceNumber : ''}`)
-        .join('\n') +
+      urgencyNote +
+      [...overdueList, ...soonList, ...restList].map(line).join('\n') +
       `\n\nDiese Übersicht kommt automatisch alle ${b.notificationIntervalHours} Stunde(n).\n`
     let anySent = false
     for (const r of recipients) {

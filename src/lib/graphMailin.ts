@@ -16,6 +16,7 @@
 import { type Tenant } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { type InboundAttachment, processInboundAttachments } from '@/lib/mailin'
+import { isMailinDue, markMailinPolled } from '@/lib/mailinSchedule'
 import { getMsAccessToken } from '@/lib/msGraphAuth'
 import { getSettings, isDevMode } from '@/lib/settings'
 
@@ -98,13 +99,21 @@ type GraphMessage = {
   subject?: string
   hasAttachments?: boolean
   from?: { emailAddress?: { address?: string; name?: string } }
+  receivedDateTime?: string
 }
 
-async function fetchRecentMessages(token: string, mailbox: string, folderId: string, top = 25): Promise<GraphMessage[]> {
-  // Älteste zuerst (nicht "desc"): sonst bleibt bei einem Rückstand > top immer
-  // dieselbe Menge neuester Nachrichten im Fenster und ältere werden nie erreicht,
-  // solange der Ordner nicht schrumpft (z. B. weil Verschieben fehlschlägt).
-  const url = `${GRAPH_BASE}/users/${encodeURIComponent(mailbox)}/mailFolders/${encodeURIComponent(folderId)}/messages?$top=${top}&$orderby=receivedDateTime asc&$select=id,subject,from,hasAttachments`
+// Stefan 2026-08-26 (Review-Fund "Graph-Poller kann dauerhaft stecken-
+// bleiben"): das reine "$top=N, älteste zuerst"-Fenster kam nie über die
+// ältesten N Nachrichten hinaus, sobald der Ordner insgesamt mehr als N
+// enthielt UND kein mailInGraphMoveToFolder konfiguriert war (der Normalfall
+// im reinen Lesezugriff — dann bleibt jede verarbeitete Nachricht liegen).
+// `since` (Tenant.mailInGraphLastSeenAt) filtert stattdessen serverseitig
+// auf "neuer als die zuletzt gesehene Nachricht" — funktioniert unabhängig
+// vom Verschieben. Ohne since (erster Poll für einen frisch aktivierten
+// Mandanten) bleibt es beim bisherigen Verhalten: die ältesten N zuerst.
+async function fetchRecentMessages(token: string, mailbox: string, folderId: string, since?: string | null, top = 25): Promise<GraphMessage[]> {
+  const filter = since ? `&$filter=${encodeURIComponent(`receivedDateTime gt ${since}`)}` : ''
+  const url = `${GRAPH_BASE}/users/${encodeURIComponent(mailbox)}/mailFolders/${encodeURIComponent(folderId)}/messages?$top=${top}&$orderby=receivedDateTime asc&$select=id,subject,from,hasAttachments,receivedDateTime${filter}`
   const data = await graphGet(token, url)
   return data.value ?? []
 }
@@ -270,7 +279,7 @@ export async function testGraphMailbox(
   }
   const token = await getMsAccessToken(creds.tenantId, creds.clientId, creds.clientSecret, 'https://graph.microsoft.com/.default')
   const folderId = await resolveGraphFolderId(token, mailbox, folderPath)
-  const messages = await fetchRecentMessages(token, mailbox, folderId, 5)
+  const messages = await fetchRecentMessages(token, mailbox, folderId, null, 5)
   let moveToFolderResolved = false
   if (moveToFolderPath) {
     await resolveGraphFolderId(token, mailbox, moveToFolderPath)
@@ -284,19 +293,27 @@ export async function testGraphMailbox(
  * Ordner ab — mit `tenantId` auf genau einen Mandanten eingeschränkt (Stefan
  * 2026-08-25, für den manuellen "Jetzt abrufen"-Knopf im Eingangskorb, siehe
  * api/mailin/poll/route.ts — ein Mandant darf natürlich nur seinen eigenen
- * Abruf auslösen, nicht den aller anderen).
+ * Abruf auslösen, nicht den aller anderen). `respectSchedule` (Stefan
+ * 2026-08-27, eigenes Poll-Intervall je Mandant): beim automatischen Poller
+ * (Standard) werden Mandanten übersprungen, deren eigenes Intervall noch
+ * nicht abgelaufen ist (siehe lib/mailinSchedule.ts) — der manuelle
+ * "Jetzt abrufen"-Knopf setzt explizit `false` und ignoriert das bewusst.
  */
-export async function runGraphMailinPoll(tenantId?: string): Promise<string[]> {
+export async function runGraphMailinPoll(tenantId?: string, respectSchedule = true): Promise<string[]> {
   const log: string[] = []
   const s = await getSettings()
   if (s.MAIL_IN_GRAPH_ENABLED !== '1') return ['Graph-Mail-Eingang ist deaktiviert (Systemeinstellungen).']
 
-  const tenants = await prisma.tenant.findMany({
+  const allTenants = await prisma.tenant.findMany({
     where: { active: true, mailInGraphEnabled: true, mailInGraphMailbox: { not: null }, ...(tenantId ? { id: tenantId } : {}) },
   })
-  if (tenants.length === 0) return ['Kein Mandant hat den Graph-Mail-Eingang aktiviert.']
+  if (allTenants.length === 0) return ['Kein Mandant hat den Graph-Mail-Eingang aktiviert.']
+  const globalDefault = Number(s.MAIL_IN_GRAPH_POLL_SECONDS) || 120
+  const tenants = respectSchedule ? allTenants.filter((t) => isMailinDue(t, globalDefault)) : allTenants
+  if (tenants.length === 0) return []
 
   for (const tenant of tenants) {
+    await markMailinPolled(tenant.id)
     const mailbox = tenant.mailInGraphMailbox!
     const creds = await resolveGraphCredentials(tenant)
     if (!creds) {
@@ -310,7 +327,7 @@ export async function runGraphMailinPoll(tenantId?: string): Promise<string[]> {
       const moveToFolderId = tenant.mailInGraphMoveToFolder
         ? await resolveGraphFolderId(token, mailbox, tenant.mailInGraphMoveToFolder)
         : null
-      const messages = await fetchRecentMessages(token, mailbox, folderId)
+      const messages = await fetchRecentMessages(token, mailbox, folderId, tenant.mailInGraphLastSeenAt?.toISOString() ?? null)
       let processed = 0
       let moveAttempts = 0
       let moved = 0
@@ -367,6 +384,17 @@ export async function runGraphMailinPoll(tenantId?: string): Promise<string[]> {
       }
       const moveNote = moveToFolderId ? `, ${moved}/${moveAttempts} verschoben` : ''
       log.push(`${tenant.name}: ${processed} Beleg(e) aus ${mailbox}${tenant.mailInGraphFolder ? '/' + tenant.mailInGraphFolder : ''}${moveNote}.`)
+      // Fortschritts-Zeiger nachziehen (Stefan 2026-08-26, siehe fetchRecentMessages
+      // oben) — unabhängig davon, ob eine Nachricht neu verarbeitet oder als
+      // bereits bekannt übersprungen wurde: entscheidend ist nur, dass sie in
+      // diesem Poll GESEHEN wurde, damit der nächste Poll nicht wieder bei ihr
+      // anfängt. Nur bei tatsächlich abgerufenen Nachrichten aktualisieren.
+      if (messages.length > 0) {
+        const newest = messages.reduce((max, m) => (m.receivedDateTime && m.receivedDateTime > max ? m.receivedDateTime : max), '')
+        if (newest) {
+          await prisma.tenant.update({ where: { id: tenant.id }, data: { mailInGraphLastSeenAt: new Date(newest) } })
+        }
+      }
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e)
       log.push(`${tenant.name}: Fehler beim Abruf von ${mailbox} — ${detail}`)

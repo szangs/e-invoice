@@ -4,15 +4,16 @@ import { InvoiceStatus } from '@prisma/client'
 import { z } from 'zod'
 import { jsonError } from '@/lib/api'
 import { audit } from '@/lib/audit'
-import { getInboxBasketId } from '@/lib/baskets'
+import { ensureSystemBaskets } from '@/lib/baskets'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { nextDocId } from '@/lib/docId'
-import { detectDuplicate, hashBuffer } from '@/lib/duplicates'
+import { detectDuplicate, hashBuffer, resolveDuplicateOrVersion, supersedeOlderVersions } from '@/lib/duplicates'
 import { analyzeInvoiceFile, autoElectronicCheck, autoFormalCheckForEInvoice, EINVOICE_FORMATS, type Analysis } from '@/lib/erechnung'
 import { CONTENT_ENC_VENDOR_PLACEHOLDER, toDTO } from '@/lib/invoices'
 import { scheduleKositCheck } from '@/lib/kositValidator'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
+import { upsertVendorAddress } from '@/lib/vendorMemory'
 
 // Inhalts-Verschlüsselung (Stefan 2026-07-09): ist contentEnc gesetzt, hat der
 // Browser Lieferant/Nummer/Beträge/Währung/Tags/Notizen bereits zu einem
@@ -48,6 +49,12 @@ const fieldsSchema = z.object({
   source: z.enum(['UPLOAD', 'SCAN']).default('UPLOAD'),
   aiAssisted: z.string().optional(),
   directDebitByVendor: z.string().optional(),
+  // Aus einem Zahlungs-QR-Code (GiroCode) auf dem Beleg selbst ausgelesen
+  // (Stefan 2026-08-27, siehe lib/clientQr.ts, invoices/new/scan/page.tsx)
+  // — geht NICHT auf die Rechnung selbst (dafür gibt es kein Feld), sondern
+  // ins Lieferanten-Adressregister, siehe unten upsertVendorAddress.
+  sellerIban: z.string().max(40).optional(),
+  sellerBic: z.string().max(20).optional(),
 }).refine((f) => Boolean(f.contentEnc) || Boolean(f.vendor?.trim()), {
   message: 'Lieferant fehlt', path: ['vendor'],
 })
@@ -112,16 +119,26 @@ export async function POST(req: NextRequest) {
     // "gleicher Lieferant + gleiche Nummer" würde sonst ständig fälschlich
     // anschlagen. Die Dubletten-Prüfung stützt sich dann nur noch auf den
     // Datei-Hash (fileHash, s. o. — wird vor dem Verschlüsseln gebildet).
-    const duplicateOfId = (await detectDuplicate(tenantId, {
+    const invoiceNumberForDupCheck = hasEncryptedContent ? null : (fields.invoiceNumber || d?.number || null)
+    const vendorForDupCheck = hasEncryptedContent ? null : (fields.vendor || d?.sellerName || null)
+    const duplicateMatch = await detectDuplicate(tenantId, {
       fileHash,
-      invoiceNumber: hasEncryptedContent ? null : (fields.invoiceNumber || d?.number || null),
-      vendor: hasEncryptedContent ? null : (fields.vendor || d?.sellerName || null),
-    }))?.id ?? null
+      invoiceNumber: invoiceNumberForDupCheck,
+      vendor: vendorForDupCheck,
+    })
+    const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { autoSupersedeInvoiceVersions: true } })
+    // Rechnungsversionierung (Stefan 2026-08-26, Review-Fund "Manueller
+    // Upload/Catcher ohne Spam-Filter"): respektiert jetzt dieselbe
+    // Mandanten-Einstellung wie der Mail-Eingang, siehe lib/duplicates.ts
+    // resolveDuplicateOrVersion — vorher wurde ein Rechnungsnummer+Lieferant-
+    // Treffer hier immer als "mögliche Dublette" markiert, selbst wenn der
+    // Mandant Auto-Versionierung explizit aktiviert hatte.
+    const { duplicateOfId, isVersioningCase } = resolveDuplicateOrVersion(duplicateMatch, tenant?.autoSupersedeInvoiceVersions ?? false)
 
     const docId = await nextDocId(tenantId)
     // Neue Rechnungen starten immer im Eingangskorb (Körbe-Workflow, Stefan
     // 2026-07-08) — von dort aus werden sie manuell in andere Körbe verschoben.
-    const basketId = await getInboxBasketId(tenantId)
+    const { inboxId: basketId, archiveId } = await ensureSystemBaskets(tenantId)
     // Elektronische Vorprüfung automatisch abhaken/als "entfällt" markieren
     // (Stefan 2026-07-07 / 2026-08-25) — siehe lib/erechnung.ts autoElectronicCheck:
     // bei gültiger E-Rechnung automatisch erledigt, bei Nicht-E-Rechnung
@@ -183,6 +200,17 @@ export async function POST(req: NextRequest) {
         createdById: ctx.userId,
       },
     })
+    if (isVersioningCase && invoiceNumberForDupCheck && vendorForDupCheck) {
+      await supersedeOlderVersions(tenantId, invoice.id, invoiceNumberForDupCheck, vendorForDupCheck, archiveId)
+    }
+    // Zahlungs-QR-Code-IBAN/BIC ins Lieferanten-Adressregister (s. o.) — wie
+    // bei jeder anderen Klartext-Rechnungsangabe hier gilt: bei aktiver
+    // Inhalts-Verschlüsselung sendet der Browser diese Felder gar nicht erst
+    // mit (siehe scan/page.tsx), hasEncryptedContent ist deshalb zusätzlich
+    // nur eine Verteidigungslinie, kein Normalfall.
+    if (!hasEncryptedContent && (fields.sellerIban || fields.sellerBic)) {
+      await upsertVendorAddress(tenantId, invoice.vendor, undefined, fields.sellerIban, fields.sellerBic)
+    }
     await audit({
       tenantId,
       actorId: ctx.userId,

@@ -25,11 +25,14 @@ const ROLE_LABELS: Record<string, string> = {
 }
 const TENANT_ROLES = ['TENANT_ADMIN', 'EDITOR', 'AREA_MANAGER', 'AUDITOR', 'USER']
 
+const EMPTY_CREATE = { firstName: '', lastName: '', email: '' }
+
 export default function PlatformUsersPage() {
   const [users, setUsers] = useState<UserRow[]>([])
   const [q, setQ] = useState('')
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+  const [f, setF] = useState(EMPTY_CREATE)
 
   async function load(query = q) {
     const res = await fetch(`/api/platform/users?q=${encodeURIComponent(query)}`, { cache: 'no-store' })
@@ -39,6 +42,32 @@ export default function PlatformUsersPage() {
     load('')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Betreiber-Konto anlegen (Stefan 2026-08-27, Review-Fund "Systemverwaltung
+  // ohne Möglichkeit der Benutzeranlage") — keine Rollenauswahl nötig, ein
+  // hier angelegtes Konto ist immer OPERATOR_ADMIN (siehe api/platform/users POST).
+  async function create(e: React.FormEvent) {
+    e.preventDefault()
+    setBusy(true)
+    setMsg('')
+    const res = await fetch('/api/platform/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(f),
+    })
+    const data = await res.json().catch(() => ({}))
+    setBusy(false)
+    if (!res.ok) {
+      setMsg(data.error ?? 'Fehler')
+      return
+    }
+    window.alert(
+      `Betreiber-Konto angelegt.\n\nE-Mail: ${data.credentials.email}\nBenutzername: ${data.credentials.username}\n` +
+      `Startpasswort: ${data.credentials.password}\n\nAnmeldung mit E-Mail + Passwort.`,
+    )
+    setF(EMPTY_CREATE)
+    load()
+  }
 
   async function patch(id: string, body: Record<string, unknown>, confirmText?: string) {
     if (confirmText && !window.confirm(confirmText)) return
@@ -63,6 +92,28 @@ export default function PlatformUsersPage() {
 
   return (
     <div className="space-y-4">
+      <form onSubmit={create} className="dp-card flex flex-wrap items-end gap-3">
+        <div className="min-w-[140px]">
+          <label className="dp-label" title="Nur für ein neues Betreiber-Konto — Mandanten-Mitarbeiter werden in der jeweiligen Mandanten-Benutzerverwaltung angelegt">Vorname</label>
+          <input className="dp-input mt-1" value={f.firstName} required
+            onChange={(e) => setF((p) => ({ ...p, firstName: e.target.value }))} />
+        </div>
+        <div className="min-w-[140px]">
+          <label className="dp-label">Nachname</label>
+          <input className="dp-input mt-1" value={f.lastName} required
+            onChange={(e) => setF((p) => ({ ...p, lastName: e.target.value }))} />
+        </div>
+        <div className="min-w-[220px] flex-1">
+          <label className="dp-label">E-Mail</label>
+          <input className="dp-input mt-1" type="email" value={f.email} required
+            onChange={(e) => setF((p) => ({ ...p, email: e.target.value }))} />
+        </div>
+        <button className="btn-primary" disabled={busy} title="Legt ein neues Betreiber-Konto (Rolle immer OPERATOR_ADMIN) an und erzeugt ein Startpasswort">
+          Betreiber-Konto anlegen
+        </button>
+        {msg && <p className="w-full text-sm text-[var(--danger)]">{msg}</p>}
+      </form>
+
       <form
         className="dp-card flex flex-wrap items-end gap-3"
         onSubmit={(e) => {

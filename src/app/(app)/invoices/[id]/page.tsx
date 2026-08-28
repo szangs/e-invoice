@@ -2,6 +2,7 @@
 import { notFound, redirect } from 'next/navigation'
 import { FileLink } from '@/components/crypto/FileLink'
 import { isInvoiceLockedByClosure } from '@/lib/auditClosure'
+import { getActiveHandoff } from '@/lib/invoiceHandoff'
 import { hasBasketRight } from '@/lib/basketRights'
 import { ensureSystemBaskets, sortBaskets } from '@/lib/baskets'
 import { getContext } from '@/lib/context'
@@ -11,6 +12,7 @@ import {
   type DocFormat, type ParsedInvoiceData, type TaxRegion,
 } from '@/lib/erechnung'
 import { formatAmount, toDTO } from '@/lib/invoices'
+import { getVendorAddressSuggestion } from '@/lib/vendorMemory'
 import { AttachmentsPanel } from './AttachmentsPanel'
 import { BelegPreview } from './BelegPreview'
 import { InvoiceEditForm } from './InvoiceEditForm'
@@ -31,7 +33,20 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
   // Korb-Recht CONTENT nötig, um die Rechnung überhaupt zu öffnen (Stefan
   // 2026-07-09) — sonst könnte jeder Mandanten-Mitarbeiter eine fremde
   // Rechnungs-ID direkt aufrufen, unabhängig von seinen Korb-Rechten.
-  if (invoice.basketId && !(await hasBasketRight(ctx.userId, ctx.role, invoice.basketId, 'CONTENT'))) {
+  // AUSNAHME (Stefan 2026-08-27, Fehlerbericht "weitergegebene Belege
+  // kommen nicht an"): die Handoff-Funktion verschiebt die Rechnung bewusst
+  // NICHT in einen anderen Korb (siehe lib/invoiceHandoff.ts) — ohne diese
+  // Ausnahme würde ein Empfänger ohne Korb-Recht auf den (unveränderten)
+  // aktuellen Korb hier sofort wieder rausfliegen, obwohl ihm die Rechnung
+  // gerade gezielt übergeben wurde. Wer adressierter Empfänger einer noch
+  // offenen Übergabe ist, darf deshalb IMMER rein, unabhängig vom Korb-Recht.
+  const activeHandoff = await getActiveHandoff(invoice.id)
+  const isHandoffRecipient = activeHandoff?.toUserId === ctx.userId
+  if (
+    invoice.basketId
+    && !isHandoffRecipient
+    && !(await hasBasketRight(ctx.userId, ctx.role, invoice.basketId, 'CONTENT'))
+  ) {
     redirect('/invoices')
   }
 
@@ -41,15 +56,17 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
     select: { id: true, name: true, kind: true, position: true },
   }))
   // Freigeben jetzt auch auf der Detailseite (Stefan 2026-08-25) — bisher nur
-  // in der Rechnungsliste möglich (CheckBadges.tsx). Dieselben Korb-Rechte
-  // wie dort: APPROVE für "Sachlich richtig", HANDOVER (nur im Übergabekorb)
-  // für "An Buchhaltung übergeben" — hier direkt am tatsächlichen aktuellen
-  // Korb der Rechnung geprüft, nicht am Listen-Filter.
-  const currentBasketKind = baskets.find((b) => b.id === invoice.basketId)?.kind
+  // in der Rechnungsliste möglich (CheckBadges.tsx). Korb-Recht APPROVE für
+  // "Sachlich richtig" — hier direkt am tatsächlichen aktuellen Korb der
+  // Rechnung geprüft, nicht am Listen-Filter. "An Buchhaltung übergeben" gibt
+  // es hier NICHT mehr einzeln (Stefan 2026-08-26, "wir machen so immer mehr
+  // Buchungsstapel") — nur noch über die Sammelfunktion (DATEV-Export).
   const canApprove = invoice.basketId ? await hasBasketRight(ctx.userId, ctx.role, invoice.basketId, 'APPROVE') : false
-  const canHandover = invoice.basketId && currentBasketKind === 'HANDOVER'
-    ? await hasBasketRight(ctx.userId, ctx.role, invoice.basketId, 'HANDOVER')
-    : false
+
+  // Pflichtangaben-Schnellausfüllung (Stefan 2026-08-27, "wenn er den
+  // Lieferant schon kennt") — liefert null bei aktiver Verschlüsselung
+  // (dort serverseitig ohnehin nie befüllt, siehe lib/vendorMemory.ts).
+  const vendorSuggestion = await getVendorAddressSuggestion(tenantId, invoice.vendor)
 
   const approvals = await prisma.basketApproval.findMany({
     where: { invoiceId: invoice.id },
@@ -77,7 +94,7 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
     : baskets
 
   const [tenant, colleaguesRaw] = await Promise.all([
-    prisma.tenant.findUnique({ where: { id: tenantId }, select: { encryptionEnabled: true, costCenterEnabled: true, costCarrierEnabled: true, legalName: true } }),
+    prisma.tenant.findUnique({ where: { id: tenantId }, select: { encryptionEnabled: true, costCenterEnabled: true, costCarrierEnabled: true, legalName: true, buyerNameMismatchBlocksHandover: true } }),
     prisma.user.findMany({
       where: { tenantId, active: true },
       select: { id: true, email: true, firstName: true, lastName: true },
@@ -134,7 +151,24 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
         discountPercent: dto.discountPercent,
         taxRates: [],
         documentAllowance: null,
-        lines: [],
+        // KI-Erkennung liest aktuell keine Bankverbindung aus (siehe
+        // lib/erechnung.ts sellerIban/sellerBic-Kommentar) — nur bei
+        // E-Rechnung (data-Zweig oben) strukturiert verfügbar.
+        sellerIban: null,
+        sellerBic: null,
+        // Von der KI gelesene Positionszeilen (Stefan 2026-08-27, "die
+        // Positionszeilen gehören immer zwischen Kopf und Summe, exakt so wie
+        // bei den E-Rechnungen"): vorher hier immer leer und stattdessen als
+        // eigene, separat platzierte Karte in InvoiceEditForm.tsx gerendert —
+        // dadurch sprang die Dateiansicht je nach Rechnungstyp unterschiedlich
+        // hoch/niedrig. Jetzt an genau derselben Stelle wie bei E-Rechnungen
+        // (zwischen Kopfzeile und Summenblock, siehe ERechnungView.tsx).
+        // unitPrice hat InvoiceLine (E-Rechnungs-Format) nicht — geht hier
+        // bewusst verloren, damit beide Rechnungstypen exakt dieselbe
+        // Tabelle (Position/Menge/Rabatt/Betrag) zeigen.
+        lines: (dto.lineItems ?? []).map((l) => ({
+          name: l.name, quantity: l.qty, lineTotal: l.total, discount: l.discount,
+        })),
       }
   const displayData = data ?? fallbackData
 
@@ -152,15 +186,29 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
   // Version ist ebenfalls schreibgeschützt — dieselbe fieldset-Sperre wie
   // beim Perioden-Abschluss, aber mit eigener Bannermeldung (siehe
   // InvoiceEditForm.tsx, unterschieden über supersededByInvoiceId).
-  const locked = (await isInvoiceLockedByClosure(invoice.createdAt)) || invoice.supersededAt !== null
+  // "Zur Prüfung weitergeben" (Stefan 2026-08-27, siehe lib/invoiceHandoff.ts)
+  // — solange aktiv, ist die Rechnung für jeden außer dem Empfänger
+  // schreibgeschützt, genau wie bei Perioden-Abschluss/Versionierung.
+  // (activeHandoff/isHandoffRecipient bereits oben ermittelt, für die
+  // Korb-Recht-Ausnahme beim Öffnen der Seite.)
+  const locked =
+    (await isInvoiceLockedByClosure(tenantId, invoice.createdAt)) ||
+    invoice.supersededAt !== null ||
+    (activeHandoff !== null && !isHandoffRecipient)
   // Vorschlags-Absenderadresse für "Korrektur anfordern" (Stefan 2026-08-25)
   // — aus dem echten senderEmail-Feld (nur bei source=EMAIL gesetzt), der
   // Nutzer sieht/bestätigt sie vor dem Senden im Formular.
   const suggestedVendorEmail = invoice.senderEmail
   // Firmenbezeichnung-Abgleich (Stefan 2026-08-25) — nur relevant, wenn der
   // Mandant eine exakte Firmenbezeichnung hinterlegt hat UND die Rechnung
-  // einen strukturierten Rechnungsempfänger enthält.
-  const hasBuyerMismatch = buyerNameMismatch(tenant?.legalName ?? null, data?.buyerName ?? null)
+  // einen strukturierten Rechnungsempfänger enthält. Zusätzlich (Stefan
+  // 2026-08-26, Review-Fund "Client ignoriert Mandanten-Einstellung"): nur
+  // wenn buyerNameMismatchBlocksHandover aktiv ist — dieselbe Bedingung wie
+  // bei der serverseitigen Sperre (getApprovalBlockers, lib/erechnung.ts).
+  // Vorher zeigte die Detailseite bei abgeschalteter Einstellung trotzdem
+  // "Klärung nötig" für jede Abweichung, obwohl der Server sie längst nicht
+  // mehr blockierte.
+  const hasBuyerMismatch = Boolean(tenant?.buyerNameMismatchBlocksHandover) && buyerNameMismatch(tenant?.legalName ?? null, data?.buyerName ?? null)
   const buyerNameCheck = hasBuyerMismatch
     ? {
         invoiceId: invoice.id,
@@ -228,13 +276,28 @@ export default async function InvoiceDetailPage({ params }: { params: { id: stri
           baskets={moveTargetBaskets}
           pendingApproval={pending}
           canApprove={canApprove}
-          canHandover={canHandover}
+          vendorSuggestion={vendorSuggestion}
           encryptionEnabled={tenant?.encryptionEnabled ?? false}
           costCenterEnabled={tenant?.costCenterEnabled ?? false}
           costCarrierEnabled={tenant?.costCarrierEnabled ?? false}
           colleagues={colleagues}
           locked={locked}
           supersededByInvoiceId={invoice.supersededByInvoiceId}
+          activeHandoff={
+            activeHandoff
+              ? {
+                  noteId: activeHandoff.noteId,
+                  toUserId: activeHandoff.toUserId,
+                  toUserName: activeHandoff.toUserName,
+                  authorName: activeHandoff.authorName,
+                  subject: activeHandoff.subject,
+                  text: activeHandoff.text,
+                  createdAt: activeHandoff.createdAt.toISOString(),
+                  isRecipient: isHandoffRecipient,
+                  isAuthor: activeHandoff.authorId === ctx.userId,
+                }
+              : null
+          }
         />
         <InvoiceNotes invoiceId={invoice.id} />
       </div>

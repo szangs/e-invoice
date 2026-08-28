@@ -46,6 +46,18 @@ model Tenant {
   // lib/baskets.ts requestMove). Standard aus — reine Warnung bleibt das
   // bisherige, unveränderte Verhalten.
   buyerNameMismatchBlocksHandover Boolean @default(false)
+  // Rollen-Rechte-Matrix (Stefan 2026-08-27, "so etwas wie die Korb-Rechte
+  // müssen wir für die Rollen auch haben") — je Rolle, ob sie bestimmte grobe
+  // Aktionen darf (KI-Erkennung nutzen, Korrektur anfordern, Pflichtangaben-
+  // Prüfung ignorieren, Audit-Protokoll einsehen), siehe lib/roleActions.ts.
+  // NICHT zu verwechseln mit den Korb-Rechten (welche Körbe/Rechnungen darf
+  // ich sehen/bearbeiten) — diese Matrix regelt QUERSCHNITTLICHE Fähigkeiten,
+  // unabhängig vom einzelnen Korb. Null/fehlender Eintrag je Rolle+Aktion =
+  // Standardwert aus ROLE_ACTION_DEFAULTS (siehe dort) — nur echte
+  // Admin-gesetzte Abweichungen werden hier gespeichert, damit bestehende
+  // Mandanten beim Rollout nichts verlieren. Administrator/Betreiber haben
+  // immer alle Aktionen, unabhängig vom Inhalt dieses Felds.
+  roleActions      Json?
   contactName      String?
   contactEmail     String?
   contactPhone     String?
@@ -62,6 +74,11 @@ model Tenant {
   aiAllowed        Boolean   @default(false)
   ipLoggingAllowed Boolean   @default(false)
   defaultLanguage  String    @default("de")
+  // Erscheinungsbild (Stefan 2026-08-27, "mach mal noch eine Farbauswahl") —
+  // eines der in globals.css definierten [data-theme]-Schemata, siehe
+  // src/components/settings/COLOR_THEMES für die Auswahlliste. "marine" ist
+  // das bisherige, unveränderte DP-Standardschema.
+  colorTheme       String    @default("marine")
   backupEnabled    Boolean   @default(false)
   // Ende-zu-Ende-Verschlüsselung der Belege (Zero-Knowledge):
   // Der Datenschlüssel (DEK) wird IM BROWSER erzeugt und mit einem aus der
@@ -88,6 +105,61 @@ model Tenant {
   // nichts verschieben, Postfach bleibt unverändert). Braucht "Mail.ReadWrite" statt
   // nur "Mail.Read" in der Azure-App-Registrierung.
   mailInGraphMoveToFolder String?
+  // Fortschritts-Zeiger (Stefan 2026-08-26, Review-Fund "Graph-Poller kann
+  // dauerhaft steckenbleiben"): ohne mailInGraphMoveToFolder blieb jede
+  // verarbeitete Nachricht im Quellordner liegen — das feste "$top=25,
+  // älteste zuerst"-Fenster (graphMailin.ts fetchRecentMessages) zeigte dann
+  // dauerhaft dieselben, längst verarbeiteten 25 ältesten Nachrichten, sobald
+  // der Ordner insgesamt mehr als 25 enthielt; neuere kamen nie mehr dran.
+  // Merkt sich stattdessen das receivedDateTime der zuletzt gesehenen
+  // Nachricht — der nächste Poll fragt nur noch Nachrichten NACH diesem
+  // Zeitpunkt ab, unabhängig davon, ob/wohin verschoben wird.
+  mailInGraphLastSeenAt   DateTime?
+  // E-Mail-Eingang per POP3 (Stefan 2026-08-27, Review-Fund "unter Mail noch
+  // eine Unterkategorie zur Auswahl des Email-Verfahrens — SMTP Input und
+  // Office 365 API gibt es schon, jetzt fehlt noch POP und IMAP"): dritte
+  // Alternative, klassischer Postfach-Abruf per POP3S (nur implizites TLS,
+  // Standardport 995 — kein STARTTLS auf Port 110). Abgerufene Nachrichten
+  // werden nach erfolgreicher Verarbeitung vom Server gelöscht (POP3-
+  // typisch — das Protokoll kennt keine Ordner/Markierungen wie IMAP, siehe
+  // lib/pop3Mailin.ts). Dublettenprüfung zusätzlich über die Message-ID
+  // (MailIntake.sourceMessageId) als Sicherheitsnetz, falls das Löschen
+  // selbst fehlschlägt. Genau wie bei Graph ist immer nur EIN Verfahren
+  // gleichzeitig aktiv (siehe SettingsHub.tsx Auswahl "E-Mail-Verfahren").
+  mailInPop3Enabled Boolean @default(false)
+  mailInPop3Host    String?
+  mailInPop3Port    Int     @default(995)
+  mailInPop3Secure  Boolean @default(true)
+  mailInPop3User    String?
+  mailInPop3Pass    String?
+  // E-Mail-Eingang per IMAP (Stefan 2026-08-27) — vierte Alternative: Postfach
+  // + Ordner werden per IMAPS abgefragt (nur implizites TLS, Standardport
+  // 993). Anders als POP3 werden Nachrichten NICHT gelöscht, sondern nach
+  // Verarbeitung als gelesen markiert (SEARCH UNSEEN beim nächsten Poll
+  // findet sie dann nicht erneut) und optional in einen Zielordner
+  // verschoben — dieselbe Semantik wie beim Graph-Weg, siehe lib/imapMailin.ts.
+  mailInImapEnabled      Boolean @default(false)
+  mailInImapHost         String?
+  mailInImapPort         Int     @default(993)
+  mailInImapSecure       Boolean @default(true)
+  mailInImapUser         String?
+  mailInImapPass         String?
+  mailInImapFolder       String? // leer = INBOX
+  mailInImapMoveToFolder String?
+  // Eigenes Poll-Intervall je Mandant (Stefan 2026-08-27, "bei Mailabholung
+  // müssen wir die Pollrate einstellen können") — vorher galt für ALLE
+  // Mandanten eines Abrufwegs zwingend dasselbe, vom Betreiber global
+  // gesetzte Intervall (MAIL_IN_GRAPH_POLL_SECONDS etc., Systemeinstellungen).
+  // Leer = weiterhin dieser globale Standard. Nur EIN Feld für alle drei
+  // Abrufwege nötig, da laut "E-Mail-Verfahren"-Auswahl ohnehin immer nur
+  // einer gleichzeitig aktiv ist. Die Poller-Prozesse (graphMailin.ts/
+  // pop3Mailin.ts/imapMailin.ts) selbst ticken jetzt in einem festen, feinen
+  // Grundtakt (30s) und entscheiden JE MANDANT anhand von
+  // mailInLastPolledAt + diesem Intervall, ob ein Abruf schon fällig ist —
+  // das manuelle "Jetzt abrufen" ignoriert diese Sperre bewusst (siehe
+  // api/mailin/poll/route.ts).
+  mailInPollSeconds  Int?
+  mailInLastPolledAt DateTime?
   // Automatische Antwort bei Spam-Verdacht (Stefan 2026-08-25): schickt dem
   // Absender einer als NOT_INVOICE eingestuften Mail eine kurze automatische
   // Info, dass sie nicht als Rechnung erkannt wurde und er sich bei echtem
@@ -120,17 +192,6 @@ model Tenant {
   // Entscheidung markiert — nichts wird gelöscht, alle Versionen bleiben
   // nachvollziehbar sichtbar. Betrifft nur den automatischen Mail-Eingang.
   autoSupersedeInvoiceVersions Boolean @default(false)
-  // Fälligkeits-Benachrichtigung ("Bearbeitungswarnung"), pro Mandant
-  // einstellbar, null = jeweils aus. Läuft im Scheduler wie die
-  // Korb-Benachrichtigung (lib/dueReminders.ts runDueReminders, aufgerufen
-  // aus scripts/backup-scheduler.ts) — Empfänger sind dieselben Korb-
-  // Mitarbeiter wie bei notificationEnabled auf dem jeweiligen Korb.
-  // Fall A: Fälligkeit UNBEKANNT (weder E-Rechnung noch KI-Erkennung hat ein
-  // Datum geliefert) — Erinnerung X Tage NACH Eingang.
-  dueReminderDaysAfterReceipt Int?
-  // Fall B: Fälligkeit BEKANNT (E-Rechnung oder KI-erkanntes Datum — wird
-  // hier gleich behandelt) — Erinnerung X Tage VOR Fälligkeit.
-  dueReminderDaysBeforeDue    Int?
   // Datensicherung (§17): Häufigkeit + Zustell-Adresse + letzte Sicherung
   backupFrequency String? // DAILY | WEEKLY | MONTHLY | YEARLY
   backupEmail     String?
@@ -169,7 +230,12 @@ model Tenant {
   // — die weitere Kontierung je Lieferant bleibt Aufgabe der Fibu in DATEV.
   datevBeraternr       String?
   datevMandantnr       String?
-  datevSkr             String? // SKR03 | SKR04 — nur Beschriftung/Doku, keine Kontenlogik
+  // Stefan 2026-08-26 (Review-Fund): Default SKR04 für NEU angelegte
+  // Mandanten, seit der DATEV-Export dieses Feld zwingend braucht (siehe
+  // lib/datev.ts validateDatevSettings) — sonst würde ein frisch angelegter
+  // Mandant beim allerersten Export ohne ersichtlichen Grund abgewiesen.
+  // Bestandsmandanten mit NULL werden per Backfill-Skript nachgezogen.
+  datevSkr             String? @default("SKR04") // SKR03 | SKR04 — nur Beschriftung/Doku, keine Kontenlogik
   datevSachkontenlaenge Int?    @default(4)
   datevKreditorenkonto String? // Sammelkonto für alle Kreditoren (Feld "Konto")
   datevGegenkonto      String? // Sammel-Gegenkonto (Feld "Gegenkonto", z. B. Wareneingang/Kosten)
@@ -179,6 +245,13 @@ model Tenant {
   // dass die Fibu die Dokumente selbst sehen will/muss, nicht nur die
   // Buchungsdaten aus dem DATEV-CSV (Stefan 2026-07-08).
   datevFibuEmail       String?
+  // Zahlungsverkehr (Stefan 2026-08-27, SEPA-Sammelüberweisung, Review-Fund
+  // "welche Export-Module an Fibu noch wichtig wären") — Auftraggeberkonto
+  // DES MANDANTEN (der Zahler) für den pain.001-Export, siehe lib/sepa.ts.
+  // Getrennt von den Lieferanten-IBANs (VendorAddress.iban/bic).
+  sepaOwnName String? // Kontoinhaber laut Bank — meist legalName, kann abweichen
+  sepaOwnIban String?
+  sepaOwnBic  String?
   // Kostenstellen/Kostenträger (Stefan 2026-07-09, #114): optionale, im
   // Mandanten-Stamm abschaltbare Buchungsdimension — genau wie bei den
   // Lieferanten-Konten oben wird eine Liste (Code+Bezeichnung) importiert,
@@ -204,6 +277,9 @@ model Tenant {
   vendorAccounts   VendorAccount[]
   vendorAddresses  VendorAddress[]
   employeeGroups   EmployeeGroup[]
+  auditPeriodClosures AuditPeriodClosure[]
+  invoiceSearchTokens InvoiceSearchToken[]
+  scanSessions        ScanSession[]
 }
 
 // ── Optionale Verknüpfung vorhandener Fibu-Konten zu Lieferanten (Stefan
@@ -238,8 +314,35 @@ model VendorAddress {
   tenantId   String
   tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   vendorName String // Abgleich mit Invoice.vendor, case-insensitiv/exakt
-  address    String
+  // Nullable seit 2026-08-27 (vorher Pflichtfeld) — ein Lieferant kann jetzt
+  // auch NUR mit Bankverbindung angelegt sein (manuell für den SEPA-Export
+  // erfasst, ohne dass je eine Rechnung mit lesbarer Anschrift kam).
+  address    String?
+  // Pflichtangaben-Schnellausfüllung (Stefan 2026-08-27, "Schnellausfüllung
+  // bei den Anschriftdaten, wenn er den Lieferant schon kennt") — genau wie
+  // address "zuletzt gesehen" je Lieferant, Grundlage für den Vorschlag auf
+  // der Rechnungsdetailseite (siehe lib/vendorMemory.ts
+  // getVendorAddressSuggestion, InvoiceEditForm.tsx). Wie address bei
+  // aktiver Inhalts-Verschlüsselung unproblematisch — der Server sieht
+  // diese Werte dort ohnehin nie im Klartext, die Spalten bleiben dann
+  // einfach leer.
+  vatId       String?
+  taxNumber   String?
+  countryCode String?
   updatedAt  DateTime @updatedAt
+  // Zahlungsverkehr (Stefan 2026-08-27, SEPA-Sammelüberweisung, siehe
+  // lib/sepa.ts): IBAN/BIC werden — falls im PaymentMeans-Block einer
+  // E-Rechnung vorhanden — automatisch vorbefüllt (lib/vendorMemory.ts),
+  // gelten aber erst als für einen Zahllauf nutzbar, wenn ein Mensch sie
+  // bestätigt hat (ibanVerifiedAt gesetzt, in UserAdmin o.ä. Admin-Oberfläche
+  // per Knopf). Ein einmal bestätigter Wert wird durch eine neue Rechnung
+  // NICHT mehr automatisch überschrieben (siehe upsertVendorAddress) — sonst
+  // könnte eine gefälschte/fehlerhafte Rechnung eine geprüfte Kontoverbindung
+  // unbemerkt kapern.
+  iban           String?
+  bic            String?
+  ibanVerifiedAt DateTime?
+  ibanVerifiedBy String?
 
   @@unique([tenantId, vendorName])
 }
@@ -348,6 +451,7 @@ model User {
   uploadedAttachments   InvoiceAttachment[]
   notesAuthored         InvoiceNote[]       @relation("InvoiceNoteAuthor")
   notesReceived         InvoiceNote[]       @relation("InvoiceNoteRecipient")
+  scanSessions          ScanSession[]
 
   // E-Mail ist PRO MANDANT eindeutig, nicht global (§2)
   @@unique([tenantId, email])
@@ -359,6 +463,21 @@ model SystemSetting {
   key       String   @id
   value     String
   updatedAt DateTime @updatedAt
+}
+
+// Tages-Schnappschuss des globalen KI-Verbrauchszählers (Stefan 2026-08-27,
+// "Zeitraum beim KI-Verbrauch sollte über einen Monat gehen") — anders als
+// CPU/RAM/Speicherplatz (siehe lib/metrics.ts, In-Prozess-Ringpuffer für
+// 24 Stunden) muss ein Monatsverlauf einen Server-Neustart überstehen, ein
+// In-Memory-Puffer reicht dafür nicht. Tages- statt Minutengranularität
+// reicht für einen Monatstrend völlig aus und hält die Tabelle winzig
+// (~30 Zeilen). Global, nicht mandantenbezogen — AI_TOKENS_TOTAL (siehe
+// lib/settings.ts) ist ebenfalls ein globaler Zähler fürs Betreiber-Cockpit.
+model MetricDailySnapshot {
+  id            String   @id @default(cuid())
+  date          DateTime @unique // Tagesgranularität (UTC-Mitternacht normalisiert)
+  aiTokensTotal Int
+  createdAt     DateTime @default(now())
 }
 
 // ── Revisionssichere Protokollierung mit Hash-Kette (§18) ──
@@ -386,9 +505,24 @@ model AuditLog {
 // "Unterschrift" (Klarname), die auf dem Zertifikat erscheint (siehe
 // lib/auditCertificate.ts) — keine Bild-Signatur, ein getippter Name mit
 // Zeitstempel, wie bei den übrigen Freigaben in der App (z. B. Vier-Augen-Prinzip).
+// Perioden-Abschluss je MANDANT (Stefan 2026-08-27, Review-Fund "gehört zum
+// Mandanten, nicht ins Betreiber-Cockpit" — vorher war das Jahr systemweit
+// EIN Datensatz für ALLE Mandanten gleichzeitig, ausgelöst vom Betreiber statt
+// vom jeweiligen Mandanten-Admin selbst). Die zugrunde liegende Hash-Kette
+// (AuditLog, lib/audit.ts) bleibt bewusst EINE einzige, mandantenübergreifende
+// Kette — das ist gerade die Stärke der Fälschungssicherheit (kein Mandant
+// könnte seine eigene Historie unbemerkt umschreiben, ohne die gemeinsame
+// Kette zu brechen). lastEntryId/chainHash referenzieren deshalb weiterhin
+// den letzten Eintrag der GESAMTEN Kette bis Periodenende; entryCount/
+// firstEntryId sind dagegen auf die Einträge DIESES Mandanten begrenzt (siehe
+// api/audit/period-close/route.ts) — der Abschluss selbst und sein
+// Sperreffekt (isInvoiceLockedByClosure) gelten nur für den jeweiligen
+// Mandanten, ein Mandant kann unabhängig vom Rest sein eigenes Jahr schließen.
 model AuditPeriodClosure {
   id            String   @id @default(cuid())
-  year          Int      @unique
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  year          Int
   closedAt      DateTime @default(now())
   closedByName  String
   closedByEmail String
@@ -396,6 +530,8 @@ model AuditPeriodClosure {
   firstEntryId  Int?
   lastEntryId   Int
   chainHash     String
+
+  @@unique([tenantId, year])
 }
 
 // ── Fernwartung §14A: eingebaute Bildschirmspiegelung (ohne externe Software) ──
@@ -650,6 +786,56 @@ model LoginTicket {
   usedAt           DateTime?
 }
 
+// ── Handy-als-Kamera-Kopplung (Stefan 2026-08-27, "3D-Barcode/QR + kleine
+// App fürs Handy") ──
+// Der PC zeigt einen QR-Code mit dieser Sitzung; das Handy scannt ihn und
+// lädt darüber Fotos hoch, die der PC live in seine laufende Scan-Seite
+// übernimmt — ohne dass sich das Handy einloggen muss. Bewusst NICHT über
+// LoginTicket gelöst: das würde eine volle Anmeldung verschaffen, hier soll
+// der Token nur "Fotos in genau diese eine Sitzung hochladen" erlauben,
+// sonst nichts.
+// WICHTIG bei aktiver Beleg-Verschlüsselung: der Token/diese Zeile
+// transportiert NIEMALS den echten DEK. Der PC erzeugt pro Sitzung einen
+// eigenen, zufälligen Einmal-Schlüssel (ohne Bezug zum DEK) und gibt ihn nur
+// im URL-Fragment (#k=…) des QR-Codes ans Handy weiter — Fragmente werden
+// nie an den Server geschickt, der Server sieht also nie den Schlüssel und
+// die hochgeladenen Fotos nie im Klartext (siehe api/scan-sessions/*).
+model ScanSession {
+  id              String             @id @default(cuid())
+  tenantId        String
+  tenant          Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdByUserId String
+  createdBy       User               @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+  token           String             @unique
+  createdAt       DateTime           @default(now())
+  expiresAt       DateTime
+  closedAt        DateTime?
+  photos          ScanSessionPhoto[]
+
+  @@index([tenantId])
+}
+
+// Einzelnes vom Handy hochgeladenes Foto einer ScanSession — liegt nur kurz
+// als Datei (siehe lib/storage.ts, saveScanSessionPhoto), nicht als
+// Invoice-Anhang: der PC lädt jedes Foto herunter, entschlüsselt es bei
+// Bedarf lokal und übernimmt es in seine normale Seiten-Liste; erst beim
+// finalen "Rechnung speichern" entsteht daraus ein echter Beleg.
+model ScanSessionPhoto {
+  id        String      @id @default(cuid())
+  sessionId String
+  session   ScanSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  fileName  String
+  mimeType  String
+  // true = Datei-Inhalt ist mit dem Sitzungs-Einmal-Schlüssel verschlüsselt
+  // (siehe Modell-Kommentar oben) — mimeType bleibt dabei bewusst im
+  // Klartext gespeichert, exakt wie encOrigMime bei verschlüsselten
+  // Rechnungs-Anhängen (kein neues Präzedenzfall).
+  encrypted Boolean     @default(false)
+  createdAt DateTime    @default(now())
+
+  @@index([sessionId])
+}
+
 // ── Rechnung (E-Invoice Kernentität, mandantengetrennt) ──
 model Invoice {
   id            String        @id @default(cuid())
@@ -714,6 +900,16 @@ model Invoice {
   status        InvoiceStatus @default(NEW)
   tags          String?
   notes         String?
+  // Volltextsuche für UNVERSCHLÜSSELTE Mandanten (Stefan 2026-08-27, "eine
+  // Volltextsuche kann ich mit der Verschlüsselung vergessen oder?") — von
+  // PostgreSQL selbst aus vendor/invoiceNumber/tags/notes/mailBodyText
+  // generierte, automatisch aktuell gehaltene tsvector-Spalte (GENERATED
+  // ALWAYS AS ... STORED, siehe Migration 20260827180000_fulltext_search —
+  // Prisma kennt den Typ "tsvector" nicht nativ, daher Unsupported; der GIN-
+  // Index darauf ist rein in der Migration definiert, nicht hier abbildbar).
+  // Bei verschlüsselten Mandanten bleibt sie leer (Inhalt ist Chiffrat) —
+  // dafür gibt es stattdessen den Blind-Index unten (InvoiceSearchToken).
+  searchVector  Unsupported("tsvector")?
   fileName      String? // gespeicherter Dateiname unter uploads/{tenantId}/
   originalName  String?
   mimeType      String?
@@ -812,10 +1008,6 @@ model Invoice {
   // nichts wird gelöscht.
   supersededAt           DateTime?
   supersededByInvoiceId  String?
-  // Fälligkeits-Benachrichtigung (lib/dueReminders.ts): wann zuletzt eine
-  // Bearbeitungswarnung für diese Rechnung verschickt wurde — verhindert
-  // Mehrfachversand, wird einmalig gesetzt (keine wiederholte Eskalation).
-  dueReminderSentAt DateTime?
   // Automatische Spam-Antwort bereits verschickt (Stefan 2026-08-25, Tenant.spamReplyEnabled) —
   // verhindert Mehrfachversand bei erneuter Verarbeitung/Reklassifikation.
   spamReplySentAt DateTime?
@@ -872,6 +1064,7 @@ model Invoice {
   updatedAt     DateTime      @updatedAt
   attachments   InvoiceAttachment[]
   messages      InvoiceNote[]
+  searchTokens  InvoiceSearchToken[]
 
   @@index([tenantId, status])
   @@index([tenantId, invoiceDate])
@@ -880,6 +1073,35 @@ model Invoice {
   @@index([tenantId, sourceMessageId])
   @@index([tenantId, senderEmail])
   @@index([basketId])
+}
+
+// Blind-Index für die Suche bei VERSCHLÜSSELTEN Mandanten (Stefan 2026-08-27)
+// — echte Volltextsuche geht dort nicht (Server sieht nur Chiffrat, siehe
+// Invoice.contentEnc). Stattdessen bildet der Browser beim Speichern für
+// Lieferant + Rechnungsnummer je (normalisiertes) Wort einen deterministischen
+// HMAC-SHA256 mit einem vom Datenschlüssel (DEK) abgeleiteten Such-Schlüssel
+// (siehe lib/clientCrypto.ts deriveSearchKey/computeSearchTokens) und schickt
+// NUR diese Hashes mit — nie den Klartext. Beim Suchen bildet der Browser
+// denselben Hash aus dem Suchbegriff und schickt NUR den ab; der Server
+// vergleicht Hash gegen Hash.
+// WICHTIG — bewusster Kompromiss, kein Nebenwirkungsloses Feature: der Hash
+// ist zwangsläufig deterministisch (gleicher Klartext → gleicher Hash), sonst
+// funktioniert kein Abgleich. Wer Zugriff auf diese Tabelle hat (Betreiber,
+// DB-Zugriff), kann dadurch erkennen, dass zwei Rechnungen denselben
+// Lieferantennamen/dieselbe Rechnungsnummer haben — OHNE den Klartext selbst
+// zu kennen. Das ist eine Abschwächung des sonst absoluten "niemand außer dem
+// Mandanten kann irgendetwas lesen"-Versprechens (siehe EncryptionSetup.tsx-
+// Warnhinweis) und wurde dem Kunden so auch erklärt (Stefan, 2026-08-27).
+model InvoiceSearchToken {
+  id        String  @id @default(cuid())
+  tenantId  String
+  tenant    Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoiceId String
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  token     String // Hex-HMAC, keine sinnvolle Länge zum Erraten des Klartexts
+
+  @@index([tenantId, token])
+  @@index([invoiceId])
 }
 
 // ── Zusätzliche Dokumente zu einer Rechnung (Stefan 2026-07-08): neben dem
@@ -930,11 +1152,26 @@ model InvoiceNote {
   readAt    DateTime?
   // "Erledigt"-Haken (Stefan 2026-08-26) — eigenständig von readAt: eine
   // Nachricht kann gelesen, aber noch nicht abgearbeitet sein. Wer sie
-  // erledigt hat, bleibt nachvollziehbar (doneBy).
+  // erledigt hat, bleibt nachvollziehbar (doneBy). Bei isHandoff=true (siehe
+  // unten) bedeutet dieses Feld stattdessen "zurückgegeben" — nur der
+  // Empfänger (toUserId) darf es setzen, siehe api/invoices/[id]/notes/[noteId]/route.ts.
   doneAt    DateTime?
   doneBy    String?
   createdAt DateTime  @default(now())
+  // "Zur Prüfung weitergeben" (Stefan 2026-08-27) — anders als eine normale
+  // adressierte Nachricht SPERRT ein aktiver Handoff (isHandoff=true,
+  // doneAt=null) die Rechnung für jeden außer dem Empfänger (toUserId) — der
+  // "bearbeitet" sie jetzt, der Absender sieht sie nur noch schreibgeschützt
+  // (siehe lib/invoiceHandoff.ts). toUserId ist bei isHandoff=true daher
+  // PFLICHT (serverseitig erzwungen, siehe .../notes/route.ts POST) — anders
+  // als bei einer normalen, optional adressierten Nachricht. Höchstens EIN
+  // aktiver Handoff gleichzeitig je Rechnung; "zurückgeben" (Empfänger setzt
+  // doneAt) beendet ihn wieder, die Rechnung wird für alle wieder normal
+  // bearbeitbar. Nutzt bewusst dieselbe Sichtbarkeits-/Maskierungs- und
+  // Erledigt-Logik wie normale Nachrichten wieder, statt eigener Tabelle.
+  isHandoff Boolean   @default(false)
 
   @@index([invoiceId])
   @@index([toUserId, readAt])
+  @@index([invoiceId, isHandoff, doneAt])
 }

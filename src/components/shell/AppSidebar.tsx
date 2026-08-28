@@ -13,21 +13,22 @@ function isActive(pathname: string, href: string): boolean {
   return pathname === base || (base !== '/dashboard' && pathname.startsWith(base + '/'))
 }
 
-export function AppSidebar({ role }: { role: Role }) {
+export function AppSidebar({ role, canViewAudit }: { role: Role; canViewAudit: boolean }) {
   const pathname = usePathname()
   const [openGroup, setOpenGroup] = useState<string | null>(null)
   const [mobileOpen, setMobileOpen] = useState(false)
 
   const isOperator = role === Role.OPERATOR_ADMIN
   const isTenantAdmin = role === Role.TENANT_ADMIN
-  const isAuditor = role === Role.AUDITOR
   const groups = NAV_GROUPS.filter((g) => {
     if (g.operatorOnly && !isOperator) return false
     // Mandanten-Verwaltung nur für Mandanten-Admins — der Betreiber nutzt die
     // Plattform-Benutzerverwaltung (PL03) bzw. Identitätsübernahme
     if (g.adminOnly && !isTenantAdmin) return false
-    // Audit-Protokoll: Mandanten-Admin UND die Rolle "Prüfer" (enger als adminOnly)
-    if (g.auditOnly && !(isTenantAdmin || isAuditor)) return false
+    // Audit-Protokoll: wer laut Rollen-Rechte-Matrix VIEW_AUDIT hat (Stefan
+    // 2026-08-27, lib/roleActions.ts — Mandanten-Admin hat dort über
+    // alwaysFullAccess() immer automatisch true, Standard sonst: Prüfer)
+    if (g.auditOnly && !canViewAudit) return false
     // Mandanten-Funktionen (Rechnungen etc.) sind für den Betreiber ohne Kontext sinnlos
     if (g.tenantOnly && isOperator) return false
     return true

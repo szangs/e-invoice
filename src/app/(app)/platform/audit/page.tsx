@@ -1,9 +1,12 @@
-// Revisionssicheres Audit-Protokoll (§18) — Ansicht für den Betreiber
+// Revisionssicheres Audit-Protokoll (§18) — Ansicht für den Betreiber.
+// Der Perioden-Abschluss selbst lebt seit 2026-08-27 beim Mandanten
+// (/audit, PeriodClosurePanel) — "gehört zum Mandanten, nicht ins
+// Betreiber-Cockpit"; der Betreiber sieht hier weiterhin die volle,
+// mandantenübergreifende Hash-Kette rein lesend.
 import { format } from 'date-fns'
 import { de } from 'date-fns/locale'
 import { getContext } from '@/lib/context'
 import { prisma } from '@/lib/db'
-import { PeriodClosurePanel, type PeriodRow } from './PeriodClosurePanel'
 
 export const dynamic = 'force-dynamic'
 
@@ -15,7 +18,7 @@ export default async function AuditPage({
   await getContext({ operator: true })
   const page = Math.max(1, Number(searchParams.page ?? 1))
   const pageSize = 50
-  const [entries, total, tenants, earliest, closures, countsByYearRaw] = await Promise.all([
+  const [entries, total, tenants] = await Promise.all([
     prisma.auditLog.findMany({
       orderBy: { id: 'desc' },
       skip: (page - 1) * pageSize,
@@ -23,42 +26,12 @@ export default async function AuditPage({
     }),
     prisma.auditLog.count(),
     prisma.tenant.findMany({ select: { id: true, name: true } }),
-    // Nach createdAt sortiert (nicht id) — ein nachträglich importierter/
-    // rückdatierter Eintrag könnte sonst eine ältere Periode verstecken.
-    prisma.auditLog.findFirst({ orderBy: { createdAt: 'asc' }, select: { createdAt: true } }),
-    prisma.auditPeriodClosure.findMany({ orderBy: { year: 'desc' } }),
-    prisma.$queryRaw<{ year: number; count: bigint }[]>`
-      SELECT EXTRACT(YEAR FROM "createdAt")::int AS year, COUNT(*)::bigint AS count
-      FROM "AuditLog" GROUP BY 1
-    `,
   ])
   const tenantName = new Map(tenants.map((t) => [t.id, t.name]))
   const pages = Math.max(1, Math.ceil(total / pageSize))
 
-  // Perioden-Übersicht (Stefan 2026-08-25): vom ersten Audit-Eintrag bis zum
-  // aktuellen (noch nicht abschließbaren) Jahr — "abschließbar" nur für
-  // Jahre, die vollständig vergangen sind (siehe api/platform/audit/period-close).
-  const closureByYear = new Map(closures.map((c) => [c.year, c]))
-  const countByYear = new Map(countsByYearRaw.map((r) => [r.year, Number(r.count)]))
-  const now = new Date()
-  const currentYear = now.getFullYear()
-  const earliestYear = earliest?.createdAt.getFullYear() ?? currentYear
-  const years: PeriodRow[] = []
-  for (let y = currentYear; y >= earliestYear; y--) {
-    const closure = closureByYear.get(y)
-    years.push({
-      year: y,
-      closed: Boolean(closure),
-      closable: now >= new Date(y + 1, 0, 1),
-      entryCount: countByYear.get(y) ?? 0,
-      closedAt: closure?.closedAt.toISOString() ?? null,
-      closedByName: closure?.closedByName ?? null,
-    })
-  }
-
   return (
     <div className="space-y-6">
-      <PeriodClosurePanel years={years} />
       <div className="dp-card overflow-x-auto p-0">
       <div className="flex items-center justify-between px-6 pb-2 pt-5">
         <h2 className="text-sm font-bold uppercase tracking-wide text-gray-500">

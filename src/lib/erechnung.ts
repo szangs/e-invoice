@@ -105,6 +105,15 @@ export type ParsedInvoiceData = {
   // nachvollziehbar, warum die Summe der Positionen nicht zur Netto-Summe passt.
   documentAllowance: number | null
   lines: InvoiceLine[]
+  // Zahlungsverkehr (Stefan 2026-08-27, für SEPA-Sammelüberweisung) — IBAN/BIC
+  // des Verkäufers, falls im PaymentMeans-Block angegeben. Nur eine
+  // Vorbefüllung: wird in lib/vendorMemory.ts UNGEPRÜFT im Lieferanten-
+  // register abgelegt (VendorAddress.ibanVerifiedAt bleibt leer) — ein
+  // Mensch muss sie erst bestätigen, bevor sie für einen SEPA-Export nutzbar
+  // ist (siehe lib/sepa.ts). Bei mehreren PaymentMeans-Blöcken wird der
+  // erste MIT IBAN genommen.
+  sellerIban: string | null
+  sellerBic: string | null
 }
 
 // `checks` (Stefan 2026-08-26): dieselben Pflichtangaben-Regeln wie `missing`,
@@ -305,6 +314,11 @@ function parseCii(root: Node): ParsedInvoiceData {
 
   const period = settlement?.BillingSpecifiedPeriod
 
+  // Zahlungsverkehr (Stefan 2026-08-27) — erster PaymentMeans-Block MIT IBAN
+  // (es kann mehrere geben, z. B. Überweisung + Lastschrift-Mandat gemischt).
+  const paymentMeansBlocks = asArray(settlement?.SpecifiedTradeSettlementPaymentMeans)
+  const paymentMeansWithIban = paymentMeansBlocks.find((p: Node) => val(p?.PayeePartyCreditorFinancialAccount?.IBANID))
+
   return {
     number: val(doc?.ID),
     issueDate: toIsoDate(doc?.IssueDateTime?.DateTimeString),
@@ -329,6 +343,8 @@ function parseCii(root: Node): ParsedInvoiceData {
     taxRates,
     documentAllowance: sumDiscount(settlement?.SpecifiedTradeAllowanceCharge, 'ActualAmount'),
     lines,
+    sellerIban: val(paymentMeansWithIban?.PayeePartyCreditorFinancialAccount?.IBANID),
+    sellerBic: val(paymentMeansWithIban?.PayeeSpecifiedCreditorFinancialInstitution?.BICID),
   }
 }
 
@@ -369,6 +385,13 @@ function parseUbl(inv: Node): ParsedInvoiceData {
 
   const period = first(inv?.InvoicePeriod)
 
+  // Zahlungsverkehr (Stefan 2026-08-27) — erster PaymentMeans-Block MIT IBAN.
+  const paymentMeansBlocks = asArray(inv?.PaymentMeans)
+  const paymentMeansWithIban = paymentMeansBlocks.find((p: Node) => val(p?.PayeeFinancialAccount?.ID))
+  const sellerBic =
+    val(paymentMeansWithIban?.PayeeFinancialAccount?.FinancialInstitutionBranch?.ID) ??
+    val(paymentMeansWithIban?.PayeeFinancialAccount?.FinancialInstitutionBranch?.FinancialInstitution?.ID)
+
   return {
     number: val(inv?.ID),
     issueDate: toIsoDate(inv?.IssueDate),
@@ -395,6 +418,8 @@ function parseUbl(inv: Node): ParsedInvoiceData {
     taxRates,
     documentAllowance: sumDiscount(inv?.AllowanceCharge, 'Amount'),
     lines,
+    sellerIban: val(paymentMeansWithIban?.PayeeFinancialAccount?.ID),
+    sellerBic,
   }
 }
 
@@ -528,6 +553,56 @@ function normalizeCompanyName(s: string): string {
 export function buyerNameMismatch(tenantLegalName: string | null, buyerName: string | null): boolean {
   if (!tenantLegalName?.trim() || !buyerName?.trim()) return false
   return normalizeCompanyName(tenantLegalName) !== normalizeCompanyName(buyerName)
+}
+
+/**
+ * Serverseitige Sperre für "Sachlich richtig"/"Formal geprüft" (Stefan
+ * 2026-08-26, Review-Fund): die Detailseite blockiert die Freigabe bereits
+ * clientseitig bei "Klärung nötig" (siehe InvoiceEditForm.tsx primaryAction/
+ * recommendation), das galt aber NUR für den Haupt-Button — der S-Punkt in
+ * der Rechnungsliste (CheckBadges.tsx) und ein direkter API-Aufruf prüften
+ * gar nichts. Bildet dieselben 4 "fail"-Bedingungen wie die Client-
+ * Empfehlung nach (Spam-Klassifikation, Dublette, fehlende Pflichtangaben,
+ * unbestätigte Empfänger-Abweichung) — bewusst NICHT die nur "warn"-stufigen
+ * (KI-Bestätigung/-Unsicherheit), die client- wie serverseitig weiterhin
+ * nicht blockieren sollen. Leeres Array = keine Sperre.
+ */
+export function getApprovalBlockers(
+  invoice: {
+    invoiceClass: string | null
+    duplicateOfId: string | null
+    xmlData: string | null
+    taxRegion: string | null
+    sellerCountryCode: string | null
+    pflichtangabenIgnoredAt: Date | null
+    buyerNameMismatchAcknowledged: boolean
+  },
+  tenant: { legalName: string | null; buyerNameMismatchBlocksHandover: boolean },
+): string[] {
+  const reasons: string[] = []
+  if (invoice.invoiceClass === 'NOT_INVOICE') {
+    reasons.push('Mail-Eingang stuft dies als vermutlich keine Rechnung ein.')
+  }
+  if (invoice.duplicateOfId) {
+    reasons.push('Mögliche Dublette einer bereits vorhandenen Rechnung.')
+  }
+  if (invoice.xmlData) {
+    const parsed = parseInvoiceXml(invoice.xmlData)
+    if (parsed && !invoice.pflichtangabenIgnoredAt) {
+      const region = (invoice.taxRegion as TaxRegion | null) ?? classifyTaxRegion(parsed.data.sellerCountryCode ?? invoice.sellerCountryCode)
+      const validation = validateData(parsed.data, region)
+      if (!validation.valid) reasons.push(`Fehlende Pflichtangaben: ${validation.missing.join(', ')}.`)
+    }
+    if (
+      parsed &&
+      tenant.buyerNameMismatchBlocksHandover &&
+      !invoice.buyerNameMismatchAcknowledged &&
+      buyerNameMismatch(tenant.legalName, parsed.data.buyerName)
+    ) {
+      reasons.push('Rechnungsempfänger weicht von der hinterlegten Firmenbezeichnung ab.')
+    }
+  }
+  return reasons
 }
 
 /** XML-Rechnung parsen (Syntax-Erkennung UBL vs. CII). */

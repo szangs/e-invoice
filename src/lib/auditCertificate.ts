@@ -9,6 +9,8 @@ import { APP_COMPANY } from '@/lib/config'
 
 export type AuditClosureData = {
   year: number
+  /** Name des Mandanten (Stefan 2026-08-27, Perioden-Abschluss ist jetzt je Mandant statt systemweit). */
+  tenantName: string
   closedAt: Date
   closedByName: string
   closedByEmail: string
@@ -52,7 +54,9 @@ export async function buildAuditCertificatePdf(data: AuditClosureData): Promise<
   centerText(page, 'Hiermit wird bestätigt, dass das hashverkettete Audit-Protokoll für das Geschäftsjahr', y, font, 12, dark, width)
   y -= 46
   centerText(page, String(data.year), y, bold, 42, navy, width)
-  y -= 48
+  y -= 30
+  centerText(page, `des Mandanten „${data.tenantName}“`, y, italic, 12, gray, width)
+  y -= 34
   centerText(page, 'ordnungsgemäß abgeschlossen und versiegelt wurde.', y, font, 12, dark, width)
   y -= 64
 

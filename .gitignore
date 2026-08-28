@@ -8,6 +8,10 @@ build/
 .env*.local
 
 uploads/
+backup-packages/
+
+# Lokale npm-Konfiguration (maschinenspezifischer prefix) — nicht committen
+.npmrc
 
 # KoSIT-Validator (Stefan 2026-08-26): JRE + validator.jar + Regelwerk werden
 # per scripts/setup-kosit.ts heruntergeladen, nicht ins Repo committen (groß,

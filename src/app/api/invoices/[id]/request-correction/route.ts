@@ -13,6 +13,7 @@ import { requireInvoiceContentAccess } from '@/lib/basketRights'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
 import { sendSystemMail } from '@/lib/mail'
+import { hasRoleAction } from '@/lib/roleActions'
 import { isDevMode } from '@/lib/settings'
 
 const schema = z.object({
@@ -27,6 +28,10 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     const invoice = await prisma.invoice.findFirst({ where: { id: params.id, tenantId } })
     if (!invoice) throw new ApiError(404, 'Rechnung nicht gefunden.')
     await requireInvoiceContentAccess(ctx, invoice.basketId)
+    const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { roleActions: true } })
+    if (!hasRoleAction(tenant, ctx.role, 'REQUEST_CORRECTION')) {
+      throw new ApiError(403, 'Ihre Rolle darf keine Korrektur beim Lieferanten anfordern.')
+    }
 
     const { to, message } = schema.parse(await req.json())
 

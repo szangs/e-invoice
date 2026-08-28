@@ -1,15 +1,18 @@
 // Revisionssicheres Audit-Protokoll — Mandanten-Ansicht (Stefan 2026-07-08):
 // dieselbe Hash-Ketten-Tabelle wie /platform/audit, aber auf den eigenen
 // Mandanten beschränkt und mit einfacher Volltextsuche (Aktion/Akteur/Details).
-// Zugriff: Mandanten-Administrator und die Rolle "Prüfer" (Auditor) — der
-// Betreiber sieht ohnehin alles unter /platform/audit.
-import { Role } from '@prisma/client'
+// Zugriff: Mandanten-Administrator + Rollen mit dem Rollen-Recht VIEW_AUDIT
+// (Standard: Prüfer, siehe lib/roleActions.ts — dort in der Benutzerverwaltung
+// pro Mandant editierbar) — der Betreiber sieht ohnehin alles unter /platform/audit.
 import { format } from 'date-fns'
 import { de } from 'date-fns/locale'
 import { redirect } from 'next/navigation'
+import { Role } from '@prisma/client'
 import { getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { hasRoleAction } from '@/lib/roleActions'
 import { MailinHistoryPanel } from './MailinHistoryPanel'
+import { PeriodClosurePanel, type PeriodRow } from './PeriodClosurePanel'
 
 export const dynamic = 'force-dynamic'
 
@@ -20,10 +23,11 @@ export default async function TenantAuditPage({
 }) {
   const ctx = await getContext()
   if (!ctx.tenantId) redirect('/platform')
-  if (ctx.role !== Role.TENANT_ADMIN && ctx.role !== Role.AUDITOR && ctx.role !== Role.OPERATOR_ADMIN) {
+  const tenantId = requireTenant(ctx)
+  const tenantForRole = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { roleActions: true } })
+  if (!hasRoleAction(tenantForRole, ctx.role, 'VIEW_AUDIT')) {
     redirect('/dashboard')
   }
-  const tenantId = requireTenant(ctx)
 
   const q = (searchParams.q ?? '').trim()
   const page = Math.max(1, Number(searchParams.page ?? 1))
@@ -58,8 +62,44 @@ export default async function TenantAuditPage({
     return `/audit?${params.toString()}`
   }
 
+  // Perioden-Abschluss (Stefan 2026-08-27, "gehört zum Mandanten, nicht ins
+  // Betreiber-Cockpit") — die destruktive, unumkehrbare Abschluss-Aktion
+  // bleibt dem Mandanten-Administrator vorbehalten, auch wenn Prüfer
+  // (VIEW_AUDIT) diese Seite selbst sehen dürfen.
+  const isTenantAdmin = ctx.role === Role.TENANT_ADMIN
+  let years: PeriodRow[] = []
+  if (isTenantAdmin) {
+    const [earliest, closures, countsByYearRaw] = await Promise.all([
+      // Nach createdAt sortiert (nicht id) — ein nachträglich importierter/
+      // rückdatierter Eintrag könnte sonst eine ältere Periode verstecken.
+      prisma.auditLog.findFirst({ where: { tenantId }, orderBy: { createdAt: 'asc' }, select: { createdAt: true } }),
+      prisma.auditPeriodClosure.findMany({ where: { tenantId }, orderBy: { year: 'desc' } }),
+      prisma.$queryRaw<{ year: number; count: bigint }[]>`
+        SELECT EXTRACT(YEAR FROM "createdAt")::int AS year, COUNT(*)::bigint AS count
+        FROM "AuditLog" WHERE "tenantId" = ${tenantId} GROUP BY 1
+      `,
+    ])
+    const closureByYear = new Map(closures.map((c) => [c.year, c]))
+    const countByYear = new Map(countsByYearRaw.map((r) => [r.year, Number(r.count)]))
+    const now = new Date()
+    const currentYear = now.getFullYear()
+    const earliestYear = earliest?.createdAt.getFullYear() ?? currentYear
+    for (let y = currentYear; y >= earliestYear; y--) {
+      const closure = closureByYear.get(y)
+      years.push({
+        year: y,
+        closed: Boolean(closure),
+        closable: now >= new Date(y + 1, 0, 1),
+        entryCount: countByYear.get(y) ?? 0,
+        closedAt: closure?.closedAt.toISOString() ?? null,
+        closedByName: closure?.closedByName ?? null,
+      })
+    }
+  }
+
   return (
     <div className="space-y-4">
+      {isTenantAdmin && <PeriodClosurePanel years={years} />}
       <MailinHistoryPanel />
 
       <form className="dp-card flex flex-wrap items-end gap-3" method="get">

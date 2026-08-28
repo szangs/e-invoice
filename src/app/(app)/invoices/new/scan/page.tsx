@@ -13,10 +13,18 @@
 // Browser verschlüsselt (Zero-Knowledge — Server sieht nur Chiffrat).
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import QRCode from 'qrcode'
 import { useEffect, useRef, useState } from 'react'
-import { encryptBytes, encryptJson, sha256Hex } from '@/lib/clientCrypto'
+import { b64encode, decryptBytes, encryptBytes, encryptJson, generateDekRaw, importDek, sha256Hex } from '@/lib/clientCrypto'
+import { decodeQrFromImage, parseGiroCode, type GiroCodeData } from '@/lib/clientQr'
 import { fetchEncConfig, getCachedDek, unlockWithPassphrase } from '@/lib/keyStore'
-import { DocumentCamera } from './DocumentCamera'
+
+// Handy-als-Kamera-Kopplung (Stefan 2026-08-27, siehe scan-pair/[token]/
+// page.tsx + lib/scanSession.ts): PC zeigt QR-Code, Handy lädt Fotos hoch,
+// PC übernimmt sie hier automatisch in die normale Seiten-Liste — ab da
+// läuft alles wie bei lokal aufgenommenen Fotos weiter.
+const PAIR_POLL_MS = 2000
+type Pairing = { token: string; url: string; qrSvg: string; expiresAt: string; key: CryptoKey | null; photoCount: number }
 
 const EMPTY = {
   vendor: '', invoiceNumber: '', invoiceDate: '', dueDate: '',
@@ -88,6 +96,24 @@ export default function ScanInvoicePage() {
   const [encEnabled, setEncEnabled] = useState(false)
   const [locked, setLocked] = useState(false)
   const [passphrase, setPassphrase] = useState('')
+  // "Freigeben" gleich beim Erfassen anbieten (Stefan 2026-08-27, "beim
+  // Erfassen einer Rechnung mit Handy oder Kamera bitte gleich die Option
+  // Freigeben mit dazunehmen") — spart bei einfachen Fällen den Umweg über
+  // die Detailseite. Läuft NACH dem eigentlichen Speichern als zusätzlicher
+  // PATCH mit denselben Feldern wie der "Prüfen & freigeben"-Knopf dort
+  // (InvoiceEditForm.tsx primaryAction) — dieselbe Server-Route prüft dabei
+  // ganz genauso Korb-Recht (APPROVE) und offene Klärungspunkte (Dublette,
+  // fehlende Pflichtangaben, Spam-Verdacht …); ohne Berechtigung oder bei
+  // ungeklärten Punkten schlägt der Zusatzschritt einfach fehl, ohne dass
+  // das eigentliche Speichern der Rechnung davon betroffen wäre.
+  const [approveAfterSave, setApproveAfterSave] = useState(false)
+  // Zahlungs-QR-Code auf dem Beleg selbst (Stefan 2026-08-27, "die
+  // Möglichkeit einkalkulieren, dass der Beleg schon einen QR-Code hat") —
+  // siehe lib/clientQr.ts. Nur der ERSTE gefundene gültige GiroCode zählt
+  // (mehrseitige Belege haben höchstens auf einer Seite einen).
+  const [giroCode, setGiroCode] = useState<GiroCodeData | null>(null)
+  const [giroCodeApplied, setGiroCodeApplied] = useState(false)
+  const [giroCodeDismissed, setGiroCodeDismissed] = useState(false)
   const [aiAvailable, setAiAvailable] = useState(false)
   const [aiReason, setAiReason] = useState('')
   const [aiBusy, setAiBusy] = useState(false)
@@ -95,8 +121,25 @@ export default function ScanInvoicePage() {
   const [aiWarnings, setAiWarnings] = useState<string[]>([])
   const [aiFlags, setAiFlags] = useState<string[]>([])
   const [usedAi, setUsedAi] = useState(false)
-  const [showCamera, setShowCamera] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
+  // Zwei getrennte <input>-Elemente statt einem gemeinsamen mit "capture"
+  // (Stefan 2026-08-27, "muss richtig gehen am PC und am Handy") — ein
+  // einzelner Input mit capture="environment" UND accept="image/*,
+  // application/pdf" verhält sich browser-/OS-abhängig unzuverlässig
+  // (v. a. iOS Safari öffnet dann teils direkt nur die Kamera und blendet
+  // die Datei-/Fotomediathek-Auswahl ganz aus, oder ignoriert PDF in der
+  // Kamera-Ansicht). Getrennt ist beides für sich hundertprozentig
+  // vorhersagbar: capture+image/* erzwingt zuverlässig die Kamera-App,
+  // der zweite Input ganz ohne capture öffnet immer den normalen
+  // Datei-/Mediatheken-Dialog (PC: Explorer/Finder inkl. Scanner-Ordner,
+  // Handy: Fotos/Dateien-App) — auf beiden Plattformen nutzbar.
+  const cameraInputRef = useRef<HTMLInputElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [pairing, setPairing] = useState<Pairing | null>(null)
+  const [pairingBusy, setPairingBusy] = useState(false)
+  const [pairingError, setPairingError] = useState('')
+  // Nur als Ref, nicht als State — löst bei jedem eintreffenden Foto keinen
+  // eigenen Re-Render aus, wird nur vom Polling-Intervall gelesen/geschrieben.
+  const lastSeenRef = useRef<string>('')
 
   useEffect(() => {
     fetchEncConfig().then(async (cfg) => {
@@ -124,6 +167,19 @@ export default function ScanInvoicePage() {
 
   const set = (key: keyof typeof EMPTY, value: string) => setF((p) => ({ ...p, [key]: value }))
 
+  // Zahlungs-QR-Code prüfen (Stefan 2026-08-27, s. o.) — läuft für jedes neu
+  // hinzugekommene FOTO (nicht PDF) im Hintergrund, blockiert also nicht die
+  // Aufnahme weiterer Seiten. Funktionales Update statt direktem giroCode-
+  // Zugriff, damit bei mehreren parallel dekodierenden Fotos zuverlässig nur
+  // der zuerst fertige Treffer zählt (keine verlorene Aktualisierung).
+  async function checkForGiroCode(file: File) {
+    const text = await decodeQrFromImage(file).catch(() => null)
+    if (!text) return
+    const parsed = parseGiroCode(text)
+    if (!parsed) return
+    setGiroCode((prev) => prev ?? parsed)
+  }
+
   function onFilesSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? [])
     e.target.value = '' // Feld leeren, damit dieselbe Aufnahme/Datei erneut ausgewählt werden kann
@@ -137,18 +193,24 @@ export default function ScanInvoicePage() {
       }
     })
     setPages((p) => [...p, ...next])
+    next.forEach((p) => { if (p.kind === 'image') checkForGiroCode(p.file) })
   }
 
-  /** Von DocumentCamera (Live-Scan mit Kantenerkennung) übergebene, bereits
-   * zugeschnittene Aufnahme als neue Seite übernehmen. Kamera bleibt offen,
-   * damit direkt die nächste Seite gescannt werden kann. */
-  function onCameraCapture(file: File) {
-    setPages((p) => [...p, {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      file,
-      kind: 'image',
-      previewUrl: URL.createObjectURL(file),
-    }])
+  // Zahlungs-QR-Code übernehmen (Stefan 2026-08-27) — füllt bewusst nur
+  // LEERE Felder (nie ein bereits vom Bearbeiter eingegebener Wert wird
+  // überschrieben), genau wie die Lieferanten-Schnellausfüllung. IBAN/BIC
+  // haben hier kein eigenes Feld — die gehen erst beim Speichern mit (siehe
+  // submit unten), zusammen mit dem restlichen Inhalt.
+  function applyGiroCode() {
+    if (!giroCode) return
+    setF((p) => ({
+      ...p,
+      vendor: p.vendor || giroCode.creditorName || p.vendor,
+      amountGross: !p.amountGross && giroCode.amount !== null ? toInput(giroCode.amount) : p.amountGross,
+      currency: giroCode.currency && CURRENCIES.includes(giroCode.currency) ? giroCode.currency : p.currency,
+      invoiceNumber: !p.invoiceNumber && giroCode.reference ? giroCode.reference : p.invoiceNumber,
+    }))
+    setGiroCodeApplied(true)
   }
 
   function removePage(id: string) {
@@ -169,6 +231,100 @@ export default function ScanInvoicePage() {
       return next
     })
   }
+
+  async function openPairing() {
+    setPairingBusy(true)
+    setPairingError('')
+    try {
+      const res = await fetch('/api/scan-sessions', { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setPairingError(data.error ?? 'Kopplung konnte nicht gestartet werden.')
+        return
+      }
+      // Eigener, zufälliger Einmal-Schlüssel NUR für diese Sitzung — bewusst
+      // ohne jeden Bezug zum echten Beleg-Datenschlüssel (Zero-Knowledge,
+      // siehe Kommentar in schema.prisma/ScanSession). Steckt nur im
+      // URL-Fragment (#k=…), geht also nie an den Server.
+      let key: CryptoKey | null = null
+      let keyFragment = ''
+      if (encEnabled) {
+        const raw = generateDekRaw()
+        key = await importDek(raw)
+        keyFragment = `#k=${encodeURIComponent(b64encode(raw))}`
+      }
+      const url = `${window.location.origin}/scan-pair/${data.token}${keyFragment}`
+      const qrSvg = await QRCode.toString(url, { type: 'svg', margin: 1, width: 220 })
+      lastSeenRef.current = ''
+      setPairing({ token: data.token, url, qrSvg, expiresAt: data.expiresAt, key, photoCount: 0 })
+    } catch {
+      setPairingError('Kopplung konnte nicht gestartet werden.')
+    } finally {
+      setPairingBusy(false)
+    }
+  }
+
+  function closePairing() {
+    // Das eigentliche Schließen (DELETE) übernimmt die Cleanup-Funktion des
+    // Polling-Effects unten — die kennt den zugehörigen Token korrekt aus
+    // ihrem eigenen Closure, unabhängig davon, ob wegen expliziten
+    // Schließens, Sitzungswechsels oder Verlassens der Seite aufgeräumt wird
+    // (react-hooks/exhaustive-deps würde bei einem separaten, leer
+    // abhängigen Effect sonst einen veralteten pairing-Wert einfangen).
+    setPairing(null)
+  }
+
+  // Polling der Handy-Fotos (Stefan 2026-08-27): solange die Kopplung offen
+  // ist, alle 2s neue Fotos abholen und wie lokal aufgenommene Seiten
+  // übernehmen. Die Cleanup-Funktion schließt die Sitzung server-seitig —
+  // sie läuft sowohl bei jedem Pairing-Wechsel als auch beim Verlassen der
+  // Seite, sonst bliebe der Token bis zum Ablauf (15 Min) nutzbar.
+  useEffect(() => {
+    if (!pairing) return
+    let cancelled = false
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/scan-sessions/${pairing.token}/photos?since=${encodeURIComponent(lastSeenRef.current)}`)
+        if (res.status === 410) {
+          if (!cancelled) { setPairingError('Sitzung abgelaufen — bitte neu koppeln.'); setPairing(null) }
+          return
+        }
+        const data = await res.json().catch(() => ({ photos: [] }))
+        const photos = (data.photos ?? []) as { id: string; mimeType: string; encrypted: boolean; createdAt: string }[]
+        for (const p of photos) {
+          const fileRes = await fetch(`/api/scan-sessions/${pairing.token}/photos/${p.id}`)
+          if (!fileRes.ok) continue
+          let bytes = await fileRes.arrayBuffer()
+          if (p.encrypted && pairing.key) {
+            try { bytes = await decryptBytes(pairing.key, bytes) } catch { continue }
+          }
+          const file = new File([bytes], `handy-scan-${p.id}.jpg`, { type: p.mimeType })
+          if (cancelled) return
+          setPages((prev) => [...prev, {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            file, kind: 'image', previewUrl: URL.createObjectURL(file),
+          }])
+          checkForGiroCode(file)
+          setPairing((prev) => (prev ? { ...prev, photoCount: prev.photoCount + 1 } : prev))
+          lastSeenRef.current = p.createdAt
+        }
+      } catch {
+        // Netzwerkfehler beim Polling sind kein Abbruch wert — nächster Tick versucht's erneut.
+      }
+    }, PAIR_POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+      fetch(`/api/scan-sessions/${pairing.token}`, { method: 'DELETE' }).catch(() => undefined)
+    }
+    // Bewusst nur auf token reagieren, nicht auf ganz pairing (Stefan
+    // 2026-08-27) — sonst würde jeder photoCount-Zähler-Tick (siehe
+    // setPairing im Intervall) den Poll-Timer neu aufsetzen. key/token
+    // ändern sich innerhalb einer Sitzung nie, der Closure-Wert bleibt
+    // also korrekt; photoCount wird bewusst nur per funktionalem Update
+    // geschrieben, nie aus diesem Closure gelesen.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pairing?.token])
 
   async function fillWithAi() {
     const firstPhoto = pages.find((p) => p.kind === 'image')
@@ -273,6 +429,16 @@ export default function ScanInvoicePage() {
       fd.append('source', 'SCAN')
       if (usedAi) fd.append('aiAssisted', '1')
       if (directDebitByVendor) fd.append('directDebitByVendor', '1')
+      // IBAN/BIC aus dem Zahlungs-QR-Code (Stefan 2026-08-27) — geht direkt
+      // ins Lieferanten-Adressregister (lib/vendorMemory.ts), nicht auf die
+      // Rechnung selbst (dafür gibt es hier kein Feld). Bewusst NUR bei
+      // unverschlüsselten Mandanten — der Server soll die IBAN bei aktiver
+      // Inhalts-Verschlüsselung genauso wenig im Klartext sehen wie
+      // Lieferant/Betrag (dieselbe Zero-Knowledge-Grenze).
+      if (!encEnabled && giroCodeApplied && giroCode) {
+        if (giroCode.iban) fd.append('sellerIban', giroCode.iban)
+        if (giroCode.bic) fd.append('sellerBic', giroCode.bic)
+      }
 
       let dek: Awaited<ReturnType<typeof getCachedDek>> = null
       if (encEnabled) {
@@ -310,6 +476,22 @@ export default function ScanInvoicePage() {
         setError(data.error ?? 'Speichern fehlgeschlagen.')
         return
       }
+      // Freigeben-Option (s. o.) — die Rechnung ist an dieser Stelle bereits
+      // gespeichert; ein Fehlschlag hier (kein Recht, offene Klärungspunkte)
+      // darf das nicht rückgängig machen, nur informieren.
+      if (approveAfterSave && data.invoice?.id) {
+        const approveRes = await fetch(`/api/invoices/${data.invoice.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ checkFormal: true, checkSubstantive: true }),
+        })
+        if (!approveRes.ok) {
+          const approveData = await approveRes.json().catch(() => ({}))
+          window.alert(
+            `Rechnung gespeichert — automatische Freigabe war nicht möglich: ${approveData.error ?? 'unbekannter Fehler'}\n\nBitte in der Rechnung selbst prüfen.`,
+          )
+        }
+      }
       router.push('/invoices')
       router.refresh()
     } catch (err) {
@@ -333,31 +515,40 @@ export default function ScanInvoicePage() {
 
       <div className="dp-card space-y-3">
         <p className="text-sm text-gray-600">
-          Fotografieren Sie die Rechnung Seite für Seite mit dem Smartphone, oder wählen Sie
-          bereits gescannte Dateien aus — z. B. von einem am PC angeschlossenen Scanner
-          (mehrere Dateien auf einmal möglich). Die Seiten werden zu einem PDF zusammengeführt.
+          <strong>Foto aufnehmen</strong> öffnet auf dem Smartphone direkt die Kamera — Seite für
+          Seite fotografieren. <strong>Datei auswählen</strong> öffnet die normale Datei-/
+          Mediathekenauswahl — z. B. für bereits vorhandene Fotos oder gescannte Dateien von einem
+          am PC angeschlossenen Scanner (mehrere Dateien auf einmal möglich). Die Seiten werden zu
+          einem PDF zusammengeführt.
         </p>
         <input
-          ref={inputRef}
+          ref={cameraInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={onFilesSelected}
+        />
+        <input
+          ref={fileInputRef}
           type="file"
           accept="image/*,application/pdf"
-          capture="environment"
           multiple
           className="hidden"
           onChange={onFilesSelected}
         />
         <div className="flex flex-wrap gap-2">
-          <button type="button" className="btn-primary" onClick={() => setShowCamera((v) => !v)}>
-            {showCamera ? 'Live-Scan schließen' : '📷 Live-Scan (erkennt Kanten automatisch)'}
+          <button type="button" className="btn-primary" onClick={() => cameraInputRef.current?.click()}>
+            📷 Foto aufnehmen
           </button>
-          <button type="button" className="btn-secondary" onClick={() => inputRef.current?.click()}>
-            + Seite hinzufügen (Foto/Datei)
+          <button type="button" className="btn-secondary" onClick={() => fileInputRef.current?.click()}>
+            📁 Datei auswählen
+          </button>
+          <button type="button" className="btn-secondary" onClick={openPairing} disabled={pairingBusy}>
+            {pairingBusy ? 'Kopplung wird gestartet …' : '📱 Mit Handy scannen'}
           </button>
         </div>
-
-        {showCamera && (
-          <DocumentCamera onCapture={onCameraCapture} onClose={() => setShowCamera(false)} />
-        )}
+        {pairingError && <p className="text-sm text-[var(--danger)]">{pairingError}</p>}
 
         {pages.length > 0 && (
           <div className="space-y-2">
@@ -391,6 +582,30 @@ export default function ScanInvoicePage() {
                 </li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {giroCode && !giroCodeDismissed && (
+          <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-muted)] px-3 py-2 text-xs text-gray-700">
+            <p className="font-semibold text-gray-800">💳 Zahlungs-QR-Code auf dem Beleg erkannt</p>
+            <p className="mt-1">
+              {giroCode.creditorName && <>Empfänger: <strong>{giroCode.creditorName}</strong> · </>}
+              IBAN: <span className="font-mono">{giroCode.iban}</span>
+              {giroCode.amount !== null && <> · Betrag: {giroCode.amount.toFixed(2)} {giroCode.currency ?? 'EUR'}</>}
+            </p>
+            {giroCodeApplied ? (
+              <p className="mt-1.5 text-[var(--accent)]">
+                ✓ Übernommen — leere Felder oben wurden befüllt.{' '}
+                {encEnabled
+                  ? 'Die IBAN wird bei aktiver Beleg-Verschlüsselung NICHT ans Lieferantenregister übertragen (Zero-Knowledge).'
+                  : 'Die IBAN geht beim Speichern ans Lieferantenregister.'}
+              </p>
+            ) : (
+              <div className="mt-1.5 flex gap-2">
+                <button type="button" className="btn-secondary" onClick={applyGiroCode}>Übernehmen</button>
+                <button type="button" className="text-gray-500 underline" onClick={() => setGiroCodeDismissed(true)}>Ignorieren</button>
+              </div>
+            )}
           </div>
         )}
 
@@ -480,6 +695,11 @@ export default function ScanInvoicePage() {
           <textarea className="dp-input mt-1" rows={3} value={f.notes}
             onChange={(e) => set('notes', e.target.value)} />
         </div>
+        <label className="flex items-center gap-2 text-sm text-gray-700"
+          title="Prüft formal und sachlich und gibt direkt frei — geht nur, wenn Sie dazu berechtigt sind und keine Klärungspunkte offen sind (z. B. Dublette, fehlende Pflichtangaben); sonst bleibt die Rechnung normal im Eingangskorb liegen.">
+          <input type="checkbox" checked={approveAfterSave} onChange={(e) => setApproveAfterSave(e.target.checked)} />
+          Nach dem Speichern gleich prüfen &amp; freigeben (falls berechtigt)
+        </label>
         {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
         <div className="flex gap-2">
           <button type="submit" className="btn-primary" disabled={busy || pages.length === 0}>
@@ -488,6 +708,29 @@ export default function ScanInvoicePage() {
           <button type="button" className="btn-secondary" onClick={() => router.push('/invoices')}>Abbrechen</button>
         </div>
       </form>
+
+      {pairing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={closePairing}>
+          <div className="w-full max-w-xs space-y-3 rounded-xl bg-white p-5 text-center shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h2 className="font-serif text-lg font-semibold text-gray-800">📱 Mit Handy scannen</h2>
+            <p className="text-xs text-gray-500">
+              QR-Code mit der Handy-Kamera scannen — jedes dort aufgenommene Foto erscheint hier
+              automatisch als neue Seite.{pairing.key && ' Übertragung ist verschlüsselt.'}
+            </p>
+            {/* Eigenes, im Browser erzeugtes SVG (kein Nutzereingabe-HTML) — dangerouslySetInnerHTML hier unbedenklich. */}
+            <div
+              className="mx-auto w-fit rounded-lg border border-[var(--line)] p-2"
+              dangerouslySetInnerHTML={{ __html: pairing.qrSvg }}
+            />
+            <p className="text-sm font-medium text-[var(--accent)]">
+              {pairing.photoCount > 0
+                ? `✓ ${pairing.photoCount} Foto${pairing.photoCount === 1 ? '' : 's'} empfangen`
+                : 'Warte auf erstes Foto …'}
+            </p>
+            <button type="button" className="btn-primary w-full" onClick={closePairing}>Fertig</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

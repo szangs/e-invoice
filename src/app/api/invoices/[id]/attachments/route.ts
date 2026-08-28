@@ -12,6 +12,7 @@ import { isInvoiceLockedByClosure } from '@/lib/auditClosure'
 import { requireInvoiceContentAccess } from '@/lib/basketRights'
 import { ApiError, getContext, requireTenant } from '@/lib/context'
 import { prisma } from '@/lib/db'
+import { assertNotHandedOffToSomeoneElse } from '@/lib/invoiceHandoff'
 import { ALLOWED_MIME, MAX_FILE_BYTES, saveInvoiceFile } from '@/lib/storage'
 
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
@@ -51,9 +52,10 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     if (!invoice) throw new ApiError(404, 'Rechnung nicht gefunden.')
     await requireInvoiceContentAccess(ctx, invoice.basketId)
     if (invoice.deletedAt) throw new ApiError(400, 'Rechnung ist gelöscht.')
-    if (await isInvoiceLockedByClosure(invoice.createdAt)) {
+    if (await isInvoiceLockedByClosure(tenantId, invoice.createdAt)) {
       throw new ApiError(423, `Diese Rechnung gehört zum abgeschlossenen Prüfungszeitraum ${invoice.createdAt.getFullYear()} und ist schreibgeschützt.`)
     }
+    await assertNotHandedOffToSomeoneElse(invoice.id, ctx.userId)
     if (invoice.supersededAt) {
       throw new ApiError(423, 'Diese Rechnung wurde durch eine neuere Version ersetzt und ist schreibgeschützt.')
     }
