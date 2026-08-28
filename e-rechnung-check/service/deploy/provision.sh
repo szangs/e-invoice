@@ -72,8 +72,12 @@ else
 fi
 
 echo "== nginx =="
-cp "$APP_DIR/deploy/nginx-e-rechnung.conf" /etc/nginx/sites-available/e-rechnung
-ln -sf /etc/nginx/sites-available/e-rechnung /etc/nginx/sites-enabled/e-rechnung
+if grep -qs "listen 443" /etc/nginx/sites-available/e-rechnung; then
+  echo "  vorhandene TLS-Config bleibt unangetastet (nach certbot NICHT ueberschreiben)."
+else
+  cp "$APP_DIR/deploy/nginx-e-rechnung.conf" /etc/nginx/sites-available/e-rechnung
+  ln -sf /etc/nginx/sites-available/e-rechnung /etc/nginx/sites-enabled/e-rechnung
+fi
 rm -f /etc/nginx/sites-enabled/e-rechnung-api
 nginx -t && systemctl reload nginx
 

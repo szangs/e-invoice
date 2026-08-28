@@ -10,14 +10,28 @@ oder Anmeldung.
 
 ```
 e-rechnung-check/
-├── public/            ← statische Teaser-Seite (index.html, style.css, app.js)
+├── public/            ← statische Teaser-Seite
+│   ├── index.html
+│   ├── style.css
+│   ├── app.js
+│   └── fonts/inter-latin.woff2   ← Inter selbst gehostet (kein Google Fonts)
 └── service/           ← Node-Dienst + KoSIT-Validator (Java)
-    ├── src/server.mjs     HTTP-API  POST /api/analyze , GET /healthz
+    ├── src/server.mjs     HTTP-API  POST /api/analyze , GET/HEAD /healthz
     ├── src/erechnung.mjs  XML-/ZUGFeRD-Parsing + formale Kernprüfung
     ├── src/kosit.mjs      Aufruf des KoSIT-Validators + Report-Auswertung
     ├── setup-kosit.mjs    lädt Validator-JAR + XRechnung-Konfiguration
-    └── deploy/            systemd-Unit, nginx-Config, provision.sh
+    └── deploy/
+        ├── nginx-e-rechnung.conf      Bootstrap (Port 80, für den 1. certbot-Lauf)
+        ├── nginx-e-rechnung-tls.conf  Endzustand nach certbot (Referenz)
+        ├── e-rechnung-check.service   systemd-Unit
+        └── provision.sh
 ```
+
+**Datenschutz:** Die Seite lädt **keine** externen Ressourcen — Inter ist selbst
+gehostet, kein Google Fonts, kein CDN. Optionaler Cloudflare-Turnstile-Bot-Schutz
+ist standardmäßig aus. Hochgeladene Dateien werden nicht gespeichert. Ein
+sichtbarer Haftungsausschluss steht in `index.html`; Impressum/Datenschutz
+verlinken auf `www.deltaplus.de/#impressum` bzw. `#datenschutz`.
 
 **Betriebsart: All-in-one** — statische Seite **und** Dienst laufen auf einem
 vServer unter einer Domain (`e-rechnung-api.deltaplus.de`). Keine getrennte
@@ -90,6 +104,12 @@ ssh root@85.215.136.179 'chown -R erechnung:erechnung /opt/e-rechnung-check \
   && cd /opt/e-rechnung-check/service && sudo -u erechnung npm install --omit=dev \
   && systemctl restart e-rechnung-check'
 ```
+
+> **nginx-Config nach certbot NICHT per `cp` überschreiben** — sonst ist der
+> 443-Block weg. Bei Änderungen `deploy/nginx-e-rechnung-tls.conf` als Vorlage
+> nehmen, auf dem Server in `/etc/nginx/sites-available/e-rechnung` einpflegen,
+> `nginx -t && systemctl reload nginx`. Statische Dateien (`public/`) sind davon
+> nicht betroffen.
 
 KoSIT-Regeln aktualisieren (neue XRechnung-Version):
 
