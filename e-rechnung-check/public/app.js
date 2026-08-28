@@ -16,6 +16,10 @@
   var TS_SITEKEY = meta('e-rechnung-turnstile-sitekey')
   var turnstileToken = null
 
+  // Mindestdauer der Prüf-Ansicht (Werbeeinblendung), Default 10 s.
+  var DELAY_MS = parseInt(meta('e-rechnung-delay-ms'), 10)
+  if (!(DELAY_MS >= 0)) DELAY_MS = 10000
+
   // Cloudflare Turnstile nur laden, wenn ein Sitekey hinterlegt ist.
   if (TS_SITEKEY) {
     window.__erTurnstileCb = function (tok) {
@@ -95,6 +99,39 @@
     errorBox.classList.remove('hidden')
   }
 
+  // Werbe-Einblendung (Platzhalter, Lorem Ipsum). Wird sowohl im Interstitial
+  // als auch in den Seiten-Rails genutzt; hier zentral, damit später leicht
+  // gegen echte Werbemittel austauschbar.
+  function adBlockHtml() {
+    return (
+      '<div class="ad-inline">' +
+      '<p class="ad-label">Anzeige</p>' +
+      '<div class="ad-slot ad-slot-wide">' +
+      '<p class="ad-kicker">Lorem Ipsum</p>' +
+      '<p class="ad-title">Dolor sit amet, consetetur sadipscing elitr</p>' +
+      '<p class="ad-body">Lorem ipsum dolor sit amet, consetetur sadipscing elitr, sed diam ' +
+      'nonumy eirmod tempor invidunt ut labore et dolore magna aliquyam erat, sed diam voluptua. ' +
+      'At vero eos et accusam et justo duo dolores et ea rebum.</p>' +
+      '<span class="ad-cta">Mehr erfahren</span>' +
+      '</div></div>'
+    )
+  }
+
+  function showInterstitial() {
+    resultEl.innerHTML =
+      '<div class="card interstitial">' +
+      '<div class="spinner-lg" aria-hidden="true"></div>' +
+      '<p class="interstitial-title"><strong>Rechnung wird geprüft &hellip;</strong></p>' +
+      '<p class="subtle">KoSIT-Validierung nach EN&nbsp;16931 läuft. Das Ergebnis erscheint gleich.</p>' +
+      '<div class="ad-progress"><div class="ad-progress-bar" style="animation-duration:' +
+      DELAY_MS +
+      'ms"></div></div>' +
+      adBlockHtml() +
+      '</div>'
+    resultEl.classList.remove('hidden')
+    resultEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   function analyze(file) {
     errorBox.classList.add('hidden')
     resultEl.classList.add('hidden')
@@ -122,6 +159,14 @@
     if (turnstileToken) headers['X-Turnstile-Token'] = turnstileToken
 
     setBusy(true)
+    showInterstitial()
+    var startedAt = Date.now()
+
+    function afterDelay(fn, minMs) {
+      var wait = Math.max(0, (minMs == null ? DELAY_MS : minMs) - (Date.now() - startedAt))
+      setTimeout(fn, wait)
+    }
+
     fetch(ANALYZE_URL, { method: 'POST', headers: headers, body: file })
       .then(function (res) {
         return res.json().then(function (json) {
@@ -130,16 +175,32 @@
       })
       .then(function (r) {
         if (!r.ok) {
-          showError((r.json && r.json.error) || 'Prüfung fehlgeschlagen (Status ' + r.status + ').')
+          // Bei Fehlern nicht die volle Werbezeit abwarten.
+          afterDelay(function () {
+            resultEl.classList.add('hidden')
+            resultEl.innerHTML = ''
+            showError(
+              (r.json && r.json.error) || 'Prüfung fehlgeschlagen (Status ' + r.status + ').',
+            )
+          }, 1200)
           return
         }
-        renderResult(r.json)
+        afterDelay(function () {
+          renderResult(r.json)
+        })
       })
       .catch(function () {
-        showError('Prüfdienst nicht erreichbar. Bitte später erneut versuchen.')
+        afterDelay(function () {
+          resultEl.classList.add('hidden')
+          resultEl.innerHTML = ''
+          showError('Prüfdienst nicht erreichbar. Bitte später erneut versuchen.')
+        }, 1000)
       })
       .finally(function () {
-        setBusy(false)
+        // Button erst nach Ablauf der Mindestzeit wieder freigeben.
+        afterDelay(function () {
+          setBusy(false)
+        })
         // Turnstile-Token ist einmalig — Widget für den nächsten Upload zurücksetzen.
         turnstileToken = null
         if (TS_SITEKEY && window.turnstile && window.turnstile.reset) {
@@ -436,7 +497,8 @@
         '</div>' +
         '<p class="subtle">' +
         esc([kosit.engine, kosit.timestamp].filter(Boolean).join(' · ') || 'KoSIT-Validator') +
-        '</p></div>'
+        ' · quelloffen (Apache-2.0): ' +
+        '<a href="https://github.com/itplr-kosit/validator">itplr-kosit/validator</a></p></div>'
     }
 
     return '<div class="stack">' + formalBlock + kositBlock + '</div>'

@@ -3,26 +3,169 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>E-Rechnung prüfen &amp; visualisieren · Delta Plus Systemhaus</title>
+
+    <title>E-Rechnung prüfen &amp; visualisieren – XRechnung / ZUGFeRD nach KoSIT | Delta Plus</title>
     <meta
       name="description"
-      content="ZUGFeRD-, Factur-X- und XRechnung-Dateien lesbar machen und nach KoSIT prüfen — kostenlos, ohne Anmeldung. Von Delta Plus Systemhaus GmbH."
+      content="E-Rechnung online prüfen: XRechnung (UBL &amp; CII) und ZUGFeRD/Factur-X visualisieren und kostenlos gegen den offiziellen KoSIT-Validator (EN 16931) validieren – mit vollständigem Prüfbericht, ohne Anmeldung, ohne Speicherung. Von Delta Plus Systemhaus."
     />
-    <!-- API-Basis des KoSIT-Prüfdienstes. LEER = gleiche Domain (Standard,
-         Seite + Dienst auf dem vServer). Nur setzen, wenn die Seite woanders
-         liegt, z.B. content="https://e-rechnung.deltaplus.de". -->
+    <meta
+      name="keywords"
+      content="E-Rechnung prüfen, XRechnung Validator, ZUGFeRD prüfen, Factur-X, KoSIT Validator online, EN 16931 Validierung, XRechnung visualisieren, E-Rechnung Viewer, Prüfbericht XRechnung, elektronische Rechnung prüfen"
+    />
+    <meta name="author" content="Delta Plus Systemhaus GmbH" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+    <meta name="theme-color" content="#1e477a" />
+    <link rel="canonical" href="https://e-rechnung-api.deltaplus.de/" />
+
+    <link rel="icon" type="image/png" href="/assets/deltaplus-logo.png" />
+    <link rel="apple-touch-icon" href="/assets/deltaplus-logo.png" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Delta Plus Systemhaus GmbH" />
+    <meta property="og:locale" content="de_DE" />
+    <meta property="og:title" content="E-Rechnung prüfen &amp; visualisieren – XRechnung / ZUGFeRD nach KoSIT" />
+    <meta
+      property="og:description"
+      content="XRechnung und ZUGFeRD/Factur-X visualisieren und kostenlos gegen den offiziellen KoSIT-Validator (EN 16931) prüfen – mit vollständigem Prüfbericht, ohne Anmeldung."
+    />
+    <meta property="og:url" content="https://e-rechnung-api.deltaplus.de/" />
+    <meta property="og:image" content="https://e-rechnung-api.deltaplus.de/assets/deltaplus-logo.png" />
+
+    <!-- Twitter / X -->
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="E-Rechnung prüfen &amp; visualisieren – XRechnung / ZUGFeRD nach KoSIT" />
+    <meta
+      name="twitter:description"
+      content="XRechnung und ZUGFeRD/Factur-X visualisieren und kostenlos nach KoSIT (EN 16931) prüfen – mit Prüfbericht, ohne Anmeldung."
+    />
+    <meta name="twitter:image" content="https://e-rechnung-api.deltaplus.de/assets/deltaplus-logo.png" />
+
+    <!-- Konfiguration (leer = Standard) -->
     <meta name="e-rechnung-api" content="" />
-    <!-- Optionaler Missbrauchsschutz — leer = aus.
-         Turnstile-Sitekey (Cloudflare, kostenlos) muss zum TURNSTILE_SECRET des Dienstes passen. -->
     <meta name="e-rechnung-turnstile-sitekey" content="" />
     <meta name="e-rechnung-api-token" content="" />
+    <!-- Mindestdauer der Prüf-Ansicht mit Werbeeinblendung, in ms (Default 10000) -->
+    <meta name="e-rechnung-delay-ms" content="10000" />
+
     <link rel="stylesheet" href="style.css" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "name": "Delta Plus Systemhaus GmbH",
+        "legalName": "Delta Plus Systemhaus GmbH – EDV Lösungen",
+        "url": "https://www.deltaplus.de",
+        "logo": "https://e-rechnung-api.deltaplus.de/assets/deltaplus-logo.png",
+        "email": "stefan.zangs@deltaplus.de",
+        "telephone": "+49-2163-8884570",
+        "address": {
+          "@type": "PostalAddress",
+          "streetAddress": "Dorfstrasse 64",
+          "postalCode": "41372",
+          "addressLocality": "Niederkrüchten",
+          "addressRegion": "NRW",
+          "addressCountry": "DE"
+        },
+        "areaServed": "DE",
+        "knowsAbout": ["E-Rechnung", "XRechnung", "ZUGFeRD", "Factur-X", "EN 16931", "KoSIT-Validator", "ERP", "Finanzbuchhaltung", "DATEV"]
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "E-Rechnung prüfen & visualisieren",
+        "url": "https://e-rechnung-api.deltaplus.de/",
+        "applicationCategory": "BusinessApplication",
+        "operatingSystem": "Web",
+        "browserRequirements": "Requires JavaScript",
+        "inLanguage": "de",
+        "isAccessibleForFree": true,
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "EUR" },
+        "provider": {
+          "@type": "Organization",
+          "name": "Delta Plus Systemhaus GmbH",
+          "url": "https://www.deltaplus.de"
+        },
+        "featureList": [
+          "ZUGFeRD / Factur-X (PDF mit eingebettetem XML) visualisieren",
+          "XRechnung (UBL und UN/CEFACT CII) visualisieren",
+          "Validierung mit dem offiziellen KoSIT-Validator nach EN 16931 und XRechnung 3.0.2",
+          "Prüfbericht aufbereitet sowie als KoSIT-Originalbericht (HTML und XML)"
+        ]
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "Was ist eine E-Rechnung nach EN 16931?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Eine E-Rechnung ist eine Rechnung in einem strukturierten, maschinenlesbaren XML-Format nach der europäischen Norm EN 16931. In Deutschland sind das die Formate XRechnung (reines XML, Syntax UBL oder UN/CEFACT CII) und ZUGFeRD bzw. Factur-X (eine PDF/A-3 mit eingebettetem CII-XML). Ein PDF-Scan oder eine reine Bild-PDF ist keine E-Rechnung im Sinne der Norm."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Wie prüfe ich eine XRechnung oder ZUGFeRD-Datei?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Laden Sie die XML- oder PDF-Datei auf dieser Seite hoch. Das Werkzeug liest die enthaltenen Rechnungsdaten aus, stellt sie als lesbares Rechnungsbild dar und validiert die Datei mit dem offiziellen KoSIT-Validator gegen die Schematron-Regeln der EN 16931 und der XRechnung-Spezifikation. Sie erhalten eine Fehler-/Warnungsliste mit Regel-ID und den vollständigen KoSIT-Prüfbericht."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Was ist der KoSIT-Validator?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Der KoSIT-Validator ist das quelloffene Referenz-Prüfwerkzeug der Koordinierungsstelle für IT-Standards (KoSIT) für XRechnung und EN 16931. Er wird zusammen mit der Konfiguration validator-configuration-xrechnung unter der Apache-Lizenz 2.0 veröffentlicht. Diese Seite ruft genau diesen Validator serverseitig auf."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Werden meine hochgeladenen Rechnungen gespeichert?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Nein. Die Datei wird ausschließlich zur Auswertung im Arbeitsspeicher verarbeitet. Der KoSIT-Validator arbeitet in einem temporären Verzeichnis, das unmittelbar nach der Prüfung gelöscht wird. Es findet keine dauerhafte Speicherung statt."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Was bedeutet \"kein passendes Prüfszenario\"?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Der KoSIT-Validator ordnet jede Datei anhand ihrer CustomizationID bzw. Guideline-ID einem Prüfszenario zu (z. B. XRechnung 3.0.2 UBL Invoice). Passt keine Kennung, kann nicht regelbasiert geprüft werden – die Datei ist dann meist keine gültige XRechnung oder verwendet eine nicht unterstützte Version."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Ist die Prüfung kostenlos?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Ja, die Nutzung dieser Teaser-Seite ist kostenlos und ohne Anmeldung möglich. Sie ist die Vorstufe zum Rechnungseingangs-Programm von Delta Plus Systemhaus."
+            }
+          }
+        ]
+      }
+    </script>
   </head>
   <body>
     <header class="site-header">
       <div class="wrap">
-        <a class="brand" href="/">
-          <span class="badge">€</span>
+        <a class="brand" href="/" aria-label="Startseite – E-Rechnung-Werkzeug von Delta Plus Systemhaus">
+          <img
+            class="logo"
+            src="/assets/deltaplus-logo.png"
+            width="40"
+            height="35"
+            alt="Delta Plus Systemhaus GmbH Logo"
+          />
           <span>
             <strong>E-Rechnung-Werkzeug</strong>
             <span>Delta Plus Systemhaus GmbH</span>
@@ -32,99 +175,259 @@
       </div>
     </header>
 
-    <main class="wrap">
-      <section class="hero">
-        <span class="pill">Kostenlos · ohne Anmeldung · nichts wird gespeichert</span>
-        <h1>E-Rechnungen sichtbar machen und nach KoSIT prüfen</h1>
-        <p>
-          Laden Sie eine ZUGFeRD-/Factur-X-PDF oder eine XRechnung-XML hoch. Sie sehen sofort die
-          enthaltenen Rechnungsdaten als lesbares Rechnungsbild und das Ergebnis der
-          KoSIT-Validierung — mit vollständigem Prüfbericht.
-        </p>
-      </section>
-
-      <div
-        class="card dropzone"
-        id="dropzone"
-        role="button"
-        tabindex="0"
-        aria-label="Rechnungsdatei auswählen"
-      >
-        <p><strong>Rechnungsdatei hierher ziehen oder auswählen</strong></p>
-        <p class="hint">
-          ZUGFeRD / Factur-X (PDF mit XML) · XRechnung (UBL oder CII, reines XML) · max. 15 MB
-        </p>
-        <input
-          type="file"
-          id="fileInput"
-          accept=".pdf,.xml,application/pdf,application/xml,text/xml"
-          hidden
-        />
-        <button type="button" class="btn btn-primary" id="chooseBtn">Datei auswählen</button>
-        <p class="privacy">
-          Die Datei wird nur im Arbeitsspeicher verarbeitet und <strong>nicht gespeichert</strong>.
-        </p>
-      </div>
-
-      <div id="errorBox" class="error-box hidden" style="margin-top: 16px"></div>
-
-      <section class="disclaimer" aria-label="Haftungsausschluss">
-        <strong>Haftungsausschluss.</strong> Die Visualisierung und Prüfung erfolgen automatisiert
-        und <strong>ohne Gewähr</strong>. Das Ergebnis ist eine unverbindliche technische
-        Hilfestellung und stellt <strong>keine Rechts- oder Steuerberatung</strong> dar; es ersetzt
-        weder die inhaltliche Prüfung der Rechnung noch die Freigabe durch den Rechnungsempfänger.
-        Für die Richtigkeit, Vollständigkeit und Aktualität der Auswertung sowie der zugrunde
-        liegenden Prüfregeln wird keine Haftung übernommen. Die KoSIT-Validierung nutzt den
-        Validator der Koordinierungsstelle für IT-Standards nebst XRechnung-Konfiguration
-        (Drittsoftware); maßgeblich sind allein die jeweils geltenden gesetzlichen Vorgaben.
-        Eine Haftung von Delta Plus Systemhaus für Schäden aus der Nutzung dieses Werkzeugs ist –
-        außer bei Vorsatz und grober Fahrlässigkeit – ausgeschlossen. Hochgeladene Dateien werden
-        nur zur Auswertung im Arbeitsspeicher verarbeitet und nicht gespeichert.
-      </section>
-
-      <section id="result" class="section hidden"></section>
-
-      <section class="section">
-        <h2>Was das Werkzeug kann</h2>
-        <div class="features">
-          <div class="tile">
-            <h3>Rechnungsbild aus XML</h3>
-            <p>
-              ZUGFeRD, Factur-X und XRechnung (UBL wie CII) werden ausgelesen und als übersichtliche
-              Rechnung mit allen Positionen dargestellt — auch reine XML-Dateien ohne eigenes Layout.
-            </p>
-          </div>
-          <div class="tile">
-            <h3>Prüfung nach KoSIT</h3>
-            <p>
-              Validierung gegen den offiziellen Validator der Koordinierungsstelle für IT-Standards —
-              Schematron-Regeln nach EN&nbsp;16931 und der XRechnung-Spezifikation, inklusive
-              Annahme-Empfehlung.
-            </p>
-          </div>
-          <div class="tile">
-            <h3>Prüfbericht einsehen</h3>
-            <p>
-              Ergebnis als aufbereitete Liste (Fehler, Warnungen, Hinweise mit Regel-ID) und
-              zusätzlich der vollständige KoSIT-Originalbericht als HTML und XML zum Herunterladen.
-            </p>
-          </div>
+    <div class="layout">
+      <aside class="ad-rail ad-rail-left" aria-label="Anzeige">
+        <p class="ad-label">Anzeige</p>
+        <div class="ad-slot ad-slot-tall">
+          <p class="ad-kicker">Lorem Ipsum</p>
+          <p class="ad-title">Dolor sit amet</p>
+          <p class="ad-body">
+            Lorem ipsum dolor sit amet, consetetur sadipscing elitr, sed diam nonumy eirmod tempor
+            invidunt ut labore et dolore magna aliquyam erat.
+          </p>
+          <span class="ad-cta">Mehr erfahren</span>
         </div>
-      </section>
+        <div class="ad-slot">
+          <p class="ad-kicker">Lorem Ipsum</p>
+          <p class="ad-body">
+            At vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd gubergren.
+          </p>
+        </div>
+      </aside>
 
-      <section class="section card cta">
-        <h2 style="font-family: Georgia, serif; margin-top: 0">
-          Vorschau auf unser Rechnungseingangs-Programm
-        </h2>
-        <p>
-          Diese Seite ist der Anfang einer vollständigen Lösung von Delta Plus Systemhaus für die
-          Verarbeitung eingehender Rechnungen: automatischer E-Mail-Eingang, Ablagekörbe mit
-          Vier-Augen-Prinzip, Dublettenerkennung, DATEV-Export, KI-gestützte Erfassung von
-          Papierrechnungen und Ende-zu-Ende-Verschlüsselung der Belege.
-        </p>
-        <a class="btn btn-primary" href="https://www.deltaplus.de/#kontakt">Kontakt aufnehmen</a>
-      </section>
-    </main>
+      <main>
+      <article>
+        <section class="hero">
+          <span class="pill">Kostenlos · ohne Anmeldung · nichts wird gespeichert</span>
+          <h1>E-Rechnung prüfen &amp; visualisieren – XRechnung und ZUGFeRD nach KoSIT</h1>
+          <p>
+            Laden Sie eine <strong>XRechnung</strong> (XML, UBL oder CII) oder eine
+            <strong>ZUGFeRD-/Factur-X</strong>-PDF hoch. Sie sehen die enthaltenen Rechnungsdaten
+            als lesbares Rechnungsbild und das Ergebnis der Validierung mit dem
+            <strong>offiziellen KoSIT-Validator</strong> nach <strong>EN&nbsp;16931</strong> und
+            XRechnung&nbsp;3.0.2 – inklusive vollständigem Prüfbericht.
+          </p>
+        </section>
+
+        <div
+          class="card dropzone"
+          id="dropzone"
+          role="button"
+          tabindex="0"
+          aria-label="Rechnungsdatei auswählen"
+        >
+          <p><strong>Rechnungsdatei hierher ziehen oder auswählen</strong></p>
+          <p class="hint">
+            ZUGFeRD / Factur-X (PDF mit XML) · XRechnung (UBL oder CII, reines XML) · max. 15 MB
+          </p>
+          <input
+            type="file"
+            id="fileInput"
+            accept=".pdf,.xml,application/pdf,application/xml,text/xml"
+            hidden
+          />
+          <button type="button" class="btn btn-primary" id="chooseBtn">Datei auswählen</button>
+          <p class="privacy">
+            Die Datei wird nur im Arbeitsspeicher verarbeitet und <strong>nicht gespeichert</strong>.
+          </p>
+        </div>
+
+        <div id="errorBox" class="error-box hidden" style="margin-top: 16px"></div>
+
+        <section class="disclaimer" aria-label="Haftungsausschluss">
+          <strong>Haftungsausschluss.</strong> Die Visualisierung und Prüfung erfolgen automatisiert
+          und <strong>ohne Gewähr</strong>. Das Ergebnis ist eine unverbindliche technische
+          Hilfestellung und stellt <strong>keine Rechts- oder Steuerberatung</strong> dar; es ersetzt
+          weder die inhaltliche Prüfung der Rechnung noch die Freigabe durch den Rechnungsempfänger.
+          Für die Richtigkeit, Vollständigkeit und Aktualität der Auswertung sowie der zugrunde
+          liegenden Prüfregeln wird keine Haftung übernommen. Die KoSIT-Validierung nutzt den
+          quelloffenen Validator der Koordinierungsstelle für IT-Standards nebst
+          XRechnung-Konfiguration (siehe „Open Source"); maßgeblich sind allein die jeweils
+          geltenden gesetzlichen Vorgaben. Eine Haftung von Delta Plus Systemhaus für Schäden aus
+          der Nutzung dieses Werkzeugs ist – außer bei Vorsatz und grober Fahrlässigkeit –
+          ausgeschlossen. Hochgeladene Dateien werden nur zur Auswertung im Arbeitsspeicher
+          verarbeitet und nicht gespeichert. Delta Plus Systemhaus steht in keiner Verbindung zur
+          KoSIT oder zu xeinkauf.de.
+        </section>
+
+        <section id="result" class="section hidden" aria-live="polite"></section>
+
+        <section class="section">
+          <h2>Was das Werkzeug kann</h2>
+          <div class="features">
+            <div class="tile">
+              <h3>Rechnungsbild aus XML</h3>
+              <p>
+                ZUGFeRD, Factur-X und XRechnung (UBL wie CII) werden ausgelesen und als
+                übersichtliche Rechnung mit allen Positionen dargestellt – auch reine XML-Dateien
+                ohne eigenes Layout.
+              </p>
+            </div>
+            <div class="tile">
+              <h3>Prüfung nach KoSIT</h3>
+              <p>
+                Validierung gegen den offiziellen Validator der Koordinierungsstelle für
+                IT-Standards – Schematron-Regeln nach EN&nbsp;16931 und der XRechnung-Spezifikation,
+                inklusive Annahme-Empfehlung.
+              </p>
+            </div>
+            <div class="tile">
+              <h3>Prüfbericht einsehen</h3>
+              <p>
+                Ergebnis als aufbereitete Liste (Fehler, Warnungen, Hinweise mit Regel-ID) und
+                zusätzlich der vollständige KoSIT-Originalbericht als HTML und XML zum Herunterladen.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="faq">
+          <h2>Häufige Fragen zur E-Rechnungs-Prüfung</h2>
+
+          <details open>
+            <summary>Was ist eine E-Rechnung nach EN&nbsp;16931?</summary>
+            <p>
+              Eine E-Rechnung ist eine Rechnung in einem strukturierten, maschinenlesbaren
+              XML-Format nach der europäischen Norm EN&nbsp;16931. In Deutschland sind das die
+              Formate <strong>XRechnung</strong> (reines XML, Syntax UBL oder UN/CEFACT&nbsp;CII)
+              und <strong>ZUGFeRD</strong> bzw. <strong>Factur-X</strong> (eine PDF/A-3 mit
+              eingebettetem CII-XML). Ein PDF-Scan oder eine reine Bild-PDF ist keine E-Rechnung im
+              Sinne der Norm.
+            </p>
+          </details>
+          <details>
+            <summary>Wie prüfe ich eine XRechnung oder ZUGFeRD-Datei?</summary>
+            <p>
+              Datei oben hochladen. Das Werkzeug liest die Rechnungsdaten aus, zeigt sie als
+              Rechnungsbild und validiert die Datei mit dem offiziellen KoSIT-Validator gegen die
+              Schematron-Regeln der EN&nbsp;16931 und der XRechnung-Spezifikation. Sie erhalten
+              eine Fehler-/Warnungsliste mit Regel-ID und den vollständigen KoSIT-Prüfbericht.
+            </p>
+          </details>
+          <details>
+            <summary>Was ist der KoSIT-Validator?</summary>
+            <p>
+              Das quelloffene Referenz-Prüfwerkzeug der Koordinierungsstelle für IT-Standards
+              (KoSIT) für XRechnung und EN&nbsp;16931. Validator und Konfiguration
+              <em>validator-configuration-xrechnung</em> stehen unter der Apache-Lizenz&nbsp;2.0.
+              Diese Seite ruft genau diesen Validator serverseitig auf – siehe Abschnitt
+              „Open&nbsp;Source".
+            </p>
+          </details>
+          <details>
+            <summary>Werden meine hochgeladenen Rechnungen gespeichert?</summary>
+            <p>
+              Nein. Die Datei wird ausschließlich zur Auswertung im Arbeitsspeicher verarbeitet.
+              Der KoSIT-Validator arbeitet in einem temporären Verzeichnis, das unmittelbar nach
+              der Prüfung gelöscht wird.
+            </p>
+          </details>
+          <details>
+            <summary>Was bedeutet „kein passendes Prüfszenario"?</summary>
+            <p>
+              Der Validator ordnet jede Datei anhand ihrer CustomizationID bzw. Guideline-ID einem
+              Prüfszenario zu (z.&nbsp;B. XRechnung&nbsp;3.0.2 UBL&nbsp;Invoice). Passt keine
+              Kennung, kann nicht regelbasiert geprüft werden – die Datei ist dann meist keine
+              gültige XRechnung oder verwendet eine nicht unterstützte Version.
+            </p>
+          </details>
+          <details>
+            <summary>Ist die Prüfung kostenlos?</summary>
+            <p>
+              Ja, kostenlos und ohne Anmeldung. Die Seite ist die Vorstufe zum
+              Rechnungseingangs-Programm von Delta Plus Systemhaus.
+            </p>
+          </details>
+        </section>
+
+        <section class="section card cta">
+          <h2>Vorschau auf unser Rechnungseingangs-Programm</h2>
+          <p>
+            Diese Seite ist der Anfang einer vollständigen Lösung von Delta Plus Systemhaus für die
+            Verarbeitung eingehender Rechnungen: automatischer E-Mail-Eingang, Ablagekörbe mit
+            Vier-Augen-Prinzip, Dublettenerkennung, DATEV-Export, KI-gestützte Erfassung von
+            Papierrechnungen und Ende-zu-Ende-Verschlüsselung der Belege.
+          </p>
+          <p class="cta-hint">Sagen Sie uns, worum es geht:</p>
+          <div class="cta-buttons">
+            <a
+              class="btn btn-primary"
+              href="https://www.deltaplus.de/?thema=REV-HS#kontakt"
+            >
+              Rechnungseingangs&shy;verarbeitung (REV) für HS – Hamburger&nbsp;Software
+            </a>
+            <a
+              class="btn btn-secondary"
+              href="https://www.deltaplus.de/?thema=E-Rechnung#kontakt"
+            >
+              E-Rechnungen für alle anderen Systeme
+            </a>
+          </div>
+        </section>
+
+        <section class="section" id="opensource">
+          <h2>Open Source &amp; verwendete Software</h2>
+          <p>
+            Die inhaltliche Prüfung erfolgt mit quelloffener Software. Delta Plus Systemhaus stellt
+            hier lediglich eine Weboberfläche bereit und ist nicht mit den Projekten oder der KoSIT
+            verbunden.
+          </p>
+          <ul class="oss-list">
+            <li>
+              <strong>KoSIT Validator</strong> – Koordinierungsstelle für IT-Standards –
+              Apache-2.0 –
+              <a href="https://github.com/itplr-kosit/validator">github.com/itplr-kosit/validator</a>
+            </li>
+            <li>
+              <strong>validator-configuration-xrechnung</strong> (Prüfszenarien / Schematron für
+              XRechnung) – KoSIT – Apache-2.0 –
+              <a href="https://github.com/itplr-kosit/validator-configuration-xrechnung"
+                >github.com/itplr-kosit/validator-configuration-xrechnung</a
+              >
+            </li>
+            <li>
+              <strong>EN&nbsp;16931 Schematron</strong> (europäische Geschäftsregeln) –
+              ConnectingEurope – Apache-2.0 –
+              <a href="https://github.com/ConnectingEurope/eInvoicing-EN16931"
+                >github.com/ConnectingEurope/eInvoicing-EN16931</a
+              >
+            </li>
+            <li>
+              <strong>Inter</strong> (Schriftart, selbst gehostet) – SIL Open Font License&nbsp;1.1
+              – <a href="https://rsms.me/inter/">rsms.me/inter</a>
+            </li>
+            <li>
+              <strong>pdf-lib</strong> (MIT), <strong>fast-xml-parser</strong> (MIT) – XML-/PDF-Auswertung
+            </li>
+          </ul>
+          <p class="subtle">
+            Die vollständigen Lizenztexte liegen dem Quellcode bei
+            (<code>THIRD-PARTY-NOTICES.md</code>). Weitere Informationen zur XRechnung:
+            <a href="https://xeinkauf.de/xrechnung/">xeinkauf.de/xrechnung</a>.
+          </p>
+        </section>
+      </article>
+      </main>
+
+      <aside class="ad-rail ad-rail-right" aria-label="Anzeige">
+        <p class="ad-label">Anzeige</p>
+        <div class="ad-slot ad-slot-tall">
+          <p class="ad-kicker">Lorem Ipsum</p>
+          <p class="ad-title">Consetetur sadipscing</p>
+          <p class="ad-body">
+            Duis autem vel eum iriure dolor in hendrerit in vulputate velit esse molestie consequat,
+            vel illum dolore eu feugiat nulla facilisis.
+          </p>
+          <span class="ad-cta">Mehr erfahren</span>
+        </div>
+        <div class="ad-slot">
+          <p class="ad-kicker">Lorem Ipsum</p>
+          <p class="ad-body">
+            Nam liber tempor cum soluta nobis eleifend option congue nihil imperdiet doming id.
+          </p>
+        </div>
+      </aside>
+    </div>
 
     <footer class="site-footer">
       <p class="mono">© 2026 Delta Plus Systemhaus GmbH – EDV Lösungen · v0.5.1</p>
@@ -135,7 +438,8 @@
       <p>
         Prüfung ohne Gewähr · keine Rechts- oder Steuerberatung ·
         <a href="https://www.deltaplus.de/#impressum">Impressum</a> ·
-        <a href="https://www.deltaplus.de/#datenschutz">Datenschutz</a>
+        <a href="https://www.deltaplus.de/#datenschutz">Datenschutz</a> ·
+        <a href="#opensource">Open&nbsp;Source</a>
       </p>
     </footer>
 

@@ -33,6 +33,25 @@ ist standardmäßig aus. Hochgeladene Dateien werden nicht gespeichert. Ein
 sichtbarer Haftungsausschluss steht in `index.html`; Impressum/Datenschutz
 verlinken auf `www.deltaplus.de/#impressum` bzw. `#datenschutz`.
 
+**SEO / KI:** `<title>`, Meta-Description, Canonical, Open Graph, Twitter-Cards,
+`theme-color`; JSON-LD (`Organization`, `WebApplication`, `FAQPage`); sichtbare
+FAQ; `public/robots.txt` (Suchmaschinen **und** KI-Crawler ausdrücklich erlaubt,
+nur `/api/` gesperrt) + `public/sitemap.xml`. Beides muss unter der Domain-Wurzel
+erreichbar sein (`/robots.txt`, `/sitemap.xml`) — im All-in-one-Betrieb
+automatisch der Fall.
+
+**Werbung:** Platzhalter-Werbeflächen (Lorem Ipsum, Label „Anzeige") links/rechts
+neben dem Inhalt (`.ad-rail`, erst ab ≥1200 px sichtbar) sowie eine
+Werbeeinblendung während der Prüfung. Die Ergebnisanzeige wird dafür mindestens
+`e-rechnung-delay-ms` (Default **10000** ms) zurückgehalten — Meta-Tag in
+`index.html`, `0` schaltet die Verzögerung ab.
+
+**Open Source:** KoSIT-Validator, `validator-configuration-xrechnung` und die
+EN-16931-Schematron-Regeln stehen unter Apache-2.0; Hinweise/Links auf der Seite
+(Abschnitt „Open Source") und in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+Die Artefakte liegen **nicht** im Repo, sondern werden von `setup-kosit.mjs`
+geladen und unverändert ausgeführt.
+
 **Betriebsart: All-in-one** — statische Seite **und** Dienst laufen auf einem
 vServer unter einer Domain (`e-rechnung-api.deltaplus.de`). Keine getrennte
 Webspace-Ablage, kein CORS, ein Zertifikat. Auf der Hauptwebsite nur ein Link.
