@@ -134,9 +134,14 @@ export async function validateWithKosit(xml) {
 }
 
 // ── Report-Auswertung ─────────────────────────────────────────────────────
+// Der KoSIT-Report bettet in <rep:reject>/<rep:accept> einen kompletten
+// HTML-Prüfbericht ein — dort NICHT hineinlaufen (sonst falsche Treffer).
+const WALK_SKIP = new Set(['explanation', 'html', 'head', 'body', 'style'])
+
 function walk(node, visit) {
   if (node == null || typeof node !== 'object') return
   for (const [key, raw] of Object.entries(node)) {
+    if (WALK_SKIP.has(key)) continue
     const items = Array.isArray(raw) ? raw : [raw]
     for (const item of items) {
       visit(key, item)
@@ -216,8 +221,10 @@ export function parseKositReport(reportXml, reportHtml) {
   }
 
   const messages = []
+  let assessment = null // 'accept' | 'reject' | null
   let recommendation = null
   let scenario = null
+  let scenarioMatched = null // true | false | null (unbekannt)
   let engine = null
   let timestamp = null
 
@@ -231,24 +238,44 @@ export function parseKositReport(reportXml, reportHtml) {
       ('@_level' in value || '@_code' in value)
     ) {
       messages.push(mapReportMessage(value))
-    } else if (key === 'acceptRecommendation' || key === 'accept') {
+    } else if (key === 'assessment' && value && typeof value === 'object') {
+      if ('reject' in value) {
+        assessment = 'reject'
+        recommendation = recommendation || 'reject'
+      } else if ('accept' in value || 'acceptWithReservation' in value) {
+        assessment = 'accept'
+        recommendation = recommendation || ('acceptWithReservation' in value ? 'acceptWithReservation' : 'accept')
+      }
+    } else if (key === 'acceptRecommendation') {
       const t = clean(textOf(value))
       if (t) recommendation = t
+    } else if (key === 'noScenarioMatched') {
+      scenarioMatched = false
+    } else if (key === 'scenarioMatched') {
+      scenarioMatched = true
+      const s = value?.scenario ?? value
+      if (s && typeof s === 'object' && 'name' in s) scenario = clean(textOf(s.name)) || scenario
     } else if (key === 'scenario' && value && typeof value === 'object' && 'name' in value) {
       scenario = clean(textOf(value.name)) || scenario
-    } else if (
-      key === 'name' &&
-      scenario == null &&
-      typeof value === 'string' &&
-      /xrechnung|zugferd|cii|ubl/i.test(value)
-    ) {
-      scenario = clean(value)
     } else if (key === 'engine' && !engine) {
       engine = clean(textOf(value)) || null
     } else if (key === 'timestamp' && !timestamp) {
       timestamp = clean(textOf(value)) || null
     }
   })
+
+  if (scenarioMatched === false) {
+    messages.push({
+      level: 'fatal',
+      ruleId: 'kein-szenario',
+      text:
+        'Kein passendes KoSIT-Prüfszenario gefunden. Die Datei ist nicht als XRechnung 3.0.2 / ' +
+        'EN 16931-konforme Rechnung erkennbar (CustomizationID bzw. Guideline-ID passt zu keinem Szenario).',
+      location: null,
+      test: null,
+      kind: 'message',
+    })
+  }
 
   const seen = new Set()
   const deduped = messages.filter((m) => {
@@ -261,16 +288,20 @@ export function parseKositReport(reportXml, reportHtml) {
   const counts = { fatal: 0, error: 0, warning: 0, information: 0 }
   for (const m of deduped) counts[m.level]++
 
-  // KoSIT lehnt bei fatalen/fehlerhaften Schematron-Assertions ab; Warnungen
-  // allein führen nicht zur Ablehnung. Die Text-Empfehlung wird zusätzlich
-  // ausgewertet ("reject" / "unacceptable"), aber Fehler zählen immer.
+  // Urteil: primär die VARL-Bewertung (<rep:assessment><rep:accept|reject>);
+  // sonst die Text-Empfehlung; Fehler/kein-Szenario zählen immer als Ablehnung.
   const rec = (recommendation || '').toLowerCase()
   const rejected =
-    counts.fatal > 0 || counts.error > 0 || /reject|unacceptable|not.?acceptable/.test(rec)
+    assessment === 'reject' ||
+    scenarioMatched === false ||
+    counts.fatal > 0 ||
+    counts.error > 0 ||
+    (assessment !== 'accept' && /reject|unacceptable|not.?acceptable/.test(rec))
 
   return {
     available: true,
     accepted: !rejected,
+    scenarioMatched,
     recommendation,
     scenario,
     engine,

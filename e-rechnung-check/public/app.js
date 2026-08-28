@@ -182,6 +182,13 @@
     information: 'Hinweis',
   }
 
+  function kositVerdict(kosit) {
+    if (!kosit.available) return '<span class="tag tag-warn">KoSIT-Prüfung nicht verfügbar</span>'
+    if (kosit.scenarioMatched === false)
+      return '<span class="tag tag-warn">KoSIT: kein passendes Prüfszenario</span>'
+    return verdict(kosit.accepted, 'KoSIT: konform', 'KoSIT: nicht konform')
+  }
+
   function verdict(ok, okText, failText) {
     if (ok == null) return ''
     return ok
@@ -210,9 +217,7 @@
         'Pflichtangaben vollständig',
         'Pflichtangaben unvollständig',
       ) +
-      (kosit.available
-        ? verdict(kosit.accepted, 'KoSIT: konform', 'KoSIT: nicht konform')
-        : '<span class="tag tag-warn">KoSIT-Prüfung nicht verfügbar</span>') +
+      kositVerdict(kosit) +
       '</span></div></div>'
 
     var hasOriginal = kosit.available && kosit.reportHtml
@@ -399,16 +404,26 @@
         : '<p class="note-ok">✓ Keine Regelverletzungen.</p>'
 
       var c = kosit.counts || { fatal: 0, error: 0, warning: 0, information: 0 }
+      var noScenario = kosit.scenarioMatched === false
+      var badge = noScenario
+        ? '<span class="tag tag-warn">kein passendes Prüfszenario</span>'
+        : '<span class="tag ' +
+          (kosit.accepted ? 'tag-ok' : 'tag-bad') +
+          '">' +
+          (kosit.accepted ? '✓ Empfehlung: annehmen' : '✗ Empfehlung: ablehnen') +
+          '</span>'
       kositBlock =
         '<div class="card stack">' +
         '<div class="meta" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">' +
         '<h3 class="blk" style="margin:0">KoSIT-Validierung</h3>' +
         (kosit.scenario ? '<span class="tag tag-accent">' + esc(kosit.scenario) + '</span>' : '') +
-        '<span class="tag ' +
-        (kosit.accepted ? 'tag-ok' : 'tag-bad') +
-        '">' +
-        (kosit.accepted ? '✓ Empfehlung: annehmen' : '✗ Empfehlung: ablehnen') +
-        '</span></div>' +
+        badge +
+        '</div>' +
+        (noScenario
+          ? '<p class="note note-warn">Der KoSIT-Validator konnte die Datei keinem Prüfszenario ' +
+            '(XRechnung 3.0.2 / EN 16931) zuordnen — daher keine Regelprüfung. Meist stimmt die ' +
+            'CustomizationID bzw. Guideline-ID nicht.</p>'
+          : '') +
         '<div class="counts">' +
         countTag(c.fatal, 'Fatal', 'tag-bad') +
         countTag(c.error, 'Fehler', 'tag-bad') +
