@@ -20,6 +20,12 @@
   var DELAY_MS = parseInt(meta('e-rechnung-delay-ms'), 10)
   if (!(DELAY_MS >= 0)) DELAY_MS = 10000
 
+  // Kontakt-Aufruf während der Prüfung
+  var CONTACT_URL =
+    meta('e-rechnung-kontakt-url') || 'https://www.deltaplus.de/?thema=E-Rechnung#kontakt'
+  var PHONE = meta('e-rechnung-telefon') || '02163 / 888 45 70'
+  var PHONE_TEL = meta('e-rechnung-telefon-tel') || '+4921638884570'
+
   // Cloudflare Turnstile nur laden, wenn ein Sitekey hinterlegt ist.
   if (TS_SITEKEY) {
     window.__erTurnstileCb = function (tok) {
@@ -99,21 +105,24 @@
     errorBox.classList.remove('hidden')
   }
 
-  // Werbe-Einblendung (Platzhalter, Lorem Ipsum). Wird sowohl im Interstitial
-  // als auch in den Seiten-Rails genutzt; hier zentral, damit später leicht
-  // gegen echte Werbemittel austauschbar.
-  function adBlockHtml() {
+  // Einblendung während der Prüfung: Aufforderung zum Kontakt.
+  function dialogCtaHtml() {
     return (
-      '<div class="ad-inline">' +
-      '<p class="ad-label">Anzeige</p>' +
-      '<div class="ad-slot ad-slot-wide">' +
-      '<p class="ad-kicker">Lorem Ipsum</p>' +
-      '<p class="ad-title">Dolor sit amet, consetetur sadipscing elitr</p>' +
-      '<p class="ad-body">Lorem ipsum dolor sit amet, consetetur sadipscing elitr, sed diam ' +
-      'nonumy eirmod tempor invidunt ut labore et dolore magna aliquyam erat, sed diam voluptua. ' +
-      'At vero eos et accusam et justo duo dolores et ea rebum.</p>' +
-      '<span class="ad-cta">Mehr erfahren</span>' +
-      '</div></div>'
+      '<div class="dialog-cta">' +
+      '<p class="dialog-cta-title">Fragen zur E-Rechnung?</p>' +
+      '<p class="dialog-cta-text">' +
+      'Nicht lange suchen &ndash; einfach anrufen oder eine Nachricht an uns.' +
+      '</p>' +
+      '<button type="button" class="btn btn-primary" id="erDialogBtn">' +
+      'Hier klicken &amp; Kontakt aufnehmen' +
+      '</button>' +
+      '<p class="dialog-cta-phone hidden" id="erDialogPhone">' +
+      'Oder direkt anrufen: <a href="tel:' +
+      esc(PHONE_TEL) +
+      '">' +
+      esc(PHONE) +
+      '</a></p>' +
+      '</div>'
     )
   }
 
@@ -126,10 +135,19 @@
       '<div class="ad-progress"><div class="ad-progress-bar" style="animation-duration:' +
       DELAY_MS +
       'ms"></div></div>' +
-      adBlockHtml() +
+      dialogCtaHtml() +
       '</div>'
     resultEl.classList.remove('hidden')
     resultEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
+
+    var btn = document.getElementById('erDialogBtn')
+    if (btn) {
+      btn.addEventListener('click', function () {
+        window.open(CONTACT_URL, '_blank', 'noopener,noreferrer')
+        var ph = document.getElementById('erDialogPhone')
+        if (ph) ph.classList.remove('hidden')
+      })
+    }
   }
 
   function analyze(file) {

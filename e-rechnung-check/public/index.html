@@ -46,8 +46,12 @@
     <meta name="e-rechnung-api" content="" />
     <meta name="e-rechnung-turnstile-sitekey" content="" />
     <meta name="e-rechnung-api-token" content="" />
-    <!-- Mindestdauer der Prüf-Ansicht mit Werbeeinblendung, in ms (Default 10000) -->
+    <!-- Mindestdauer der Prüf-Ansicht mit Einblendung, in ms (Default 10000; 0 = aus) -->
     <meta name="e-rechnung-delay-ms" content="10000" />
+    <!-- Kontakt-Aufruf während der Prüfung -->
+    <meta name="e-rechnung-kontakt-url" content="https://www.deltaplus.de/?thema=E-Rechnung#kontakt" />
+    <meta name="e-rechnung-telefon" content="02163 / 888 45 70" />
+    <meta name="e-rechnung-telefon-tel" content="+4921638884570" />
 
     <link rel="stylesheet" href="style.css" />
 
@@ -176,24 +180,10 @@
     </header>
 
     <div class="layout">
-      <aside class="ad-rail ad-rail-left" aria-label="Anzeige">
-        <p class="ad-label">Anzeige</p>
-        <div class="ad-slot ad-slot-tall">
-          <p class="ad-kicker">Lorem Ipsum</p>
-          <p class="ad-title">Dolor sit amet</p>
-          <p class="ad-body">
-            Lorem ipsum dolor sit amet, consetetur sadipscing elitr, sed diam nonumy eirmod tempor
-            invidunt ut labore et dolore magna aliquyam erat.
-          </p>
-          <span class="ad-cta">Mehr erfahren</span>
-        </div>
-        <div class="ad-slot">
-          <p class="ad-kicker">Lorem Ipsum</p>
-          <p class="ad-body">
-            At vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd gubergren.
-          </p>
-        </div>
-      </aside>
+      <!-- Werbeplatz links — leer, wird bei Bedarf mit Anzeigen (Label "Anzeige",
+           .ad-slot) gefüllt. Sobald Inhalt vorhanden ist, blendet CSS die Rail
+           auf breiten Bildschirmen automatisch ein. -->
+      <aside class="ad-rail ad-rail-left" aria-hidden="true"></aside>
 
       <main>
       <article>
@@ -340,28 +330,62 @@
           </details>
         </section>
 
-        <section class="section card cta">
+        <section class="section preview">
           <h2>Vorschau auf unser Rechnungseingangs-Programm</h2>
-          <p>
-            Diese Seite ist der Anfang einer vollständigen Lösung von Delta Plus Systemhaus für die
-            Verarbeitung eingehender Rechnungen: automatischer E-Mail-Eingang, Ablagekörbe mit
-            Vier-Augen-Prinzip, Dublettenerkennung, DATEV-Export, KI-gestützte Erfassung von
-            Papierrechnungen und Ende-zu-Ende-Verschlüsselung der Belege.
+          <p class="preview-lead">
+            Für die digitale Verarbeitung Ihrer Eingangsrechnungen bieten wir zwei Wege – je
+            nachdem, welche kaufmännische Software Sie einsetzen.
           </p>
-          <p class="cta-hint">Sagen Sie uns, worum es geht:</p>
-          <div class="cta-buttons">
-            <a
-              class="btn btn-primary"
-              href="https://www.deltaplus.de/?thema=REV-HS#kontakt"
-            >
-              Rechnungseingangs&shy;verarbeitung (REV) für HS – Hamburger&nbsp;Software
-            </a>
-            <a
-              class="btn btn-secondary"
-              href="https://www.deltaplus.de/?thema=E-Rechnung#kontakt"
-            >
-              E-Rechnungen für alle anderen Systeme
-            </a>
+
+          <div class="preview-cols">
+            <!-- Links: HS REV (Produkt der HS – Hamburger Software; Delta Plus ist HS-Partner).
+                 Beschreibung nach hamburger-software.de/finanzbuchhaltung/rechnungseingangsverarbeitung -->
+            <article class="preview-col">
+              <p class="preview-kicker">Wenn Sie HS – Hamburger Software einsetzen</p>
+              <h3>HS Rechnungseingangs&shy;verarbeitung (REV)</h3>
+              <p>
+                Die webbasierte Lösung von HS – Hamburger Software: alle Arbeitsschritte vom
+                Rechnungsimport über Prüfung und Freigabe bis zu Buchung und Zahlung in einem
+                System, nahtlos an das HS Finanzwesen angebunden.
+              </p>
+              <ul>
+                <li>Verarbeitung im Browser, ohne Programminstallation</li>
+                <li>Automatischer Import von E-Rechnungen (ZUGFeRD, XRechnung)</li>
+                <li>Automatisierte Workflows mit Budgetgrenzen und Kostenstellen</li>
+                <li>GoBD-konforme Archivierung im HS Dokumentenmanagement</li>
+                <li>DATEV-Schnittstelle, dezentraler Zugriff, lückenlose Protokollierung</li>
+              </ul>
+              <a class="btn btn-primary" href="https://www.deltaplus.de/?thema=REV-HS#kontakt">
+                REV für HS – Hamburger Software anfragen
+              </a>
+              <p class="preview-src">
+                Produkt der HS – Hamburger Software SE ·
+                <a href="https://www.hamburger-software.de/finanzbuchhaltung/rechnungseingangsverarbeitung"
+                  >Details bei hamburger-software.de</a
+                >
+              </p>
+            </article>
+
+            <!-- Rechts: unser eigenes Programm -->
+            <article class="preview-col preview-col-own">
+              <p class="preview-kicker">Für alle anderen Systeme</p>
+              <h3>E-Rechnungs-Verarbeitung von Delta Plus</h3>
+              <p>
+                Unsere eigene, mandantenfähige Lösung – unabhängig von HS. Dieses Prüf-Werkzeug ist
+                ihr erster Baustein.
+              </p>
+              <ul>
+                <li>Automatischer E-Mail-Eingang für eingehende Rechnungen</li>
+                <li>Ablagekörbe mit Vier-Augen-Prinzip und Dublettenerkennung</li>
+                <li>KoSIT-Prüfung, Rechnungsvisualisierung, KI-Erfassung von Papierrechnungen</li>
+                <li>DATEV-Export</li>
+                <li>Ende-zu-Ende-Verschlüsselung der Belege (Zero-Knowledge)</li>
+              </ul>
+              <a class="btn btn-primary" href="https://www.deltaplus.de/?thema=E-Rechnung#kontakt">
+                E-Rechnungs-Verarbeitung anfragen
+              </a>
+              <p class="preview-src">In Entwicklung – früher Zugang auf Anfrage.</p>
+            </article>
           </div>
         </section>
 
@@ -409,24 +433,8 @@
       </article>
       </main>
 
-      <aside class="ad-rail ad-rail-right" aria-label="Anzeige">
-        <p class="ad-label">Anzeige</p>
-        <div class="ad-slot ad-slot-tall">
-          <p class="ad-kicker">Lorem Ipsum</p>
-          <p class="ad-title">Consetetur sadipscing</p>
-          <p class="ad-body">
-            Duis autem vel eum iriure dolor in hendrerit in vulputate velit esse molestie consequat,
-            vel illum dolore eu feugiat nulla facilisis.
-          </p>
-          <span class="ad-cta">Mehr erfahren</span>
-        </div>
-        <div class="ad-slot">
-          <p class="ad-kicker">Lorem Ipsum</p>
-          <p class="ad-body">
-            Nam liber tempor cum soluta nobis eleifend option congue nihil imperdiet doming id.
-          </p>
-        </div>
-      </aside>
+      <!-- Werbeplatz rechts — leer (siehe Hinweis oben). -->
+      <aside class="ad-rail ad-rail-right" aria-hidden="true"></aside>
     </div>
 
     <footer class="site-footer">

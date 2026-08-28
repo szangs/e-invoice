@@ -40,11 +40,22 @@ nur `/api/` gesperrt) + `public/sitemap.xml`. Beides muss unter der Domain-Wurze
 erreichbar sein (`/robots.txt`, `/sitemap.xml`) — im All-in-one-Betrieb
 automatisch der Fall.
 
-**Werbung:** Platzhalter-Werbeflächen (Lorem Ipsum, Label „Anzeige") links/rechts
-neben dem Inhalt (`.ad-rail`, erst ab ≥1200 px sichtbar) sowie eine
-Werbeeinblendung während der Prüfung. Die Ergebnisanzeige wird dafür mindestens
-`e-rechnung-delay-ms` (Default **10000** ms) zurückgehalten — Meta-Tag in
-`index.html`, `0` schaltet die Verzögerung ab.
+**Werbeflächen / Einblendung:**
+- Links/rechts neben dem Inhalt liegen zwei **leere** `<aside class="ad-rail">`.
+  Sobald sie Inhalt bekommen (`.ad-slot` mit Label „Anzeige"), schaltet CSS
+  (`:has()`) auf breiten Bildschirmen automatisch auf das 3-Spalten-Raster;
+  leer bleiben sie unsichtbar und das Layout einspaltig-zentriert.
+- Während der Prüfung wird das Ergebnis mindestens `e-rechnung-delay-ms`
+  (Default **10000** ms, `0` = aus) zurückgehalten. In der Zeit läuft ein
+  Fortschrittsbalken und ein **Kontakt-Aufruf** („Fragen zur E-Rechnung? …").
+  Klick darauf öffnet `e-rechnung-kontakt-url` in einem neuen Tab und blendet
+  die Telefonnummer (`e-rechnung-telefon` / `-tel`) ein. Alle vier Werte sind
+  Meta-Tags in `index.html`.
+
+**Vorschau-Abschnitt:** zwei Spalten – links **HS Rechnungseingangsverarbeitung
+(REV)** (Produkt der HS – Hamburger Software, Delta Plus ist HS-Partner; Text
+nach hamburger-software.de), rechts die **eigene** E-Rechnungs-Verarbeitung.
+Jede Spalte mit eigenem Kontakt-Button (`?thema=REV-HS` bzw. `?thema=E-Rechnung`).
 
 **Open Source:** KoSIT-Validator, `validator-configuration-xrechnung` und die
 EN-16931-Schematron-Regeln stehen unter Apache-2.0; Hinweise/Links auf der Seite
