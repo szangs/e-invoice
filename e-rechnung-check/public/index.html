@@ -4,14 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>E-Rechnung prüfen &amp; visualisieren – XRechnung / ZUGFeRD nach KoSIT | Delta Plus</title>
+    <title>XRechnung &amp; ZUGFeRD Validator – E-Rechnung online prüfen (KoSIT, kostenlos) | Delta Plus</title>
     <meta
       name="description"
-      content="E-Rechnung online prüfen: XRechnung (UBL &amp; CII) und ZUGFeRD/Factur-X visualisieren und kostenlos gegen den offiziellen KoSIT-Validator (EN 16931) validieren – mit vollständigem Prüfbericht, ohne Anmeldung, ohne Speicherung. Von Delta Plus Systemhaus."
+      content="XRechnung und ZUGFeRD/Factur-X kostenlos online prüfen und visualisieren – ohne Anmeldung, ohne Registrierung. Validierung mit dem offiziellen KoSIT-Validator nach EN 16931, DSGVO-konform (keine Speicherung, keine externen Aufrufe). Von Delta Plus Systemhaus."
     />
     <meta
       name="keywords"
-      content="E-Rechnung prüfen, XRechnung Validator, ZUGFeRD prüfen, Factur-X, KoSIT Validator online, EN 16931 Validierung, XRechnung visualisieren, E-Rechnung Viewer, Prüfbericht XRechnung, elektronische Rechnung prüfen"
+      content="E-Rechnung prüfen, XRechnung Validator, XRechnung online prüfen, ZUGFeRD prüfen, ZUGFeRD Validator, Factur-X, KoSIT Validator online, EN 16931 Validierung, XRechnung visualisieren, E-Rechnung Viewer, Prüfbericht XRechnung, elektronische Rechnung prüfen, E-Rechnung kostenlos, XRechnung ohne Anmeldung"
     />
     <meta name="author" content="Delta Plus Systemhaus GmbH" />
     <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
@@ -25,20 +25,20 @@
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Delta Plus Systemhaus GmbH" />
     <meta property="og:locale" content="de_DE" />
-    <meta property="og:title" content="E-Rechnung prüfen &amp; visualisieren – XRechnung / ZUGFeRD nach KoSIT" />
+    <meta property="og:title" content="XRechnung &amp; ZUGFeRD Validator – E-Rechnung online prüfen (KoSIT, kostenlos)" />
     <meta
       property="og:description"
-      content="XRechnung und ZUGFeRD/Factur-X visualisieren und kostenlos gegen den offiziellen KoSIT-Validator (EN 16931) prüfen – mit vollständigem Prüfbericht, ohne Anmeldung."
+      content="XRechnung und ZUGFeRD/Factur-X kostenlos online prüfen und visualisieren – ohne Anmeldung, ohne Registrierung. Validierung mit dem offiziellen KoSIT-Validator nach EN 16931, DSGVO-konform."
     />
     <meta property="og:url" content="https://e-rechnung-api.deltaplus.de/" />
     <meta property="og:image" content="https://e-rechnung-api.deltaplus.de/assets/deltaplus-logo.png" />
 
     <!-- Twitter / X -->
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="E-Rechnung prüfen &amp; visualisieren – XRechnung / ZUGFeRD nach KoSIT" />
+    <meta name="twitter:title" content="XRechnung &amp; ZUGFeRD Validator – E-Rechnung online prüfen (KoSIT, kostenlos)" />
     <meta
       name="twitter:description"
-      content="XRechnung und ZUGFeRD/Factur-X visualisieren und kostenlos nach KoSIT (EN 16931) prüfen – mit Prüfbericht, ohne Anmeldung."
+      content="XRechnung und ZUGFeRD/Factur-X kostenlos online prüfen – ohne Anmeldung, nach KoSIT (EN 16931), DSGVO-konform."
     />
     <meta name="twitter:image" content="https://e-rechnung-api.deltaplus.de/assets/deltaplus-logo.png" />
 
@@ -108,6 +108,33 @@
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
+        "@type": "HowTo",
+        "name": "XRechnung oder ZUGFeRD online prüfen",
+        "description": "So prüfen und visualisieren Sie eine E-Rechnung mit dem KoSIT-Validator.",
+        "totalTime": "PT1M",
+        "estimatedCost": { "@type": "MonetaryAmount", "currency": "EUR", "value": "0" },
+        "step": [
+          {
+            "@type": "HowToStep",
+            "name": "Datei hochladen",
+            "text": "XRechnung als XML (UBL oder CII) oder ZUGFeRD/Factur-X als PDF hochladen, bis 15 MB."
+          },
+          {
+            "@type": "HowToStep",
+            "name": "Automatische Prüfung",
+            "text": "Formale Kernprüfung und KoSIT-Validierung nach EN 16931 laufen serverseitig."
+          },
+          {
+            "@type": "HowToStep",
+            "name": "Ergebnis ansehen",
+            "text": "Rechnungsbild, Fehlerliste mit Regel-ID und vollständiger KoSIT-Prüfbericht - kein Konto nötig."
+          }
+        ]
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
         "@type": "FAQPage",
         "mainEntity": [
           {
@@ -157,6 +184,22 @@
               "@type": "Answer",
               "text": "Ja, die Nutzung dieser Teaser-Seite ist kostenlos und ohne Anmeldung möglich. Sie ist die Vorstufe zum Rechnungseingangs-Programm von Delta Plus Systemhaus."
             }
+          },
+          {
+            "@type": "Question",
+            "name": "Wann muss ich E-Rechnungen empfangen und wann versenden können?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Seit dem 1. Januar 2025 muss jedes inländische Unternehmen E-Rechnungen empfangen können, ohne Übergangsfrist. Der Versand wird stufenweise Pflicht: ab 1. Januar 2027 für Unternehmen mit mehr als 800.000 Euro Vorjahresumsatz, ab 1. Januar 2028 für alle inländischen B2B-Rechnungen. Kleinunternehmer nach § 19 UStG bleiben vom Versand befreit."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Warum wird meine XRechnung bei der KoSIT-Prüfung abgelehnt?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Häufigste Gründe: falsche oder fehlende CustomizationID/Guideline-ID (kein passendes Prüfszenario), fehlende Pflichtangaben wie Adressen oder USt-ID, Rechenfehler in den Summen, eine fehlende Leitweg-ID bei Rechnungen an öffentliche Auftraggeber, oder ungültige Code-Listen (z. B. Währungscode). Jede Regelverletzung wird mit Regel-ID und Fundstelle angezeigt."
+            }
           }
         ]
       }
@@ -191,16 +234,34 @@
       <main>
       <article>
         <section class="hero">
-          <span class="pill">Kostenlos · ohne Anmeldung · nichts wird gespeichert</span>
+          <span class="pill">Kostenlos · ohne Anmeldung · ohne Registrierung</span>
           <span class="pill pill-accent">Testzugang verfügbar</span>
-          <h1>E-Rechnung prüfen &amp; visualisieren – XRechnung und ZUGFeRD nach KoSIT</h1>
+          <h1>E-Rechnung online prüfen &amp; visualisieren – XRechnung und ZUGFeRD nach KoSIT</h1>
           <p>
             Laden Sie eine <strong>XRechnung</strong> (XML, UBL oder CII) oder eine
             <strong>ZUGFeRD-/Factur-X</strong>-PDF hoch. Sie sehen die enthaltenen Rechnungsdaten
             als lesbares Rechnungsbild und das Ergebnis der Validierung mit dem
             <strong>offiziellen KoSIT-Validator</strong> nach <strong>EN&nbsp;16931</strong> und
-            XRechnung&nbsp;3.0.2 – inklusive vollständigem Prüfbericht.
+            XRechnung&nbsp;3.0.2 – inklusive vollständigem Prüfbericht. Verarbeitung
+            <strong>DSGVO-konform</strong>: keine externen Aufrufe, keine Speicherung.
           </p>
+        </section>
+
+        <section class="section steps" aria-label="So funktioniert's">
+          <ol class="steps-list">
+            <li>
+              <span class="step-num">1</span>
+              <div><strong>Datei hochladen</strong><p>XRechnung (XML) oder ZUGFeRD/Factur-X (PDF), bis 15&nbsp;MB.</p></div>
+            </li>
+            <li>
+              <span class="step-num">2</span>
+              <div><strong>Automatische Prüfung</strong><p>Formale Kernprüfung und KoSIT-Validierung nach EN&nbsp;16931 laufen serverseitig.</p></div>
+            </li>
+            <li>
+              <span class="step-num">3</span>
+              <div><strong>Ergebnis ansehen</strong><p>Rechnungsbild, Fehlerliste mit Regel-ID und der vollständige KoSIT-Prüfbericht – kein Konto nötig.</p></div>
+            </li>
+          </ol>
         </section>
 
         <div
@@ -275,6 +336,44 @@
           </div>
         </section>
 
+        <section class="section" id="pflicht">
+          <h2>Wann ist die E-Rechnung in Deutschland Pflicht?</h2>
+          <p>
+            Seit dem <strong>1.&nbsp;Januar 2025</strong> muss jedes inländische Unternehmen
+            E-Rechnungen von anderen inländischen Unternehmen <strong>empfangen</strong> können –
+            hierfür gibt es keine Übergangsfrist. Für den <strong>Versand</strong> gelten
+            Übergangsfristen:
+          </p>
+          <ul class="timeline-list">
+            <li><strong>Ab 1.1.2027:</strong> Unternehmen mit mehr als 800.000&nbsp;€ Vorjahresumsatz müssen inländische B2B-Rechnungen als E-Rechnung versenden.</li>
+            <li><strong>Bis 31.12.2027:</strong> kleinere Unternehmen dürfen mit Zustimmung des Empfängers noch Papier- oder PDF-Rechnungen versenden.</li>
+            <li><strong>Ab 1.1.2028:</strong> flächendeckende Versandpflicht für alle inländischen B2B-Rechnungen, unabhängig vom Umsatz. Kleinunternehmer nach §&nbsp;19&nbsp;UStG bleiben vom Versand befreit, müssen aber weiterhin empfangen können.</li>
+          </ul>
+          <p class="subtle">
+            Zulässige Formate nach EN&nbsp;16931: XRechnung sowie ZUGFeRD/Factur-X ab Profil
+            EN&nbsp;16931 (Comfort/Extended). Diese Übersicht ersetzt keine steuerliche Beratung –
+            maßgeblich ist §&nbsp;14 UStG.
+          </p>
+        </section>
+
+        <section class="section" id="fehler">
+          <h2>Häufige Fehler bei der XRechnung-/ZUGFeRD-Prüfung</h2>
+          <p>
+            Die häufigsten Gründe, warum eine Rechnung die KoSIT-Validierung nicht besteht:
+          </p>
+          <ul class="timeline-list">
+            <li><strong>Falsche oder fehlende CustomizationID/Guideline-ID</strong> – der Validator findet dann kein passendes Prüfszenario und kann nicht regelbasiert prüfen.</li>
+            <li><strong>Fehlende Pflichtangaben</strong> (BR-*) – z.&nbsp;B. Verkäufer- oder Käuferadresse, USt-ID, Rechnungsnummer oder -datum.</li>
+            <li><strong>Rechenfehler in den Summen</strong> (BR-CO-*) – Positionssummen, Nettobetrag, Steuerbetrag und Bruttobetrag stimmen nicht überein.</li>
+            <li><strong>Fehlende Leitweg-ID</strong> (BR-DE-*) – bei Rechnungen an öffentliche Auftraggeber in Deutschland Pflicht.</li>
+            <li><strong>Ungültige Code-Listen</strong> – z.&nbsp;B. falsche Währungs-, Einheiten- oder Steuercodes.</li>
+          </ul>
+          <p class="subtle">
+            Jede Regelverletzung wird beim Hochladen mit Regel-ID, Klartext und Fundstelle in der
+            Datei angezeigt.
+          </p>
+        </section>
+
         <section class="section" id="faq">
           <h2>Häufige Fragen zur E-Rechnungs-Prüfung</h2>
 
@@ -330,6 +429,26 @@
             <p>
               Ja, kostenlos und ohne Anmeldung. Die Seite ist die Vorstufe zum
               Rechnungseingangs-Programm von Delta Plus Systemhaus.
+            </p>
+          </details>
+          <details>
+            <summary>Wann muss ich E-Rechnungen empfangen und wann versenden können?</summary>
+            <p>
+              Seit dem 1.&nbsp;Januar 2025 muss jedes inländische Unternehmen E-Rechnungen
+              empfangen können, ohne Übergangsfrist. Der Versand wird stufenweise Pflicht: ab
+              1.&nbsp;Januar 2027 für Unternehmen mit mehr als 800.000&nbsp;€ Vorjahresumsatz, ab
+              1.&nbsp;Januar 2028 für alle inländischen B2B-Rechnungen. Kleinunternehmer nach
+              §&nbsp;19&nbsp;UStG bleiben vom Versand befreit. Details siehe Abschnitt
+              „<a href="#pflicht">Wann ist die E-Rechnung Pflicht?</a>".
+            </p>
+          </details>
+          <details>
+            <summary>Warum wird meine XRechnung bei der KoSIT-Prüfung abgelehnt?</summary>
+            <p>
+              Häufigste Gründe: falsche oder fehlende CustomizationID/Guideline-ID, fehlende
+              Pflichtangaben, Rechenfehler in den Summen, eine fehlende Leitweg-ID bei Rechnungen
+              an öffentliche Auftraggeber, oder ungültige Code-Listen. Siehe Abschnitt
+              „<a href="#fehler">Häufige Fehler</a>".
             </p>
           </details>
         </section>

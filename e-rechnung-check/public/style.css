@@ -389,6 +389,68 @@ main {
   margin: 0;
 }
 
+/* 3-Schritte-Anleitung */
+.steps {
+  margin: 20px 0 32px;
+}
+.steps-list {
+  list-style: none;
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+}
+@media (min-width: 640px) {
+  .steps-list {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+.steps-list li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.step-num {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
+}
+.steps-list strong {
+  display: block;
+  font-size: 13.5px;
+  color: var(--ink);
+  margin-bottom: 2px;
+}
+.steps-list p {
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+/* Rechtliche Fristen / Fehlerliste */
+.timeline-list {
+  margin: 0 0 12px;
+  padding-left: 20px;
+}
+.timeline-list li {
+  font-size: 14px;
+  color: var(--ink-soft);
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
 /* Karten */
 .card {
   background: var(--surface);
