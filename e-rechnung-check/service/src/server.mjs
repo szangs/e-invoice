@@ -3,6 +3,9 @@
 //
 // Endpunkte:
 //   GET  /healthz        → { ok, kosit: { configured, reason? } }
+//   GET  /api/counter    → { count } — kleiner Zugriffszähler fürs Seiten-Fußzeile,
+//                          zählt jeden Aufruf hoch, startet bei COUNTER_START (10621)
+//                          und wird in counter.txt persistiert.
 //   POST /api/analyze    → Rohbytes der Datei im Body,
 //                          Dateiname im Header  X-File-Name,
 //                          Typ im  Content-Type (application/pdf | application/xml).
@@ -17,6 +20,8 @@
 //
 // Keine Speicherung: die Datei existiert nur als Buffer im Arbeitsspeicher.
 import { createServer } from 'node:http'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { analyzeInvoiceFile, FORMAT_LABELS } from './erechnung.mjs'
 import { kositConfig, validateWithKosit } from './kosit.mjs'
 
@@ -32,6 +37,8 @@ const TRUST_PROXY = process.env.TRUST_PROXY !== 'false'
 const RATE_MAX = Number(process.env.RATE_MAX || 15)
 const RATE_WINDOW_MS = Number(process.env.RATE_WINDOW_MS || 10 * 60 * 1000)
 const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT || 3)
+const COUNTER_START = Number(process.env.COUNTER_START || 10621)
+const COUNTER_FILE = process.env.COUNTER_FILE || join(process.cwd(), 'counter.txt')
 const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET?.trim() || null
 const API_TOKEN = process.env.API_TOKEN?.trim() || null
 
@@ -134,6 +141,28 @@ setInterval(() => {
 
 let running = 0
 
+// ── Zugriffszähler ───────────────────────────────────────────────────────
+function loadCounter() {
+  if (existsSync(COUNTER_FILE)) {
+    const n = Number(readFileSync(COUNTER_FILE, 'utf8').trim())
+    if (Number.isFinite(n) && n >= 0) return n
+  }
+  // Erster Aufruf überhaupt zeigt genau COUNTER_START (bumpCounter zählt vor der Rückgabe hoch).
+  return COUNTER_START - 1
+}
+
+let counter = loadCounter()
+
+function bumpCounter() {
+  counter += 1
+  try {
+    writeFileSync(COUNTER_FILE, String(counter), 'utf8')
+  } catch (e) {
+    console.error('Zugriffszähler konnte nicht gespeichert werden:', e.message)
+  }
+  return counter
+}
+
 async function verifyTurnstile(token, ip) {
   if (!TURNSTILE_SECRET) return true
   if (!token) return false
@@ -170,6 +199,11 @@ const server = createServer(async (req, res) => {
       kosit: cfg.ok ? { configured: true } : { configured: false, reason: cfg.reason },
       turnstile: Boolean(TURNSTILE_SECRET),
     })
+    return
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/counter') {
+    json(res, 200, { count: bumpCounter() })
     return
   }
 
@@ -259,6 +293,7 @@ const server = createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`E-Rechnung-Check-Dienst läuft auf http://${HOST}:${PORT}`)
   console.log(`Erlaubte Origins: ${ALLOWED_ORIGINS.join(', ')}`)
+  console.log(`Zugriffszähler: ${counter} (Datei: ${COUNTER_FILE})`)
   console.log(
     `Schutz: Rate-Limit ${RATE_MAX}/${Math.round(RATE_WINDOW_MS / 60000)}min · ` +
       `max ${MAX_CONCURRENT} parallel · Turnstile ${TURNSTILE_SECRET ? 'an' : 'aus'} · ` +

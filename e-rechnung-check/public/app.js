@@ -57,6 +57,23 @@
     }
   })
 
+  // Kleiner Zugriffszähler in der Fußzeile.
+  var counterEl = document.getElementById('visitCounter')
+  if (counterEl) {
+    fetch(API_BASE + '/api/counter')
+      .then(function (r) {
+        return r.ok ? r.json() : null
+      })
+      .then(function (j) {
+        if (!j || typeof j.count !== 'number') return
+        counterEl.textContent = 'Aufrufe: ' + new Intl.NumberFormat('de-DE').format(j.count)
+        counterEl.removeAttribute('aria-hidden')
+      })
+      .catch(function () {
+        /* still: kein Zähler, keine Fehlermeldung nötig */
+      })
+  }
+
   var dropzone = document.getElementById('dropzone')
   var fileInput = document.getElementById('fileInput')
   var chooseBtn = document.getElementById('chooseBtn')
