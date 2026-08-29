@@ -18,7 +18,7 @@
 
   // Mindestdauer der Prüf-Ansicht (Werbeeinblendung), Default 10 s.
   var DELAY_MS = parseInt(meta('e-rechnung-delay-ms'), 10)
-  if (!(DELAY_MS >= 0)) DELAY_MS = 10000
+  if (!(DELAY_MS >= 0)) DELAY_MS = 5000
 
   // Kontakt-Aufruf während der Prüfung
   var CONTACT_URL =
